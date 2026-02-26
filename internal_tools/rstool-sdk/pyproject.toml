@@ -1,0 +1,26 @@
+[project]
+version = "0.1.0"
+name = "realityscan-sdk"
+description = "RealityScan SDK for Python"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    {name = "Adam Holness", email = "Adamvibeo@gmail.com"},
+    {name = "Nasha Frith", email = "nasha.frith@gmail.com"}
+]
+
+dependencies = [
+    "requests",
+    "httpx",
+    "ftputil",
+    ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+

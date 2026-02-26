@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rslogic"
+version = "0.1.0"
+description = "Photogrammetry ingestion and orchestration services for RealityScan workflows"
+requires-python = ">=3.14"
+readme = "README.md"
+authors = [{ name = "RsLogic" }]
+dependencies = [
+  "boto3>=1.34",
+  "alembic>=1.13",
+  "psycopg>=3.2",
+  "geoalchemy2>=0.15",
+  "fastapi>=0.112",
+  "pydantic>=2.8",
+  "python-dotenv>=1.0",
+  "python-multipart>=0.0.19",
+  "sqlalchemy>=2.0",
+  "textual>=0.89,<1.0",
+  "Pillow>=10.3",
+  "typer>=0.12",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "requests>=2.32",
+  "ftputil>=5.1",
+  "redis>=5.2",
+]
+
+[project.scripts]
+rslogic-upload = "rslogic.cli.upload:main"
+rslogic-api = "rslogic.api.server:main"
+rslogic-migrate = "rslogic.db.migrate:main"
+rslogic-worker = "rslogic.jobs.worker:main"
+rslogic-client = "rslogic.client.command_client:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+py-modules = ["config"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
