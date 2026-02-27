@@ -93,8 +93,9 @@
   - Injects `RSLOGIC_RSTOOLS_SDK_*` credentials and Redis control keys so API jobs can dispatch into this client.
   - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
-  - Auto-detects or creates `%ProgramData%\RsLogic\RsLogic`, then runs `rslogic_rsnode_client.ps1`.
-  - Recommended file operators should run for installation, updates, and startup.
+  - Auto-detects or creates `%ProgramData%\RsLogic\RsLogic`, clones/updates from GitHub when reachable, and runs `rslogic_rsnode_client.ps1`.
+  - If the host is offline to source control, it keeps the existing checkout and starts from local files (with repo updates disabled).
+  - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.
 - `scripts/run_rslogic_client_stack.ps1` runs the remote RSNode worker stack:
   - Loads `RSLOGIC_CLIENT_*`, `RSLOGIC_RSNODE_*`, and queue-control settings from the env file.
   - Launches `scripts/rsnode_watchdog.ps1` to keep `RSNode.exe` alive.

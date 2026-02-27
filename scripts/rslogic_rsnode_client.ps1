@@ -101,13 +101,16 @@ function Build-RedisUrl {
 
     $escapedPassword = if ($Password) { [System.Uri]::EscapeDataString($Password) } else { "" }
     if ($escapedPassword) {
-        return "redis://:$escapedPassword@$cleanHost:$Port/$Database"
+        return ("redis://:{0}@{1}:{2}/{3}" -f $escapedPassword, $cleanHost, $Port, $Database)
     }
-    return "redis://$cleanHost`:$Port/$Database"
+    return ("redis://{0}:{1}/{2}" -f $cleanHost, $Port, $Database)
 }
 
-function Resolve-Required([string]$PromptText) {
-    param([string]$Current)
+function Resolve-Required {
+    param(
+        [string]$PromptText,
+        [string]$Current
+    )
     if ($Current) {
         return $Current
     }
@@ -170,7 +173,6 @@ function Write-EnvFile {
 
 Write-Step "Starting RsLogic RSNode worker install/setup"
 
-Ensure-Tool -Name git
 Ensure-Tool -Name $PythonExecutable
 
 $repoPath = [System.IO.Path]::GetFullPath($RepoPath)
@@ -200,6 +202,7 @@ if (-not $hasPyproject -and -not $hasGitCheckout) {
         throw "RepoPath points to a non-repo destination and no RepoUrl was provided."
     }
 
+    Ensure-Tool -Name git
     Write-Step "Cloning repo from $RepoUrl to $repoPath"
     if (-not $DryRun) {
         Invoke-OrThrow -Action {
@@ -211,6 +214,7 @@ if (-not $hasPyproject -and -not $hasGitCheckout) {
 }
 
 if ($hasGitCheckout -and -not $NoPull -and -not $DryRun) {
+    Ensure-Tool -Name git
     Write-Step "Updating repository at $repoPath (branch=$RepoBranch)"
     Invoke-OrThrow -Action {
         git -C $repoPath fetch --all --prune
