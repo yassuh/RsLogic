@@ -10,6 +10,7 @@ set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "GIT_AVAILABLE=1"
 set "REPO_REACHABLE=0"
 set "BOOTSTRAP_NO_PULL="
+set "REPAIR_PS=%SCRIPT_DIR%repair_rslogic_rsnode_client.ps1"
 
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
@@ -106,8 +107,17 @@ if "%HAS_VALID_REPO%"=="1" (
 )
 
 set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
-rem Keep compatibility with previously-installed bootstrap scripts that had known parser breaks.
-"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$path='%BOOTSTRAP_PS%'; if (Test-Path $path) { $raw = Get-Content -Raw -Path $path; $patched = $raw; $patched = $patched.Replace('return "redis://:$escapedPassword@$cleanHost:$Port/$Database"', 'return ("redis://:{0}@{1}:{2}/{3}" -f $escapedPassword, $cleanHost, $Port, $Database)'); $patched = [regex]::Replace($patched, 'function Resolve-Required\(\[string\]\$PromptText\) \{`r?`n\s*param\(\[string\]\$Current\)', 'function Resolve-Required {`r`n    param(`r`n        [string]$PromptText,`r`n        [string]$Current`r`n    )'); if ($patched -ne $raw) { Set-Content -Path $path -Value $patched } }"
+if exist "%SCRIPT_DIR%\rslogic_rsnode_client.ps1" (
+    copy /Y "%SCRIPT_DIR%\rslogic_rsnode_client.ps1" "%BOOTSTRAP_PS%" >nul
+)
+
+if exist "%REPAIR_PS%" (
+    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%REPAIR_PS%" -Path "%BOOTSTRAP_PS%"
+) else (
+    echo ERROR: Missing repair helper script (%REPAIR_PS%).
+    pause >nul
+    exit /b 1
+)
 if not exist "%BOOTSTRAP_PS%" (
     echo ERROR: Could not install a valid bootstrap script.
     echo Check that the clone completed correctly.
