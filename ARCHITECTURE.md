@@ -93,9 +93,15 @@
   - Injects `RSLOGIC_RSTOOLS_SDK_*` credentials and Redis control keys so API jobs can dispatch into this client.
   - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
-  - Auto-detects or creates `%ProgramData%\RsLogic\RsLogic`, clones/updates from GitHub when reachable, and runs `rslogic_rsnode_client.ps1`.
+  - Auto-detects repo context only when the launcher is in a checked-out repo; otherwise defaults to `%ProgramData%\RsLogic\RsLogic`.
+  - Clones a local copy if the destination is missing or invalid, updates when reachable, and starts the bootstrap script from that location.
   - If the host is offline to source control, it keeps the existing checkout and starts from local files (with repo updates disabled).
   - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.
+  - Repairs known legacy `rslogic_rsnode_client.ps1` parse issues before execution.
+  - Installer path uses git + Python `.venv` only; no Docker dependency is required.
+- `scripts/repair_rslogic_rsnode_client.ps1` is a one-shot fixer:
+  - Rewrites known broken `Build-RedisUrl` and `Resolve-Required` forms in `scripts/rslogic_rsnode_client.ps1`.
+  - Validates script syntax after patching so syntax regressions fail early.
 - `scripts/run_rslogic_client_stack.ps1` runs the remote RSNode worker stack:
   - Loads `RSLOGIC_CLIENT_*`, `RSLOGIC_RSNODE_*`, and queue-control settings from the env file.
   - Launches `scripts/rsnode_watchdog.ps1` to keep `RSNode.exe` alive.

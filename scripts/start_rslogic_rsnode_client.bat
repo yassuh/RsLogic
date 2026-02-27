@@ -5,7 +5,9 @@ set "REPO_URL=https://github.com/yassuh/RsLogic.git"
 set "REPO_BRANCH=main"
 set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%ProgramData%\RsLogic\RsLogic"
-set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
+if exist "%SCRIPT_DIR%..\pyproject.toml" (
+    for %%P in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fP"
+)
 set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "GIT_AVAILABLE=1"
 set "REPO_REACHABLE=0"
@@ -14,16 +16,8 @@ set "REPAIR_PS=%SCRIPT_DIR%repair_rslogic_rsnode_client.ps1"
 
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
-rem Prefer a local repository when this launcher is run from inside a checked-out copy.
-if exist "%SCRIPT_DIR%\rslogic_rsnode_client.ps1" (
-    set "BOOTSTRAP_PS=%SCRIPT_DIR%rslogic_rsnode_client.ps1"
-    for %%P in ("%BOOTSTRAP_PS%") do set "REPO_ROOT=%%~dpP\.."
-) else if exist "%SCRIPT_DIR%\scripts\rslogic_rsnode_client.ps1" (
-    set "BOOTSTRAP_PS=%SCRIPT_DIR%scripts\rslogic_rsnode_client.ps1"
-    for %%P in ("%BOOTSTRAP_PS%") do set "REPO_ROOT=%%~dpP\.."
-)
-
 for %%R in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fR\"
+set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
 
 echo RsLogic RSNode client installer/runner
 if exist "%BOOTSTRAP_PS%" (
@@ -107,16 +101,18 @@ if "%HAS_VALID_REPO%"=="1" (
 )
 
 set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
-if exist "%SCRIPT_DIR%\rslogic_rsnode_client.ps1" (
-    copy /Y "%SCRIPT_DIR%\rslogic_rsnode_client.ps1" "%BOOTSTRAP_PS%" >nul
-)
+if not exist "%REPAIR_PS%" set "REPAIR_PS=%REPO_ROOT%\scripts\repair_rslogic_rsnode_client.ps1"
 
 if exist "%REPAIR_PS%" (
     "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%REPAIR_PS%" -Path "%BOOTSTRAP_PS%"
+    if errorlevel 1 (
+        echo ERROR: Failed to repair bootstrap script.
+        pause >nul
+        exit /b 1
+    )
 ) else (
-    echo ERROR: Missing repair helper script (%REPAIR_PS%).
-    pause >nul
-    exit /b 1
+    echo WARNING: Missing repair helper script (%REPAIR_PS%).
+    echo Continuing without repair. Parse errors will stop startup.
 )
 if not exist "%BOOTSTRAP_PS%" (
     echo ERROR: Could not install a valid bootstrap script.
