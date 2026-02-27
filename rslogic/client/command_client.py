@@ -124,7 +124,7 @@ class ApiCommandExecutor:
                 raw_body = response.read().decode("utf-8", errors="replace").strip()
                 content_type = (response.headers.get("Content-Type") or "").lower()
         except urllib_error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
+            detail = exc.read().decode("utf-8", errors="replace").strip()A
             if detail:
                 try:
                     parsed = json.loads(detail)

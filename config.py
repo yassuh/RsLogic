@@ -87,7 +87,7 @@ class QueueConfig:
 
 @dataclass(frozen=True)
 class ControlConfig:
-    """Redis command-bus settings for the server-side control client."""
+    """Redis command bus for processing jobs and remote rsnode workers."""
 
     command_queue_key: str
     result_queue_key: str
@@ -188,7 +188,7 @@ def load_config() -> AppConfig:
         result_queue_key=_env("RSLOGIC_CONTROL_RESULT_QUEUE", "rslogic:control:results"),
         block_timeout_seconds=max(_env_int("RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS", 2), 1),
         result_ttl_seconds=max(_env_int("RSLOGIC_CONTROL_RESULT_TTL_SECONDS", 3600), 1),
-        request_timeout_seconds=max(_env_int("RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS", 900), 1),
+        request_timeout_seconds=max(_env_int("RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS", 7200), 1),
     )
 
     rstools = RsToolsConfig(

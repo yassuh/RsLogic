@@ -171,6 +171,7 @@ class ImageIngestionService:
         data: bytes,
         filename: str,
         extra: Optional[Dict[str, str]] = None,
+        overwrite_existing: bool = True,
     ) -> str:
         logger.debug(
             "Ingest local bytes group_name=%s bucket=%s object_key=%s size_bytes=%s",
@@ -185,7 +186,10 @@ class ImageIngestionService:
 
         normalized_key = object_key.lstrip("/")
         sha = hashlib.sha256(data).hexdigest()
-        record = self._repo.create_image(
+        persistence = (
+            self._repo.create_or_update_image if overwrite_existing else self._repo.create_image
+        )
+        record = persistence(
             group_name=group_name,
             bucket_name=bucket_name,
             object_key=normalized_key,

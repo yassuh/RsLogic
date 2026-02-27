@@ -1,2 +1,1 @@
-"""Redis command-bus client for driving RsLogic server workflows."""
-
+"""Client package for distributed RsLogic execution workers."""

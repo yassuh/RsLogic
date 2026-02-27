@@ -274,11 +274,18 @@ class JobOrchestrator:
             return job_id
 
         self._repo.update_job(job_id, status=JobStatus.RUNNING.value, progress=25.0, message="starting processing")
+        filter_payload = _encode_filter_dict(filters)
         try:
             summary = self._runner.run(
                 working_directory=working_dir,
                 image_keys=image_keys,
-                filters=_encode_filter_dict(filters),
+                filters=filter_payload,
+                job_id=job_id,
+                progress_callback=lambda progress, message, _data: self._update_processing_progress(
+                    job_id=job_id,
+                    progress=progress,
+                    message=message,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             self._repo.update_job(
@@ -310,6 +317,17 @@ class JobOrchestrator:
         )
         logger.info("Processing job completed job_id=%s image_key_count=%s", job_id, len(image_keys))
         return job_id
+
+    def _update_processing_progress(self, *, job_id: str, progress: float, message: str) -> None:
+        if self._is_cancelled(job_id):
+            return
+        clamped = max(0.0, min(100.0, float(progress)))
+        self._repo.update_job(
+            job_id,
+            status=JobStatus.RUNNING.value,
+            progress=clamped,
+            message=message,
+        )
 
     def get_job(self, job_id: str):
         return self._repo.get_job(job_id)

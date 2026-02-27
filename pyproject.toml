@@ -34,7 +34,7 @@ rslogic-upload = "rslogic.cli.upload:main"
 rslogic-api = "rslogic.api.server:main"
 rslogic-migrate = "rslogic.db.migrate:main"
 rslogic-worker = "rslogic.jobs.worker:main"
-rslogic-client = "rslogic.client.command_client:main"
+rslogic-client = "rslogic.client.rsnode_client:main"
 
 [project.optional-dependencies]
 dev = [

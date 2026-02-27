@@ -13,7 +13,7 @@
 
 `config.py` is the single source for settings:
 
-- `RsToolsConfig` includes execution mode (`stub`, `cli`, `sdk`) and credentials.
+- `RsToolsConfig` includes execution mode (`stub`, `cli`, `sdk`, `remote`) and credentials.
 - `LabelDbConfig` contains the shared Alembic root, alembic.ini path, and database URL.
 - `ApiConfig` contains `RSLOGIC_API_BASE_URL` used by local tools (TUI ingest workflow) to call the server.
 - `RSLOGIC_DEFAULT_GROUP_NAME` controls fallback group name when clients omit `group_name`.
@@ -23,7 +23,7 @@
   - `RSLOGIC_QUEUE_START_LOCAL_WORKERS` controls whether API process consumes queue jobs locally.
   - Redis connection resolves from `RSLOGIC_REDIS_URL` / `REDIS_URL` or host/port env vars (`REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`).
   - Queue base key is `RSLOGIC_REDIS_QUEUE_KEY` (default `rslogic:jobs:queue`) and is split internally into `:processing` and `:upload`.
-  - Control-client command bus keys:
+  - Remote RSNode worker control bus keys:
     - `RSLOGIC_CONTROL_COMMAND_QUEUE` (default `rslogic:control:commands`)
     - `RSLOGIC_CONTROL_RESULT_QUEUE` (default `rslogic:control:results`)
     - `RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS`, `RSLOGIC_CONTROL_RESULT_TTL_SECONDS`, `RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS`
@@ -81,11 +81,36 @@
   - TUI now includes a bottom log bar showing the latest 3 status log lines (rolling buffer) for quick in-app diagnostics
   - Upload progress now emits byte-level transfer callbacks (including multipart part completion) and the TUI loading bar tracks bytes transferred for visible movement during large uploads
   - Batch upload no longer aborts on a single-file failure: per-file errors are reported in-line and remaining files continue uploading
-- `rslogic-client` CLI provides Redis command-bus control:
-  - `worker`: runs a server-side command worker that consumes commands from Redis and executes API actions.
-  - `send`: enqueues a typed command payload (optionally waits for result using a per-command reply queue).
-  - `listen`: tails the shared result queue for command outcomes.
-  - Supported command types include `health`, `ingest_waiting`, `create_job`, `get_job`, `cancel_job`, `list_jobs`, `list_groups`, `create_group`, and generic `api_request`.
+- `rslogic-client` CLI runs the remote RSNode worker:
+  - `run` / `worker`: runs a processing worker process that consumes `processing_job.execute` commands from Redis and executes them through `realityscan_sdk`.
+  - Worker results are published as progress/error/complete events to the control result queue and the per-command reply queue.
+  - This client is intended for the RSNode host (or any machine with access to the RSNode API).
+  - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
+  - Recommended startup shape: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" --dataRoot "<path>"`.
+- `scripts/rslogic_rsnode_client.ps1` is the primary Windows bootstrap entrypoint for RSNode hosts:
+  - Clones a repo if missing, creates the virtual environment, installs dependencies, writes `.env.rsnode-worker`, and launches the supervisor stack.
+  - Defaults to cloning from `https://github.com/yassuh/RsLogic.git` when repo path is missing.
+  - Injects `RSLOGIC_RSTOOLS_SDK_*` credentials and Redis control keys so API jobs can dispatch into this client.
+  - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
+- `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
+  - Auto-detects or creates `%ProgramData%\RsLogic\RsLogic`, then runs `rslogic_rsnode_client.ps1`.
+  - Recommended file operators should run for installation, updates, and startup.
+- `scripts/run_rslogic_client_stack.ps1` runs the remote RSNode worker stack:
+  - Loads `RSLOGIC_CLIENT_*`, `RSLOGIC_RSNODE_*`, and queue-control settings from the env file.
+  - Launches `scripts/rsnode_watchdog.ps1` to keep `RSNode.exe` alive.
+  - Launches `rslogic.client.rsnode_client run --workers <RSLOGIC_WORKER_COUNT>` and restarts it if it exits (unless `-Once` is passed).
+- `rslogic jobs` remote mode (new client flow):
+  - API-side orchestration uses `RsToolsRemoteRunner` to publish `processing_job.execute` commands to `RSLOGIC_CONTROL_COMMAND_QUEUE`.
+  - RSNode-side `rslogic.client.rsnode_client` consumes command messages, runs SDK jobs, and publishes structured status updates to `RSLOGIC_CONTROL_RESULT_QUEUE` and its per-job reply queue.
+- `scripts/rsnode_watchdog.ps1` is the Windows watchdog process for the RSNode host:
+  - Watches for `RSNode.exe` and starts it from `C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe` when missing.
+  - Uses `--dataRoot` by default as the RSNode session root.
+  - Restarts RSNode on process death or failed health checks; supports configurable poll interval and restart/backoff limits.
+  - Auto-updates the local checkout when `AutoUpdate` is enabled, using `RepoUrl`/`RepoBranch`/`UpdateIntervalSeconds`, then restarts RSNode if changes are detected.
+  - Enforces singleton monitor instance using a named mutex (`Global\RsLogic.RSNode.Watchdog`) so only one watchdog runs at a time.
+  - Writes runtime logs to `ProgramData\RsLogic\rsnode-watchdog.log` by default.
+  - Example invocation:
+    - `.\scripts\rsnode_watchdog.ps1 -ExecutablePath "C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -DataRootArgument "--dataRoot" -AdditionalArguments @("--headless")`.
 - S3 uploads are routed through the server-configured path:
   - Bucket: locked to `drone-imagery-waiting` (not client-configurable)
   - Prefix: `RSLOGIC_S3_SCRATCHPAD_PREFIX` / `S3_SCRATCHPAD_PREFIX` (default `scratchpad`)
@@ -140,6 +165,7 @@
   - `StubRsToolsRunner`
   - `SubprocessRsToolsRunner`
   - `RsToolsSdkRunner` (optional, loaded from `realityscan_sdk`)
+  - `RsToolsRemoteRunner` (dispatches jobs through Redis to the remote `rslogic-client`)
 - `RsToolsSdkRunner` executes the same sequence as the notebook-based flow:
   - creates a session, runs `newScene`
   - applies `set` values (`appIncSubdirs`, `sfmCameraPriorAccuracy*`, `sfmDetectorSensitivity`)
@@ -148,6 +174,7 @@
   - optionally runs `save(<sdk_project_path>)`
   - polls task state with timeout (`sdk_task_timeout_seconds`) and returns command + node/project status in job summary
 - The active runner is selected from `RSLOGIC_RSTOOLS_MODE` in config.
+  - `remote` (or alias `rsnode_client`/`client`) dispatches work through Redis to an external RSNode worker.
 
 ## File upload and ingestion
 
@@ -163,3 +190,7 @@
 
 - `scratchpad/index.html` is a no-style HTML app for exercising local API endpoints during integration testing.
 - `scratchpad/README.md` contains run instructions and endpoint checklist for health checks, ingest, image listing, and job APIs.
+
+## RSNode server
+ - Windows application running on a server that the `rstools-sdk` will make api requests to. 
+ 

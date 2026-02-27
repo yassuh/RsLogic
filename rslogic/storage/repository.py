@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from importlib.util import module_from_spec, spec_from_file_location
 from functools import lru_cache
 from pathlib import Path
@@ -181,8 +181,12 @@ class StorageRepository:
 
             metadata_payload = metadata_json if metadata_json is not None else metadata
             if hasattr(record, "metadata_json"):
-                setattr(record, "metadata_json", dict(metadata_payload))
-            record.extra = dict(metadata.get("extra", {}))
+                setattr(
+                    record,
+                    "metadata_json",
+                    self._coerce_json_payload(metadata_payload),
+                )
+            record.extra = self._coerce_json_payload(metadata.get("extra", {}))
             session.flush()
             if group_name:
                 group = self._get_or_create_image_group(session, group_name)
@@ -204,6 +208,23 @@ class StorageRepository:
                     session.flush()
             session.refresh(record)
             return record
+
+    @staticmethod
+    def _coerce_json_payload(value):
+        if isinstance(value, dict):
+            return {str(key): StorageRepository._coerce_json_payload(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [StorageRepository._coerce_json_payload(item) for item in value]
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8")
+            except UnicodeDecodeError:
+                return value.hex()
+        if value is None:
+            return None
+        return value
 
     def list_images(
         self,
