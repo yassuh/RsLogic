@@ -599,7 +599,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--venv-path", default="")
     parser.add_argument("--node-executable", default=str(DEFAULT_NODE_EXECUTABLE))
     parser.add_argument("--node-data-root", default=str(DEFAULT_NODE_DATA_ROOT))
-    parser.add_argument("--node-data-root-argument", default="-dataRoot")
+    parser.add_argument(
+        "--node-data-root-argument",
+        nargs="?",
+        const="-dataRoot",
+        default="-dataRoot",
+    )
     parser.add_argument("--node-arguments", nargs="*", default=[])
 
     parser.add_argument("--redis-url", default="")
