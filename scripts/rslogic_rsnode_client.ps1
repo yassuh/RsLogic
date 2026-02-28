@@ -781,7 +781,12 @@ try {
 
     Write-Log "Shutdown requested. Stopping managed processes."
 } catch {
-    Write-Log "Fatal error: $($_.Exception.Message)" "ERROR"
+    Write-Log "Fatal error: $($_.Exception.GetType().FullName): $($_.Exception.Message)" "ERROR"
+    try {
+        Write-Log "Exception details: $($_.Exception | Out-String)" "ERROR"
+    } catch {
+        # ignore if exception formatting fails
+    }
     exit 1
 } finally {
     try {
