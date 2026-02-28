@@ -142,6 +142,19 @@ function Get-RecentLogTail {
     }
 }
 
+function Quote-CmdArg {
+    param([Parameter(Mandatory)][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return '""'
+    }
+    if ($Value -notmatch "[\s\"']") {
+        return $Value
+    }
+    $escaped = $Value -replace '"', '\"'
+    return '"' + $escaped + '"'
+}
+
 function Ensure-Tool {
     param([string]$Name)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -559,9 +572,10 @@ function Start-RSNode {
             $nodeArgs += $NodeArguments
         }
 
-        Write-Log "Starting RSNode (attempt=$attempt arg=$rootArg): $NodeExecutable $($nodeArgs -join ' ')"
+        $nodeArgLine = ($nodeArgs | ForEach-Object { Quote-CmdArg -Value $_ }) -join " "
+        Write-Log "Starting RSNode (attempt=$attempt arg=$rootArg): $NodeExecutable $nodeArgLine"
         try {
-            $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
+            $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgLine -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
             Start-Sleep -Milliseconds 900
             if ($nodeProcess.HasExited) {
                 $nodeExitReason = "exit-code=$($nodeProcess.ExitCode)"
