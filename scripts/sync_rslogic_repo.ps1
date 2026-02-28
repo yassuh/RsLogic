@@ -1,12 +1,14 @@
 param(
-    [switch]$Rebase,
-    [switch]$HardReset
+    [ValidateSet("ff-only", "rebase", "hard-reset")]
+    [string]$Strategy = "hard-reset"
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+$useRebase = $Strategy -eq "rebase"
+$useHardReset = $Strategy -eq "hard-reset"
 
 Write-Host "Fetching origin/main from remote..."
 git fetch origin main --prune --tags
@@ -33,18 +35,18 @@ if ($behind -eq 0 -and $ahead -eq 0) {
 
 if ($behind -gt 0 -and $ahead -eq 0) {
     Write-Host "Remote has updates, fast-forwarding local branch..."
-    git pull --ff-only origin main
+    git merge --ff-only origin/main
     exit 0
 }
 
 if ($behind -gt 0 -and $ahead -gt 0) {
-    if ($HardReset) {
+    if ($useHardReset) {
         Write-Warning "Diverged branch detected; forcing hard reset to origin/main."
         git reset --hard origin/main
         exit 0
     }
 
-    if ($Rebase) {
+    if ($useRebase) {
         Write-Host "Diverged branch detected; rebasing onto origin/main..."
         git rebase origin/main
         exit 0
@@ -52,9 +54,9 @@ if ($behind -gt 0 -and $ahead -gt 0) {
 
     Write-Host "Diverged branch detected."
     Write-Host "Recommended fixes:"
-    Write-Host "  .\sync_rslogic_repo.ps1 -Rebase"
-    Write-Host "  .\sync_rslogic_repo.ps1 -HardReset"
-    throw "Branch is diverged. Re-run with -Rebase or -HardReset."
+    Write-Host "  .\sync_rslogic_repo.ps1 -Strategy rebase"
+    Write-Host "  .\sync_rslogic_repo.ps1 -Strategy hard-reset"
+    throw ("Branch is diverged. Re-run with -Strategy rebase or -Strategy hard-reset.")
 }
 
 if ($behind -eq 0 -and $ahead -gt 0) {

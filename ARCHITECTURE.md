@@ -203,7 +203,10 @@
 - `scripts/sync_rslogic_repo.ps1` performs explicit branch synchronization:
   - fetches `origin/main` and prints ahead/behind comparison.
   - resolves behind-only state via fast-forward.
-  - handles divergence with `-Rebase` or `-HardReset`.
+  - handles divergence with `-Strategy rebase` or `-Strategy hard-reset` (default: `hard-reset`).
+  - for diverged history this helper performs one of:
+    - `.\scripts\sync_rslogic_repo.ps1 -Strategy rebase`
+    - `.\scripts\sync_rslogic_repo.ps1 -Strategy hard-reset`
 - S3 uploads are routed through the server-configured path:
   - Bucket: locked to `drone-imagery-waiting` (not client-configurable)
   - Prefix: `RSLOGIC_S3_SCRATCHPAD_PREFIX` / `S3_SCRATCHPAD_PREFIX` (default `scratchpad`)
