@@ -18,14 +18,9 @@ from urllib.error import URLError
 from urllib.parse import quote_plus
 from urllib.request import urlopen
 from urllib.parse import urlparse
+import socket
 
 import logging
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from rslogic.jobs.command_channel import RedisCommandBus
 
 
 def _safe_program_data_path() -> Path:
@@ -474,31 +469,27 @@ def _check_redis_connectivity(redis_url: str, logger: logging.Logger) -> bool:
         logger.warning("Redis URL empty; skipping connectivity check.")
         return False
 
-    try:
-        bus = RedisCommandBus(redis_url)
-        bus.ping()
-        bus.close()
-        logger.info("Redis ping successful for %s", redis_url)
-        return True
-    except Exception as ping_exc:
-        parsed = urlparse(redis_url)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or 6379
-        try:
-            import socket
+    parsed = urlparse(redis_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 6379
 
-            with socket.create_connection((host, port), timeout=3):
-                pass
-            logger.warning(
-                "Redis TCP reachable for %s:%s but ping command failed: %s",
-                host,
-                port,
-                ping_exc,
-            )
-            return True
-        except Exception as socket_exc:
-            logger.error("Redis connectivity check failed for %s:%s. ping=%s tcp=%s", host, port, ping_exc, socket_exc)
+    try:
+        with socket.create_connection((host, port), timeout=3) as sock:
+            sock.settimeout(3.0)
+            sock.sendall(b"*1\r\n$4\r\nPING\r\n")
+            response = sock.recv(64)
+            if not response:
+                logger.error("Redis connectivity check failed: empty response for %s:%s", host, port)
+                return False
+            text_response = response.decode("utf-8", errors="replace").strip()
+            if text_response.startswith("+PONG"):
+                logger.info("Redis ping successful for %s", redis_url)
+                return True
+            logger.warning("Redis ping attempt returned unexpected response: %r", text_response)
             return False
+    except Exception as exc:
+        logger.error("Redis connectivity check failed for %s:%s: %s", host, port, exc)
+        return False
 
 
 def format_command(cmd: Sequence[str]) -> str:
