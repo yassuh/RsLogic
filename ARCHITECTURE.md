@@ -86,7 +86,7 @@
   - Worker results are published as progress/error/complete events to the control result queue and the per-command reply queue.
   - This client is intended for the RSNode host (or any machine with access to the RSNode API).
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
-  - Recommended startup shape: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" --dataRoot "<path>"`.
+  - Recommended startup shape on this installer: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -dataRoot "<path>"` with automatic fallback retry using `--dataRoot` when needed.
 - `scripts/rslogic_rsnode_client.ps1` is the single orchestrator for RSNode hosts:
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
   - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.

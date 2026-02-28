@@ -7,7 +7,7 @@ param(
     [string]$VenvPath = "",
     [string]$NodeExecutable = "C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe",
     [string]$NodeDataRoot = "",
-    [string]$NodeDataRootArgument = "--dataRoot",
+    [string]$NodeDataRootArgument = "-dataRoot",
     [string[]]$NodeArguments = @(),
     [string]$RedisUrl = "",
     [string]$RedisHost = "localhost",
@@ -519,41 +519,76 @@ function Start-RSNode {
         New-Item -ItemType Directory -Path $NodeDataRoot -Force | Out-Null
     }
 
-    $nodeArgs = @()
-    if ($NodeDataRoot) {
-        $nodeArgs += $NodeDataRootArgument
-        $nodeArgs += $NodeDataRoot
-    }
-    if ($NodeArguments) {
-        $nodeArgs += $NodeArguments
-    }
-
-    Write-Log "Starting RSNode: $NodeExecutable $($nodeArgs -join ' ')"
     if ($DryRun) {
         Write-Log "DRY RUN: skip RSNode launch"
         return $null
     }
 
-    try {
-        $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
-        Start-Sleep -Milliseconds 900
-        if ($nodeProcess.HasExited) {
-            $nodeExitReason = "exit-code=$($nodeProcess.ExitCode)"
-            $stderrTail = Get-RecentLogTail -Path $nodeStdErrPath -LineCount 30
-            if ($stderrTail) {
-                Write-Log "RSNode exited immediately ($nodeExitReason). stderr tail: $stderrTail" "ERROR"
-            } else {
-                Write-Log "RSNode exited immediately ($nodeExitReason)."
-            }
-            $script:nodeStopReason = $nodeExitReason
-            return $null
+    $rootArgCandidates = @()
+    if ($NodeDataRoot) {
+        if ($NodeDataRootArgument) {
+            $rootArgCandidates += $NodeDataRootArgument
         }
-        $script:nodeStopReason = "running"
-        return $nodeProcess
-    } catch {
-        $script:nodeStopReason = $_.Exception.Message
-        throw "Failed to start RSNode: $($script:nodeStopReason)"
+        if ($NodeDataRootArgument -eq "--dataRoot") {
+            $rootArgCandidates += "-dataRoot"
+        } elseif ($NodeDataRootArgument -eq "-dataRoot") {
+            $rootArgCandidates += "--dataRoot"
+        } else {
+            $rootArgCandidates += "--dataRoot"
+            $rootArgCandidates += "-dataRoot"
+        }
+    } else {
+        $rootArgCandidates = @("")
     }
+
+    $rootArgCandidates = @($rootArgCandidates | Where-Object { $_ -ne "" } | Select-Object -Unique)
+    if (-not $rootArgCandidates) {
+        $rootArgCandidates = @("")
+    }
+
+    $attempt = 0
+    $lastError = ""
+    foreach ($rootArg in $rootArgCandidates) {
+        $attempt += 1
+        $nodeArgs = @()
+        if ($NodeDataRoot) {
+            $nodeArgs += $rootArg
+            $nodeArgs += $NodeDataRoot
+        }
+        if ($NodeArguments) {
+            $nodeArgs += $NodeArguments
+        }
+
+        Write-Log "Starting RSNode (attempt=$attempt arg=$rootArg): $NodeExecutable $($nodeArgs -join ' ')"
+        try {
+            $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
+            Start-Sleep -Milliseconds 900
+            if ($nodeProcess.HasExited) {
+                $nodeExitReason = "exit-code=$($nodeProcess.ExitCode)"
+                $stderrTail = Get-RecentLogTail -Path $nodeStdErrPath -LineCount 30
+                if ($stderrTail) {
+                    Write-Log "RSNode exited immediately (attempt $attempt) ($nodeExitReason). stderr tail: $stderrTail" "ERROR"
+                } else {
+                    Write-Log "RSNode exited immediately (attempt $attempt) ($nodeExitReason)." "ERROR"
+                }
+                $script:nodeStopReason = "attempt=$attempt-$nodeExitReason"
+                if ($attempt -lt $rootArgCandidates.Count) {
+                    continue
+                }
+                return $null
+            }
+            $script:nodeStopReason = "running"
+            return $nodeProcess
+        } catch {
+            $lastError = "$($_.Exception.Message)"
+            Write-Log "RSNode start attempt $attempt failed with arg '$rootArg': $lastError" "WARN"
+            $script:nodeStopReason = "attempt=$attempt:$lastError"
+            if ($attempt -ge $rootArgCandidates.Count) {
+                throw "Failed to start RSNode. Last error: $lastError"
+            }
+        }
+    }
+    throw "Failed to start RSNode. Last error: $lastError"
 }
 
 function Start-RSLogicClient {
