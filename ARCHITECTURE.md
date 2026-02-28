@@ -166,6 +166,11 @@
   - This client is intended for the RSNode host (or any machine with access to the RSNode API).
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
   - Recommended startup shape on this installer: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -dataRoot "<path>"` with automatic fallback retry using `--dataRoot` when needed.
+  - On startup, this worker pings Redis before entering the consume loop and fails fast if control Redis is unreachable.
+  - On startup, this worker validates required SDK environment variables (`RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`, `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN`) and logs masked values for troubleshooting.
+- `rslogic-client` startup diagnostics:
+  - Missing SDK env values are reported as a hard startup error with the exact missing variable names.
+  - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.
 - `scripts/rslogic_rsnode_client.py` is the single orchestrator for RSNode hosts:
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
   - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.

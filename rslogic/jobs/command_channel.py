@@ -167,6 +167,10 @@ class RedisCommandBus:
             raise RuntimeError("redis package is required")
         self._client = Redis.from_url(redis_url, decode_responses=False)
 
+    def ping(self) -> None:
+        """Verify Redis connectivity using a lightweight ping request."""
+        self._client.ping()
+
     def push(self, queue_key: str, payload: Dict[str, Any], *, expire_seconds: Optional[int] = None) -> None:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         self._client.lpush(queue_key, body)

@@ -58,6 +58,34 @@ def _to_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _mask_secret(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return "MISSING"
+    if len(value) <= 8:
+        return "********"
+    return f"{value[:3]}...{value[-3:]}"
+
+
+def _collect_missing_sdk_env(
+    *,
+    base_url: str,
+    client_id: str,
+    app_token: str,
+    auth_token: str,
+) -> list[str]:
+    missing: list[str] = []
+    if not base_url:
+        missing.append("RSLOGIC_RSTOOLS_SDK_BASE_URL")
+    if not client_id:
+        missing.append("RSLOGIC_RSTOOLS_SDK_CLIENT_ID")
+    if not app_token:
+        missing.append("RSLOGIC_RSTOOLS_SDK_APP_TOKEN")
+    if not auth_token:
+        missing.append("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN")
+    return missing
+
+
 class RsNodeClient:
     """Runs processing commands pulled from Redis and updates RSNode via SDK."""
 
@@ -675,14 +703,52 @@ def main(argv: Optional[list[str]] = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
     config = load_config()
+    redis_url = config.queue.redis_url
+    rs_base_url = (config.rstools.sdk_base_url or "").strip()
+    rs_client_id = (config.rstools.sdk_client_id or "").strip()
+    rs_app_token = (config.rstools.sdk_app_token or "").strip()
+    rs_auth_token = (config.rstools.sdk_auth_token or "").strip()
+
+    logger.info("RSNode client startup config redis_url=%s", redis_url)
+    logger.info(
+        "RSNode SDK env: base_url=%s client_id=%s app_token=%s auth_token=%s",
+        _mask_secret(rs_base_url),
+        _mask_secret(rs_client_id),
+        _mask_secret(rs_app_token),
+        _mask_secret(rs_auth_token),
+    )
+
+    missing_sdk_env = _collect_missing_sdk_env(
+        base_url=rs_base_url,
+        client_id=rs_client_id,
+        app_token=rs_app_token,
+        auth_token=rs_auth_token,
+    )
+    if missing_sdk_env:
+        raise SystemExit(
+            "Missing required SDK environment variables for rslogic rsnode client startup: "
+            + ", ".join(missing_sdk_env)
+        )
+
+    logger.info("RSNode client startup: pinging Redis control queue")
+    bus: Optional[RedisCommandBus] = None
+    try:
+        bus = RedisCommandBus(redis_url)
+        bus.ping()
+    except Exception as exc:
+        raise SystemExit(f"Redis ping failed for {redis_url}: {exc}") from exc
+    finally:
+        if bus is not None:
+            bus.close()
+
     client = RsNodeClient(
         command_queue_key=config.control.command_queue_key,
         result_queue_key=config.control.result_queue_key,
-        redis_url=config.queue.redis_url,
-        rs_base_url=(config.rstools.sdk_base_url or "").strip(),
-        rs_client_id=(config.rstools.sdk_client_id or "").strip(),
-        rs_app_token=(config.rstools.sdk_app_token or "").strip(),
-        rs_auth_token=(config.rstools.sdk_auth_token or "").strip(),
+        redis_url=redis_url,
+        rs_base_url=rs_base_url,
+        rs_client_id=rs_client_id,
+        rs_app_token=rs_app_token,
+        rs_auth_token=rs_auth_token,
         block_timeout_seconds=config.control.block_timeout_seconds,
         result_ttl_seconds=config.control.result_ttl_seconds,
         worker_count=max(1, int(workers)),
