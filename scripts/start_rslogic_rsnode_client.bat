@@ -4,6 +4,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "SCRIPT_DIR=%~dp0"
 set "REPO_URL=https://github.com/yassuh/RsLogic.git"
 set "REPO_BRANCH=main"
+set "NODE_DATA_ROOT_ARG=-dataRoot"
 if not defined SystemDrive set "SystemDrive=C:"
 
 if defined ProgramData (
@@ -73,7 +74,7 @@ if not errorlevel 1 (
 
 title RsLogic RSNode Client Orchestrator
 set "ARGS=%*"
-call %PY_EXE% "%ORCH_SCRIPT%" --repo-url "%REPO_URL%" --repo-branch "%REPO_BRANCH%" --repo-root "%REPO_ROOT%" --node-data-root-argument -dataRoot --log-path "%LOG_PATH%" %ARGS%
+call %PY_EXE% "%ORCH_SCRIPT%" --repo-url "%REPO_URL%" --repo-branch "%REPO_BRANCH%" --repo-root "%REPO_ROOT%" --node-data-root-argument=%NODE_DATA_ROOT_ARG% --log-path "%LOG_PATH%" %ARGS%
 if errorlevel 1 pause
 
 endlocal

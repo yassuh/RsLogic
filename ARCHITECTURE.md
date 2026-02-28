@@ -103,7 +103,7 @@
   - Starts the Python orchestrator in a persistent console and keeps the window open while the orchestrator runs.
   - If the orchestrator script is missing locally, it bootstraps a fresh checkout to `%ProgramData%\RsLogic\RsLogic` before launch.
   - Arguments passed to the batch file are forwarded to the Python orchestrator.
-  - The launcher sets `--node-data-root-argument -dataRoot` by default and writes status/error output to the console while running.
+- The launcher sets `--node-data-root-argument=-dataRoot` by default and writes status/error output to the console while running.
   - A desktop shortcut can be created with `scripts/create_rslogic_rsnode_client_shortcut.bat` (targeting `start_rslogic_rsnode_client.bat`).
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
