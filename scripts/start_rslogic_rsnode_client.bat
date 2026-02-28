@@ -3,6 +3,9 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 set "REPO_URL=https://github.com/yassuh/RsLogic.git"
 set "REPO_BRANCH=main"
+set "RSLOGIC_SERVER_HOST=192.168.193.56"
+set "RSLOGIC_REDIS_PORT=9002"
+set "RSLOGIC_SERVER_API_URL=http://192.168.193.56:8000"
 set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%ProgramData%\RsLogic\RsLogic"
 if exist "%SCRIPT_DIR%..\pyproject.toml" (
@@ -131,7 +134,7 @@ echo.
 echo Using repo: %REPO_ROOT%
 if exist "%REPO_ROOT%\pyproject.toml" echo Repository detected locally.
 
-"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP_PS%" -RepoUrl "%REPO_URL%" -RepoPath "%REPO_ROOT%" -RepoBranch "%REPO_BRANCH%" %BOOTSTRAP_NO_PULL% -StartNow -StartDetached -AutoUpdate true
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP_PS%" -RepoUrl "%REPO_URL%" -RepoPath "%REPO_ROOT%" -RepoBranch "%REPO_BRANCH%" -ServerHost "%RSLOGIC_SERVER_HOST%" -RedisHost "%RSLOGIC_SERVER_HOST%" -RedisPort "%RSLOGIC_REDIS_PORT%" -SdkBaseUrl "%RSLOGIC_SERVER_API_URL%" %BOOTSTRAP_NO_PULL% -StartNow -StartDetached -AutoUpdate true
 if errorlevel 1 (
     echo.
     echo Install or startup failed. Press any key to close.

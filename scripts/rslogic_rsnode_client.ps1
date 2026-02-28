@@ -22,6 +22,7 @@ param(
     [string]$SdkClientId = "",
     [string]$SdkAppToken = "",
     [string]$SdkAuthToken = "",
+    [string]$ServerHost = "",
 
     [int]$WorkerCount = 1,
     [int]$ClientWorkers = 1,
@@ -233,6 +234,18 @@ if (-not (Test-Path (Join-Path $repoCheckoutPath "pyproject.toml"))) {
 
 $repoRoot = $repoCheckoutPath
 Set-Location $repoRoot
+
+if ($ServerHost) {
+    $resolvedServerHost = $ServerHost.Trim()
+    if ($resolvedServerHost) {
+        if (-not $RedisHost -or $RedisHost -eq "localhost") {
+            $RedisHost = $resolvedServerHost
+        }
+        if (-not $SdkBaseUrl -or $SdkBaseUrl -eq "http://localhost:8000") {
+            $SdkBaseUrl = "http://{0}:8000" -f $resolvedServerHost
+        }
+    }
+}
 
 if (-not (Test-Path $venvResolved)) {
     Write-Step "Creating virtual environment: $venvResolved"
