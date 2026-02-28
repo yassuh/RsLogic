@@ -4,7 +4,7 @@
 
 - Local service defaults: `host:localhost → API(rslogic api:8000), DB(pgbouncer/postgres via config:5432/9000), Redis(redis:6379/9002)`
 - Container stack (`internal_tools/label-db/studio-db/docker-compose.yaml`): `postgis:5432@9000`, `pgbouncer:5432@9001`, `redis:6379@9002` on `studio-network`
-- RSNode deployment target (config default): `192.168.193.56:8000` (API), `192.168.193.56:9002` (Redis)
+- RSNode deployment target (validated working default): `192.168.193.59:8000` (API), `192.168.193.59:9002` (Redis)
 - RSNode client launch/runtime defaults: `C:\ProgramData\RsLogic\RsLogic` checkout + `C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe`
 - Integration/test references (validate before hardcoding): `192.168.193.59:7878`, `192.168.193.59` as previously used for manual API contact
 
@@ -49,7 +49,7 @@
   - SDK fallback for the RSNode client default is `http://{server_host}:8000`.
 - Queue/runtime services:
   - Redis default connection in `config.py` is `REDIS_HOST: REDIS_PORT` (`6379`) with DB `RSLOGIC_REDIS_DB` default `0`.
-  - Orchestrator default CLI queue connection is `--server-host 192.168.193.56`, `--redis-port 9002` (derived from default `--server-host`).
+  - Orchestrator default CLI queue connection is `--server-host 192.168.193.59`, `--redis-port 9002` (derived from default `--server-host`).
   - Control bus keys default to:
     - `RSLOGIC_CONTROL_COMMAND_QUEUE=rslogic:control:commands`
     - `RSLOGIC_CONTROL_RESULT_QUEUE=rslogic:control:results`
@@ -74,13 +74,13 @@
 ## Machines, IPs, and Network Topology
 
 - Known default host in code:
-  - `192.168.193.56` (defined as `DEFAULT_SERVER_HOST` in `scripts/rslogic_rsnode_client.py`).
+  - `192.168.193.59` (defined as `DEFAULT_SERVER_HOST` in `scripts/rslogic_rsnode_client.py`).
   - User-facing startup defaults in the same script assume:
-    - RS API: `http://192.168.193.56:8000`
-    - Redis: `192.168.193.56:9002`
+    - RS API: `http://192.168.193.59:8000`
+    - Redis: `192.168.193.59:9002`
   - Label: **configuration default / deployment target**, not an auto-discovered runtime value.
 - Known user-reported node reference:
-  - `192.168.193.59` was used in prior manual contact attempts and in `internal_tools/rstool-sdk/file.py` sample (`http://192.168.193.59:7878`).
+  - `192.168.193.59` is the active test/integration endpoint for direct RSNode verification.
   - Label: **test/integration reference**, validate whether this is still active before hardcoding.
 - Active container network (in-repo docker model):
   - `internal_tools/label-db/studio-db/docker-compose.yaml`
@@ -206,8 +206,9 @@
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
   - Detects repository updates and refreshes dependencies before restarting managed processes.
   - Supports custom RSNode startup args through `--node-arguments` and `--node-data-root-argument`.
-  - `--node-authtoken`, `--sdk-app-token`, and `--sdk-auth-token` now default to `93C2E5BC-B71E-4BAA-8ED5-E019B8FDE8C6` when unset, so one-click startup includes RSNode auth and SDK auth defaults without manual token arguments.
-  - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.
+  - `--node-authtoken` and `--sdk-auth-token` now default to `85DBDE55-3FFF-4228-9F06-CBED4003BBB8` when unset.
+  - `--sdk-app-token` now defaults to `123` when unset.
+  - Uses active host defaults `192.168.193.59`, Redis `192.168.193.59:9002`, and API base `http://192.168.193.59:8000`.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
   - Starts the Python orchestrator in a persistent console and keeps the window open while the orchestrator runs.
   - If the orchestrator script is missing locally, it bootstraps a fresh checkout to `%ProgramData%\RsLogic\RsLogic` before launch.

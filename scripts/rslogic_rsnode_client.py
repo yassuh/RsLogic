@@ -76,13 +76,14 @@ def _coalesce_env(*values: Optional[str]) -> str:
 
 DEFAULT_REPO_URL = "https://github.com/yassuh/RsLogic.git"
 DEFAULT_REPO_BRANCH = "main"
-DEFAULT_SERVER_HOST = "192.168.193.56"
+DEFAULT_SERVER_HOST = "192.168.193.59"
 DEFAULT_REPO_ROOT = _safe_program_data_path() / "RsLogic" / "RsLogic"
 DEFAULT_VENV_PATH = DEFAULT_REPO_ROOT / ".venv"
 DEFAULT_NODE_EXECUTABLE = Path(os.getenv("ProgramFiles", str(Path("C:/Program Files"))) ) / "Epic Games" / "RealityScan_2.1" / "RSNode.exe"
 DEFAULT_NODE_DATA_ROOT = _safe_local_app_data_path() / "Epic Games" / "RealityScan" / "RSNodeData"
 DEFAULT_LOG_PATH = _safe_program_data_path() / "RsLogic" / "rsnode-orchestrator.log"
-DEFAULT_NODE_TOKEN = "93C2E5BC-B71E-4BAA-8ED5-E019B8FDE8C6"
+DEFAULT_NODE_AUTH_TOKEN = "85DBDE55-3FFF-4228-9F06-CBED4003BBB8"
+DEFAULT_NODE_APP_TOKEN = "123"
 REQUIRED_CLIENT_MODULES = (
     "dotenv",
     "sqlalchemy",
@@ -1257,7 +1258,7 @@ def parse_args() -> argparse.Namespace:
         default="-dataRoot",
     )
     parser.add_argument("--node-arguments", nargs="*", default=[])
-    parser.add_argument("--node-authtoken", default=DEFAULT_NODE_TOKEN)
+    parser.add_argument("--node-authtoken", default=DEFAULT_NODE_AUTH_TOKEN)
 
     parser.add_argument("--redis-url", default="")
     parser.add_argument("--redis-host", default="")
@@ -1271,8 +1272,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST)
     parser.add_argument("--sdk-base-url", default="")
     parser.add_argument("--sdk-client-id", default="")
-    parser.add_argument("--sdk-app-token", default=DEFAULT_NODE_TOKEN)
-    parser.add_argument("--sdk-auth-token", default=DEFAULT_NODE_TOKEN)
+    parser.add_argument("--sdk-app-token", default=DEFAULT_NODE_APP_TOKEN)
+    parser.add_argument("--sdk-auth-token", default=DEFAULT_NODE_AUTH_TOKEN)
 
     parser.add_argument("--client-workers", type=int, default=1)
     parser.add_argument("--node-poll-seconds", type=int, default=10)
@@ -1353,7 +1354,7 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
             os.getenv("RSLOGIC_RSNODE_AUTHTOKEN"),
             os.getenv("RSLOGIC_NODE_AUTHTOKEN"),
             os.getenv("RSLOGIC_NODE_AUTH_TOKEN"),
-            DEFAULT_NODE_TOKEN,
+            DEFAULT_NODE_AUTH_TOKEN,
         ),
         redis_url=ns.redis_url,
         redis_host=redis_host,
@@ -1374,13 +1375,13 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
             ns.sdk_app_token,
             repo_env.get("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
             os.getenv("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
-            DEFAULT_NODE_TOKEN,
+            DEFAULT_NODE_APP_TOKEN,
         ),
         sdk_auth_token=_coalesce_env(
             ns.sdk_auth_token,
             repo_env.get("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
             os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
-            DEFAULT_NODE_TOKEN,
+            DEFAULT_NODE_AUTH_TOKEN,
         ),
         client_workers=ns.client_workers,
         node_poll_seconds=ns.node_poll_seconds,
