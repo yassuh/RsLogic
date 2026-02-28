@@ -437,6 +437,42 @@ def build_node_root_candidates(node_data_root_argument: str, node_data_root: str
     return deduped
 
 
+def detect_rsapp_path(node_executable: Path, explicit_args: Sequence[str]) -> Optional[str]:
+    arg_set = {arg.lower() for arg in explicit_args}
+    if "-rsapp" in arg_set or "--rsapp" in arg_set:
+        return None
+
+    candidates: List[Path] = []
+    node_dir = node_executable.parent if node_executable else None
+    if node_dir:
+        candidates.extend(
+            [
+                node_dir / "RealityScan.exe",
+                node_dir / "RealityScan_2.1" / "RealityScan.exe",
+                node_dir.parent / "RealityScan.exe",
+            ]
+        )
+
+    for env_name in ("ProgramFiles", "PROGRAMFILES(X86)"):
+        root = os.environ.get(env_name)
+        if not root:
+            continue
+        root_path = Path(root) / "Epic Games"
+        candidates.extend(
+            [
+                root_path / "RealityScan_2.1" / "RealityScan.exe",
+                root_path / "RealityScan" / "RealityScan.exe",
+                root_path / "RealityScan_2.1" / "RealityScan" / "RealityScan.exe",
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
 def start_process_with_logs(
     command: Sequence[str],
     cwd: Path,
@@ -500,13 +536,22 @@ def stop_process(managed: Optional[ManagedProcess], name: str, logger: logging.L
 
 def run_rsnode(cfg: RunConfig, logger: logging.Logger, log_dir: Path) -> Tuple[Optional[ManagedProcess], str]:
     candidates = build_node_root_candidates(cfg.node_data_root_argument, cfg.node_data_root)
+    node_launch_dir = cfg.node_executable.parent if cfg.node_executable else cfg.repo_root
+    node_base_args = list(cfg.node_arguments)
+    if not any(arg.lower() in ("-console", "--console") for arg in node_base_args):
+        node_base_args.append("-console")
+
+    rs_app = detect_rsapp_path(cfg.node_executable, node_base_args)
+    if rs_app:
+        node_base_args.extend(["-rsapp", rs_app])
+
     last_error = "not-started"
     for attempt, root_arg in enumerate(candidates, start=1):
         root_arg = root_arg.strip()
         node_args: List[str] = []
+        node_args.extend(node_base_args)
         if root_arg and cfg.node_data_root:
             node_args.extend([root_arg, cfg.node_data_root])
-        node_args.extend(cfg.node_arguments)
         command = [str(cfg.node_executable), *node_args]
         logger.info(
             "Starting RSNode (attempt=%s arg=%s): %s",
@@ -521,7 +566,7 @@ def run_rsnode(cfg: RunConfig, logger: logging.Logger, log_dir: Path) -> Tuple[O
         try:
             managed = start_process_with_logs(
                 command=command,
-                cwd=cfg.repo_root,
+                cwd=node_launch_dir,
                 env=dict(os.environ),
                 stdout_path=log_dir / "rsnode-stdout.log",
                 stderr_path=log_dir / "rsnode-stderr.log",
