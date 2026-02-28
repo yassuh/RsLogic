@@ -176,10 +176,10 @@ function Ensure-Repository {
     }
 
     if ($NoPull) {
-        throw "Invalid repository checkout at $resolvedRepoPath: missing pyproject.toml"
+        throw "Invalid repository checkout at ${resolvedRepoPath}: missing pyproject.toml"
     }
 
-    Write-Log "Existing repository at $resolvedRepoPath is invalid (missing pyproject.toml). Rebuilding."
+    Write-Log "Existing repository at ${resolvedRepoPath} is invalid (missing pyproject.toml). Rebuilding."
     $backupName = "{0}.invalid-{1:yyyyMMddHHmmss}" -f $resolvedRepoPath, (Get-Date)
     if (-not $DryRun) {
         Move-Item -Path $resolvedRepoPath -Destination $backupName -Force
