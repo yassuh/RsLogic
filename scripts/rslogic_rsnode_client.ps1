@@ -251,7 +251,14 @@ function Ensure-Venv {
 function Get-PythonExecutable {
     $path = Join-Path $resolvedVenvPath "Scripts\python.exe"
     if (-not (Test-Path $path)) {
-        return (Resolve-Path $PythonExecutable -ErrorAction SilentlyContinue).Path
+        $pythonCommand = Get-Command $PythonExecutable -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $pythonCommand) {
+            throw "Python executable not found: $PythonExecutable"
+        }
+        if ($pythonCommand.Source) {
+            return $pythonCommand.Source
+        }
+        return $pythonCommand.Name
     }
     return $path
 }
@@ -504,13 +511,16 @@ function Ensure-Singleton {
             $script:alreadyRunning = $true
             return $null
         }
+        $script:ownsMutex = $true
         return $mutex
     } catch {
         Write-Log "Singleton lock unavailable. Running without process lock." "WARN"
+        $script:ownsMutex = $false
         return $null
     }
 }
 
+$script:ownsMutex = $false
 $singleton = Ensure-Singleton
 $nodeProcess = $null
 $clientProcess = $null
@@ -627,9 +637,18 @@ try {
 } finally {
     try {
         Stop-Processes -NodeProcess $nodeProcess -ClientProcess $clientProcess
-        if ($singleton) {
-            $singleton.ReleaseMutex() | Out-Null
-            $singleton.Dispose()
+        if ($singleton -and $script:ownsMutex) {
+            try {
+                $singleton.ReleaseMutex() | Out-Null
+            } catch {
+                Write-Log "Could not release mutex: $($_.Exception.Message)" "WARN"
+            } finally {
+                try {
+                    $singleton.Dispose()
+                } catch {
+                    # ignore
+                }
+            }
         }
         Write-Log "Orchestrator stopped."
     } catch {
