@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
+import os
+import socket
 from typing import Any, Dict, Optional
 
 from config import load_config
@@ -56,6 +58,14 @@ logger = logging.getLogger("rslogic.client.rsnode")
 
 def _to_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_positive_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, 1)
 
 
 def _mask_secret(value: str) -> str:
@@ -121,6 +131,20 @@ class RsNodeClient:
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(worker_count)))
         self._worker_count = max(1, int(worker_count))
         self._stop_event = threading.Event()
+        self._heartbeat_stop_event = threading.Event()
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_interval_seconds = _parse_positive_int(
+            os.getenv("RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"),
+            default=5,
+        )
+        self._heartbeat_ttl_seconds = _parse_positive_int(
+            os.getenv("RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS"),
+            default=max(self._heartbeat_interval_seconds * 3, 15),
+        )
+        if self._heartbeat_ttl_seconds < self._heartbeat_interval_seconds + 1:
+            self._heartbeat_ttl_seconds = self._heartbeat_interval_seconds + 1
+        self._worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        self._presence_key = f"{self._command_queue_key}:presence:{self._worker_id}"
         self._sdk_target_methods = self._load_sdk_target_methods()
 
     @staticmethod
@@ -293,9 +317,69 @@ class RsNodeClient:
         )
 
     def close(self) -> None:
+        self._stop_heartbeat()
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=max(self._heartbeat_interval_seconds, 1))
+        try:
+            self._publish_presence(status="stopped")
+        except Exception:
+            logger.exception("Failed to publish stopped presence for worker_id=%s", self._worker_id)
+        try:
+            self._bus.delete(self._presence_key)
+        except Exception:
+            logger.warning("Failed to delete presence key for worker_id=%s", self._worker_id)
         self._stop_event.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._bus.close()
+
+    def _build_presence_payload(self, *, status: str) -> Dict[str, Any]:
+        return {
+            "worker_id": self._worker_id,
+            "status": status,
+            "last_seen": _to_utc_iso(),
+            "command_queue": self._command_queue_key,
+            "result_queue": self._result_queue_key,
+            "workers": self._worker_count,
+            "sdk_base_url": self._rs_base_url,
+            "pid": os.getpid(),
+        }
+
+    def _publish_presence(self, *, status: str) -> None:
+        payload = self._build_presence_payload(status=status)
+        self._bus.set_presence(
+            self._presence_key,
+            payload,
+            ttl_seconds=self._heartbeat_ttl_seconds,
+        )
+
+    def presence_info(self) -> Dict[str, Any]:
+        return {
+            "presence_key": self._presence_key,
+            "heartbeat_interval_seconds": self._heartbeat_interval_seconds,
+            "heartbeat_ttl_seconds": self._heartbeat_ttl_seconds,
+        }
+
+    def _heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop_event.is_set():
+            try:
+                self._publish_presence(status="online")
+            except Exception as exc:  # pragma: no cover - runtime loop guard
+                logger.warning("Failed to publish rsnode client presence: %s", exc)
+            self._heartbeat_stop_event.wait(self._heartbeat_interval_seconds)
+
+    def _start_heartbeat(self) -> None:
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop_event.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"rsnode-presence-{self._worker_id}",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        self._heartbeat_stop_event.set()
 
     def _publish(
         self,
@@ -654,12 +738,15 @@ class RsNodeClient:
             self._result_queue_key,
             self._worker_count,
         )
+        self._start_heartbeat()
+        self._publish_presence(status="online")
         while not self._stop_event.is_set():
             try:
                 self.process_once(self._block_timeout_seconds)
             except Exception as exc:  # pragma: no cover - runtime loop guard
                 logger.exception("RSNode client loop error: %s", exc)
                 time.sleep(1.0)
+        self._stop_heartbeat()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -752,6 +839,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         block_timeout_seconds=config.control.block_timeout_seconds,
         result_ttl_seconds=config.control.result_ttl_seconds,
         worker_count=max(1, int(workers)),
+    )
+    presence_info = client.presence_info()
+    logger.info(
+        "RSNode presence heartbeat: interval=%ss ttl=%ss key=%s",
+        presence_info["heartbeat_interval_seconds"],
+        presence_info["heartbeat_ttl_seconds"],
+        presence_info["presence_key"],
     )
     if action == "run" or action == "worker":
         try:

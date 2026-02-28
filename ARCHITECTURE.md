@@ -168,6 +168,12 @@
   - Recommended startup shape on this installer: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -dataRoot "<path>"` with automatic fallback retry using `--dataRoot` when needed.
   - On startup, this worker pings Redis before entering the consume loop and fails fast if control Redis is unreachable.
   - On startup, this worker validates required SDK environment variables (`RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`, `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN`) and logs masked values for troubleshooting.
+  - Presence heartbeat is published continuously to Redis at `<control_command_queue>:presence:<host>:<pid>` as a JSON key with TTL.
+    - Default interval: 5s, TTL: 15s.
+    - Value includes `status`, `worker_id`, `command_queue`, `result_queue`, `workers`, `pid`, and `last_seen`.
+    - Override with `RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS` and `RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS`.
+    - The worker updates `status=online` periodically and writes `status=stopped` once shutdown begins.
+    - A consumer can treat key expiry as liveness loss.
 - `rslogic-client` startup diagnostics:
   - Missing SDK env values are reported as a hard startup error with the exact missing variable names.
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.

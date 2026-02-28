@@ -171,6 +171,13 @@ class RedisCommandBus:
         """Verify Redis connectivity using a lightweight ping request."""
         self._client.ping()
 
+    def set_presence(self, key: str, payload: Dict[str, Any], *, ttl_seconds: Optional[int] = None) -> None:
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+        self._client.set(name=key, value=body, ex=max(int(ttl_seconds), 1) if ttl_seconds else None)
+
+    def delete(self, key: str) -> None:
+        self._client.delete(key)
+
     def push(self, queue_key: str, payload: Dict[str, Any], *, expire_seconds: Optional[int] = None) -> None:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         self._client.lpush(queue_key, body)
