@@ -82,6 +82,7 @@ DEFAULT_VENV_PATH = DEFAULT_REPO_ROOT / ".venv"
 DEFAULT_NODE_EXECUTABLE = Path(os.getenv("ProgramFiles", str(Path("C:/Program Files"))) ) / "Epic Games" / "RealityScan_2.1" / "RSNode.exe"
 DEFAULT_NODE_DATA_ROOT = _safe_local_app_data_path() / "Epic Games" / "RealityScan" / "RSNodeData"
 DEFAULT_LOG_PATH = _safe_program_data_path() / "RsLogic" / "rsnode-orchestrator.log"
+DEFAULT_NODE_TOKEN = "93C2E5BC-B71E-4BAA-8ED5-E019B8FDE8C6"
 REQUIRED_CLIENT_MODULES = (
     "dotenv",
     "sqlalchemy",
@@ -127,6 +128,13 @@ class RunConfig:
     node_data_root: str
     node_data_root_argument: str
     node_arguments: List[str]
+    node_authtoken: str
+    node_register: bool
+    node_bridge: bool
+    node_security_group_token: str
+    node_registration_token: str
+    node_commands_path: str
+    node_rsapp_commandline: str
     redis_url: str
     redis_host: str
     redis_port: int
@@ -1067,6 +1075,11 @@ def detect_rsapp_path(node_executable: Path, explicit_args: Sequence[str]) -> Op
     return None
 
 
+def has_node_flag(args: Sequence[str], *flags: str) -> bool:
+    lowered = {str(arg).lower() for arg in args}
+    return any(flag.lower() in lowered for flag in flags)
+
+
 def start_process_with_logs(
     command: Sequence[str],
     cwd: Path,
@@ -1138,6 +1151,41 @@ def run_rsnode(cfg: RunConfig, logger: logging.Logger, log_dir: Path) -> Tuple[O
     rs_app = detect_rsapp_path(cfg.node_executable, node_base_args)
     if rs_app:
         node_base_args.extend(["-rsapp", rs_app])
+    if cfg.node_authtoken and not has_node_flag(node_base_args, "-authtoken", "--authtoken"):
+        node_base_args.extend(["-authtoken", cfg.node_authtoken])
+    if cfg.node_security_group_token and not has_node_flag(
+        node_base_args,
+        "-securitygrouptoken",
+        "--securitygrouptoken",
+        "-security-group-token",
+        "--security-group-token",
+        "-securitygroup",
+        "--securitygroup",
+        "-security_group_token",
+    ):
+        node_base_args.extend(["-securityGroupToken", cfg.node_security_group_token])
+    if cfg.node_registration_token and not has_node_flag(
+        node_base_args,
+        "-registrationtoken",
+        "--registrationtoken",
+        "-registration-token",
+        "--registration-token",
+    ):
+        node_base_args.extend(["-registrationToken", cfg.node_registration_token])
+    if cfg.node_commands_path and not has_node_flag(node_base_args, "-commands", "--commands"):
+        node_base_args.extend(["-commands", cfg.node_commands_path])
+    if cfg.node_rsapp_commandline and not has_node_flag(
+        node_base_args,
+        "-rsappcommandline",
+        "--rsappcommandline",
+        "-rsapp-command-line",
+        "--rsapp-command-line",
+    ):
+        node_base_args.extend(["-rsAppCommandLine", cfg.node_rsapp_commandline])
+    if cfg.node_register and not has_node_flag(node_base_args, "-register", "--register"):
+        node_base_args.append("-register")
+    if cfg.node_bridge and not has_node_flag(node_base_args, "-bridge", "--bridge"):
+        node_base_args.append("-bridge")
 
     last_error = "not-started"
     for attempt, root_arg in enumerate(candidates, start=1):
@@ -1253,6 +1301,13 @@ def parse_args() -> argparse.Namespace:
         default="-dataRoot",
     )
     parser.add_argument("--node-arguments", nargs="*", default=[])
+    parser.add_argument("--node-authtoken", default="")
+    parser.add_argument("--node-register", action="store_true")
+    parser.add_argument("--node-bridge", action="store_true")
+    parser.add_argument("--node-security-group-token", default="")
+    parser.add_argument("--node-registration-token", default="")
+    parser.add_argument("--node-commands", default="")
+    parser.add_argument("--node-rsapp-command-line", default="")
 
     parser.add_argument("--redis-url", default="")
     parser.add_argument("--redis-host", default="")
@@ -1266,7 +1321,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server-host", default=DEFAULT_SERVER_HOST)
     parser.add_argument("--sdk-base-url", default="")
     parser.add_argument("--sdk-client-id", default="")
-    parser.add_argument("--sdk-app-token", default="")
+    parser.add_argument("--sdk-app-token", default=DEFAULT_NODE_TOKEN)
     parser.add_argument("--sdk-auth-token", default="")
 
     parser.add_argument("--client-workers", type=int, default=1)
@@ -1342,6 +1397,44 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
         node_data_root=ns.node_data_root,
         node_data_root_argument=ns.node_data_root_argument,
         node_arguments=list(ns.node_arguments),
+        node_authtoken=_coalesce_env(
+            ns.node_authtoken,
+            repo_env.get("RSLOGIC_RSNODE_AUTHTOKEN"),
+            os.getenv("RSLOGIC_RSNODE_AUTHTOKEN"),
+            os.getenv("RSLOGIC_NODE_AUTHTOKEN"),
+            os.getenv("RSLOGIC_NODE_AUTH_TOKEN"),
+            DEFAULT_NODE_TOKEN,
+        ),
+        node_register=_coalesce_env(
+            "true" if ns.node_register else "",
+            repo_env.get("RSLOGIC_RSNODE_REGISTER"),
+            os.getenv("RSLOGIC_RSNODE_REGISTER"),
+        ).lower() in {"1", "true", "yes", "on"},
+        node_bridge=_coalesce_env(
+            "true" if ns.node_bridge else "",
+            repo_env.get("RSLOGIC_RSNODE_BRIDGE"),
+            os.getenv("RSLOGIC_RSNODE_BRIDGE"),
+        ).lower() in {"1", "true", "yes", "on"},
+        node_security_group_token=_coalesce_env(
+            ns.node_security_group_token,
+            repo_env.get("RSLOGIC_RSNODE_SECURITY_GROUP_TOKEN"),
+            os.getenv("RSLOGIC_RSNODE_SECURITY_GROUP_TOKEN"),
+        ),
+        node_registration_token=_coalesce_env(
+            ns.node_registration_token,
+            repo_env.get("RSLOGIC_RSNODE_REGISTRATION_TOKEN"),
+            os.getenv("RSLOGIC_RSNODE_REGISTRATION_TOKEN"),
+        ),
+        node_commands_path=_coalesce_env(
+            ns.node_commands,
+            repo_env.get("RSLOGIC_RSNODE_COMMANDS_PATH"),
+            os.getenv("RSLOGIC_RSNODE_COMMANDS_PATH"),
+        ),
+        node_rsapp_commandline=_coalesce_env(
+            ns.node_rsapp_command_line,
+            repo_env.get("RSLOGIC_RSNODE_RSAPP_COMMANDLINE"),
+            os.getenv("RSLOGIC_RSNODE_RSAPP_COMMANDLINE"),
+        ),
         redis_url=ns.redis_url,
         redis_host=redis_host,
         redis_port=int(ns.redis_port),
@@ -1361,11 +1454,13 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
             ns.sdk_app_token,
             repo_env.get("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
             os.getenv("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
+            DEFAULT_NODE_TOKEN,
         ),
         sdk_auth_token=_coalesce_env(
             ns.sdk_auth_token,
             repo_env.get("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
             os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
+            DEFAULT_NODE_TOKEN,
         ),
         client_workers=ns.client_workers,
         node_poll_seconds=ns.node_poll_seconds,

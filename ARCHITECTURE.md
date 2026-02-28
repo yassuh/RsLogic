@@ -206,6 +206,16 @@
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
   - Detects repository updates and refreshes dependencies before restarting managed processes.
   - Supports custom RSNode startup args through `--node-arguments` and `--node-data-root-argument`.
+  - Supports explicit RSNode auth/registration flags for node bootstrap:
+    - `--node-authtoken` (also `RSLOGIC_RSNODE_AUTHTOKEN` / `RSLOGIC_NODE_AUTHTOKEN` env)
+    - `--node-security-group-token` (`RSLOGIC_RSNODE_SECURITY_GROUP_TOKEN` env)
+    - `--node-registration-token` (`RSLOGIC_RSNODE_REGISTRATION_TOKEN` env)
+    - `--node-commands` (`RSLOGIC_RSNODE_COMMANDS_PATH` env)
+    - `--node-rsapp-command-line` (`RSLOGIC_RSNODE_RSAPP_COMMANDLINE` env)
+    - `--node-register` (`RSLOGIC_RSNODE_REGISTER` env)
+    - `--node-bridge` (`RSLOGIC_RSNODE_BRIDGE` env)
+    - When provided (or when defaults are used), these are injected into the RSNode launch command as `-authtoken`, `-securityGroupToken`, `-registrationToken`, `-commands`, `-rsAppCommandLine`, `-register`, and `-bridge`.
+  - `--sdk-app-token` / `--sdk-auth-token` now default to `93C2E5BC-B71E-4BAA-8ED5-E019B8FDE8C6` when unset, so orchestrated clients recover default credentials automatically if `.env`/env values are not provided.
   - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
   - Starts the Python orchestrator in a persistent console and keeps the window open while the orchestrator runs.
