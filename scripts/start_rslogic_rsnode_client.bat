@@ -8,6 +8,7 @@ set "RSLOGIC_REDIS_PORT=9002"
 set "RSLOGIC_SERVER_API_URL=http://192.168.193.56:8000"
 set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%ProgramData%\RsLogic\RsLogic"
+set "WATCHDOG_LOG=%ProgramData%\RsLogic\rsnode-watchdog.log"
 if exist "%SCRIPT_DIR%..\pyproject.toml" (
     for %%P in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fP"
 )
@@ -16,6 +17,7 @@ set "GIT_AVAILABLE=1"
 set "REPO_REACHABLE=0"
 set "BOOTSTRAP_NO_PULL="
 set "REPAIR_PS=%SCRIPT_DIR%repair_rslogic_rsnode_client.ps1"
+set "SKIP_BOOTSTRAP=0"
 
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
@@ -23,12 +25,27 @@ for %%R in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fR\"
 set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
 
 echo RsLogic RSNode client installer/runner
-if exist "%BOOTSTRAP_PS%" (
-    if not exist "%REPO_ROOT%\pyproject.toml" (
-        echo Local bootstrap exists but repo root is not valid. Reinstalling into %REPO_ROOT%.
+set "HAS_VALID_REPO=0"
+if exist "%REPO_ROOT%\.git" (
+    if exist "%REPO_ROOT%\pyproject.toml" (
+        set "HAS_VALID_REPO=1"
     )
+)
+
+if "%HAS_VALID_REPO%"=="1" (
+    set "SKIP_BOOTSTRAP=1"
+    echo Repository is already installed at %REPO_ROOT%.
+    echo Skipping install/update and showing runtime status only.
 ) else (
-    echo Bootstrap file not present at local location. Installing into %REPO_ROOT%.
+    echo No valid local repository detected at %REPO_ROOT%.
+    echo Running install/bootstrap flow.
+    if exist "%BOOTSTRAP_PS%" (
+        if not exist "%REPO_ROOT%\pyproject.toml" (
+            echo Local bootstrap exists but repo root is not valid. Reinstalling into %REPO_ROOT%.
+        )
+    ) else (
+        echo Bootstrap file not present at local location. Installing into %REPO_ROOT%.
+    )
 )
 
 if not exist "%REPO_ROOT%" mkdir "%REPO_ROOT%" >nul 2>&1
@@ -39,6 +56,7 @@ if errorlevel 1 (
     echo WARNING: git not found. Running in local/offline mode.
 )
 
+if "%HAS_VALID_REPO%"=="0" (
 if "%GIT_AVAILABLE%"=="1" (
     echo Checking connectivity to repository source: %REPO_URL% (%REPO_BRANCH%)
     "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "git ls-remote --exit-code --heads '%REPO_URL%' '%REPO_BRANCH%' >$null 2>&1"
@@ -48,43 +66,29 @@ if "%GIT_AVAILABLE%"=="1" (
         set "REPO_REACHABLE=1"
     )
 )
-
-if "%REPO_REACHABLE%"=="1" (
-    echo Repository source is reachable. Online mode enabled.
-) else (
-    echo Repository source is not reachable. Offline mode enabled.
-    set "BOOTSTRAP_NO_PULL=-NoPull"
-)
-
-set "HAS_VALID_REPO=0"
-if exist "%REPO_ROOT%\.git" (
-    if exist "%REPO_ROOT%\pyproject.toml" (
-        set "HAS_VALID_REPO=1"
-    )
 )
 
 if "%HAS_VALID_REPO%"=="1" (
-    if "%REPO_REACHABLE%"=="1" (
-        echo Updating local checkout at %REPO_ROOT%.
-        "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "git -C '%REPO_ROOT%' fetch --all --prune; if ($?) { git -C '%REPO_ROOT%' checkout '%REPO_BRANCH%' }; if ($?) { git -C '%REPO_ROOT%' pull --ff-only }"
-        if errorlevel 1 (
-            echo Warning: unable to update local checkout. Continuing with current files.
-        )
-    ) else (
-        echo Skipping repo update while offline.
-    )
+    set "BOOTSTRAP_NO_PULL=-NoPull"
 ) else (
-    if "%GIT_AVAILABLE%"=="0" (
+    if "%REPO_REACHABLE%"=="1" (
+        echo Repository source is reachable. Online mode enabled.
+    ) else (
+        echo Repository source is not reachable. Offline mode enabled.
+        set "BOOTSTRAP_NO_PULL=-NoPull"
+    )
+)
+
+    if "%HAS_VALID_REPO%"=="0" (
+        if "%GIT_AVAILABLE%"=="0" (
         echo ERROR: No valid repository found at %REPO_ROOT% and git is unavailable.
         echo Install or sync the repository manually, then rerun this script.
-        pause >nul
         exit /b 1
     )
 
     if "%REPO_REACHABLE%"=="0" (
         echo ERROR: No valid repository found at %REPO_ROOT% and remote source is unreachable.
         echo Ensure network access to the repository source or pre-seed %REPO_ROOT%.
-        pause >nul
         exit /b 1
     )
 
@@ -98,51 +102,91 @@ if "%HAS_VALID_REPO%"=="1" (
     "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "git clone --branch '%REPO_BRANCH%' '%REPO_URL%' '%REPO_ROOT%'"
     if errorlevel 1 (
         echo ERROR: Failed to clone repository from %REPO_URL%.
-        pause >nul
         exit /b 1
     )
+
+    if exist "%BOOTSTRAP_PS%" (
+        if exist "%REPO_ROOT%\pyproject.toml" (
+            set "HAS_VALID_REPO=1"
+        )
+    )
+)
+
+if "%HAS_VALID_REPO%"=="0" (
+    echo ERROR: Could not create a valid local repository at %REPO_ROOT%.
+    exit /b 1
 )
 
 set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
 if not exist "%REPAIR_PS%" set "REPAIR_PS=%REPO_ROOT%\scripts\repair_rslogic_rsnode_client.ps1"
 
-if exist "%REPAIR_PS%" (
-    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%REPAIR_PS%" -Path "%BOOTSTRAP_PS%"
-    if errorlevel 1 (
-        echo ERROR: Failed to repair bootstrap script.
-        pause >nul
-        exit /b 1
-    )
-) else (
-    echo WARNING: Missing repair helper script (%REPAIR_PS%).
-    echo Continuing without repair. Parse errors will stop startup.
+if "%HAS_VALID_REPO%"=="0" (
+    echo ERROR: Could not locate rslogic repository root at %REPO_ROOT%.
+    exit /b 1
 )
+
+if "%SKIP_BOOTSTRAP%"=="0" (
+    if exist "%REPAIR_PS%" (
+        "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%REPAIR_PS%" -Path "%BOOTSTRAP_PS%"
+        if errorlevel 1 (
+            echo ERROR: Failed to repair bootstrap script.
+            exit /b 1
+        )
+    ) else (
+        echo WARNING: Missing repair helper script (%REPAIR_PS%).
+        echo Continuing without repair. Parse errors will stop startup.
+    )
+)
+
 if not exist "%BOOTSTRAP_PS%" (
     echo ERROR: Could not install a valid bootstrap script.
     echo Check that the clone completed correctly.
-    pause >nul
     exit /b 1
 )
 
 if not exist "%REPO_ROOT%\pyproject.toml" (
     echo ERROR: Repository root is invalid at %REPO_ROOT%.
-    pause >nul
+    exit /b 1
+)
+
+if "%SKIP_BOOTSTRAP%"=="1" goto :status_only
+
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP_PS%" -RepoUrl "%REPO_URL%" -RepoPath "%REPO_ROOT%" -RepoBranch "%REPO_BRANCH%" -ServerHost "%RSLOGIC_SERVER_HOST%" -RedisHost "%RSLOGIC_SERVER_HOST%" -RedisPort "%RSLOGIC_REDIS_PORT%" -SdkBaseUrl "%RSLOGIC_SERVER_API_URL%" %BOOTSTRAP_NO_PULL% -StartNow -StartDetached -AutoUpdate true
+if errorlevel 1 (
+    echo.
+    echo Install or startup failed.
     exit /b 1
 )
 
 echo.
 echo Using repo: %REPO_ROOT%
-if exist "%REPO_ROOT%\pyproject.toml" echo Repository detected locally.
-
-"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP_PS%" -RepoUrl "%REPO_URL%" -RepoPath "%REPO_ROOT%" -RepoBranch "%REPO_BRANCH%" -ServerHost "%RSLOGIC_SERVER_HOST%" -RedisHost "%RSLOGIC_SERVER_HOST%" -RedisPort "%RSLOGIC_REDIS_PORT%" -SdkBaseUrl "%RSLOGIC_SERVER_API_URL%" %BOOTSTRAP_NO_PULL% -StartNow -StartDetached -AutoUpdate true
-if errorlevel 1 (
-    echo.
-    echo Install or startup failed. Press any key to close.
-    pause >nul
-    exit /b 1
-)
-
+echo Repository detected locally.
 echo.
-echo RsNode client stack started in background.
-echo Use Task Manager / schtasks or logs to monitor.
-pause >nul
+echo RsLogic RSNode client bootstrap complete.
+goto :show_status
+
+:status_only
+echo.
+echo Using repo: %REPO_ROOT%
+echo Existing installation detected. Skipping bootstrap/setup.
+
+:show_status
+echo.
+echo ===== Runtime status =====
+if exist "%REPO_ROOT%\.env.rsnode-worker" (
+    echo ENV file: %REPO_ROOT%\.env.rsnode-worker
+) else (
+    echo WARNING: Missing environment file: %REPO_ROOT%\.env.rsnode-worker
+)
+if exist "%WATCHDOG_LOG%" (
+    echo.
+    echo ===== Latest rsnode-watchdog log (%WATCHDOG_LOG%) =====
+    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -Path '%WATCHDOG_LOG%' -Tail 80"
+) else (
+    echo.
+    echo No watchdog log found at: %WATCHDOG_LOG%
+)
+echo.
+echo ===== Process snapshot =====
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_rslogic_client_stack.ps1*' -or $_.CommandLine -like '*rsnode_watchdog.ps1*' -or $_.CommandLine -like '*rslogic.client.rsnode_client*' } | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize"
+goto :eof

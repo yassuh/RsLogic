@@ -94,10 +94,11 @@
   - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
   - Auto-detects repo context only when the launcher is in a checked-out repo; otherwise defaults to `%ProgramData%\RsLogic\RsLogic`.
-  - Clones a local copy if the destination is missing or invalid, updates when reachable, and starts the bootstrap script from that location.
-  - If the host is offline to source control, it keeps the existing checkout and starts from local files (with repo updates disabled).
+  - If a valid local checkout exists (`.git` + `pyproject.toml`), it skips clone/update/pull and goes straight to a terminal status report.
+  - If no valid checkout exists, it clones into `%ProgramData%\RsLogic\RsLogic`, runs bootstrap, then shows runtime status.
+  - If the host is offline to source control, it aborts fresh bootstrap (offline install) and continues only from existing local files when already valid.
   - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.
-  - Repairs known legacy `rslogic_rsnode_client.ps1` parse issues before execution.
+  - Repairs known legacy `rslogic_rsnode_client.ps1` parse issues during fresh bootstrap.
   - Installer path uses git + Python `.venv` only; no Docker dependency is required.
 - The launcher now sets `RSLOGIC_SERVER_HOST=192.168.193.56` (`RSLOGIC_REDIS_PORT=9002`, `RSLOGIC_SERVER_API_URL=http://192.168.193.56:8000`) when running the RSNode bootstrap so generated worker env values default to Redis URL `redis://192.168.193.56:9002/0` and SDK base `http://192.168.193.56:8000` unless explicitly overridden.
 - `scripts/repair_rslogic_rsnode_client.ps1` is a one-shot fixer:
