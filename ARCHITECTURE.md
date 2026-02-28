@@ -188,6 +188,9 @@
   - If existing checkout is missing or invalid, it is backed up (or replaced when bootstrap is needed) and then re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running loop.
+  - Heartbeat lookup strategy:
+    - Orchestrator first reads `presence:<hostname>:<pid>` for the active client PID.
+    - If that key is missing, it falls back to `<control_command_queue>:presence:*` scan and selects the latest `last_seen`.
   - Keeps dedicated launch logs for RSNode/client (`rsnode-stdout.log`, `rsnode-stderr.log`, `rslogic-client-stdout.log`, `rslogic-client-stderr.log`) and includes recent process failure output in status logs.
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
   - Detects repository updates and refreshes dependencies before restarting managed processes.
