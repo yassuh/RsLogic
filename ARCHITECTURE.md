@@ -94,7 +94,7 @@
   - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
   - Auto-detects repo context only when the launcher is in a checked-out repo; otherwise defaults to `%ProgramData%\RsLogic\RsLogic`.
-  - If a valid local checkout exists (`.git` + `pyproject.toml`), it skips clone/update/pull and goes straight to a terminal status report.
+  - If a valid local checkout exists (`.git` + `pyproject.toml`), it skips clone/update/pull, checks whether the RSNode stack/watchdog/client are running, starts them in detached mode if needed, then prints terminal status.
   - If no valid checkout exists, it clones into `%ProgramData%\RsLogic\RsLogic`, runs bootstrap, then shows runtime status.
   - If the host is offline to source control, it aborts fresh bootstrap (offline install) and continues only from existing local files when already valid.
   - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.

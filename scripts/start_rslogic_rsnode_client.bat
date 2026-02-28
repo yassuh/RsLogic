@@ -35,7 +35,7 @@ if exist "%REPO_ROOT%\.git" (
 if "%HAS_VALID_REPO%"=="1" (
     set "SKIP_BOOTSTRAP=1"
     echo Repository is already installed at %REPO_ROOT%.
-    echo Skipping install/update and showing runtime status only.
+    echo Skipping install/update and ensuring stack is running.
 ) else (
     echo No valid local repository detected at %REPO_ROOT%.
     echo Running install/bootstrap flow.
@@ -79,8 +79,8 @@ if "%HAS_VALID_REPO%"=="1" (
     )
 )
 
-    if "%HAS_VALID_REPO%"=="0" (
-        if "%GIT_AVAILABLE%"=="0" (
+if "%HAS_VALID_REPO%"=="0" (
+    if "%GIT_AVAILABLE%"=="0" (
         echo ERROR: No valid repository found at %REPO_ROOT% and git is unavailable.
         echo Install or sync the repository manually, then rerun this script.
         exit /b 1
@@ -163,12 +163,13 @@ echo Using repo: %REPO_ROOT%
 echo Repository detected locally.
 echo.
 echo RsLogic RSNode client bootstrap complete.
-goto :show_status
+goto :ensure_stack_running
 
 :status_only
 echo.
 echo Using repo: %REPO_ROOT%
 echo Existing installation detected. Skipping bootstrap/setup.
+goto :ensure_stack_running
 
 :show_status
 echo.
@@ -188,5 +189,34 @@ if exist "%WATCHDOG_LOG%" (
 )
 echo.
 echo ===== Process snapshot =====
-"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_rslogic_client_stack.ps1*' -or $_.CommandLine -like '*rsnode_watchdog.ps1*' -or $_.CommandLine -like '*rslogic.client.rsnode_client*' } | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize"
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_rslogic_client_stack.ps1*' -or $_.CommandLine -like '*rsnode_watchdog.ps1*' -or $_.CommandLine -like '*rslogic.client.rsnode_client*' -or $_.Name -eq 'RSNode.exe' } | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize"
 goto :eof
+
+:ensure_stack_running
+if not exist "%REPO_ROOT%\scripts\run_rslogic_client_stack.ps1" (
+    echo.
+    echo ERROR: Missing run_rslogic_client_stack.ps1 at %REPO_ROOT%\scripts.
+    goto :show_status
+)
+
+if not exist "%REPO_ROOT%\.env.rsnode-worker" (
+    echo.
+    echo WARNING: Missing environment file: %REPO_ROOT%\.env.rsnode-worker
+    echo Cannot auto-start until .env.rsnode-worker exists.
+    goto :show_status
+)
+
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "if (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_rslogic_client_stack.ps1*' -or $_.CommandLine -like '*rsnode_watchdog.ps1*' -or $_.CommandLine -like '*rslogic.client.rsnode_client*' }) { exit 0 } else { exit 1 }"
+if errorlevel 1 (
+    echo.
+    echo No running RSNode stack processes found. Starting supervisor...
+    "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command " $repoRoot = '%REPO_ROOT%'; $stackScript = Join-Path $repoRoot 'scripts\run_rslogic_client_stack.ps1'; Start-Process -FilePath '%PS_EXE%' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$stackScript,'-RepoRoot',$repoRoot,'-EnvFile','.env.rsnode-worker','-RepoUrl','%REPO_URL%','-RepoBranch','%REPO_BRANCH%','-AutoUpdate','true') -WindowStyle Hidden | Out-Null"
+    if errorlevel 1 (
+        echo ERROR: Failed to start rslogic client stack.
+    ) else (
+        echo RSNode client stack launch requested. Watchdog and client should start shortly.
+    )
+) else (
+    echo RSNode stack processes already running.
+)
+goto :show_status
