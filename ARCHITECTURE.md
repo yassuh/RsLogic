@@ -196,6 +196,7 @@
   - If the orchestrator script is missing locally, it bootstraps a fresh checkout to `%ProgramData%\RsLogic\RsLogic` before launch.
   - Forces `--git-sync-strategy hard-reset` by default to recover from branch divergence automatically.
   - Arguments passed to the batch file are forwarded to the Python orchestrator.
+  - Uses direct Python invocation (`py -3` when present, otherwise `python`) instead of `call` to avoid batch tokenization artifacts.
 - The launcher sets `--node-data-root-argument=-dataRoot` by default and writes status/error output to the console while running.
   - A desktop shortcut can be created with `scripts/create_rslogic_rsnode_client_shortcut.bat` (targeting `start_rslogic_rsnode_client.bat`).
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).

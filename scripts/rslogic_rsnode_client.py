@@ -402,35 +402,23 @@ def missing_runtime_modules(python_executable: Path) -> List[str]:
     if not python_executable.exists():
         return ["python_executable"]
 
-    import tempfile
     import textwrap
 
     check_script = textwrap.dedent(
-        f"""\
+        """
         import importlib.util
         import json
 
-        required = {json.dumps(REQUIRED_CLIENT_MODULES)}
+        required = %s
         missing = [name for name in required if importlib.util.find_spec(name) is None]
         print(json.dumps(missing))
-        """
+        """ % json.dumps(REQUIRED_CLIENT_MODULES)
     )
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False) as check_file:
-        check_file.write(check_script)
-        check_file_path = Path(check_file.name)
-
-    try:
-        proc = subprocess.run(
-            [str(python_executable), str(check_file_path)],
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        try:
-            check_file_path.unlink()
-        except Exception:
-            pass
+    proc = subprocess.run(
+        [str(python_executable), "-c", check_script],
+        capture_output=True,
+        text=True,
+    )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         if stderr:

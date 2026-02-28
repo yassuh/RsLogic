@@ -59,9 +59,12 @@ if not exist "%ORCH_SCRIPT%" (
     exit /b 1
 )
 
+set "PY_EXE=python"
+set "PY_EXE_ARGS="
 where py >nul 2>nul
 if not errorlevel 1 (
-    set "PY_EXE=py -3"
+    set "PY_EXE=py"
+    set "PY_EXE_ARGS=-3"
 ) else (
     where python >nul 2>nul
     if errorlevel 1 (
@@ -69,12 +72,11 @@ if not errorlevel 1 (
         pause
         exit /b 1
     )
-    set "PY_EXE=python"
 )
 
 title RsLogic RSNode Client Orchestrator
 set "ARGS=%*"
-call %PY_EXE% "%ORCH_SCRIPT%" --repo-url "%REPO_URL%" --repo-branch "%REPO_BRANCH%" --repo-root "%REPO_ROOT%" --node-data-root-argument=%NODE_DATA_ROOT_ARG% --git-sync-strategy hard-reset --log-path "%LOG_PATH%" %ARGS%
+%PY_EXE% %PY_EXE_ARGS% "%ORCH_SCRIPT%" --repo-url "%REPO_URL%" --repo-branch "%REPO_BRANCH%" --repo-root "%REPO_ROOT%" --node-data-root-argument=%NODE_DATA_ROOT_ARG% --git-sync-strategy hard-reset --log-path "%LOG_PATH%" %ARGS%
 if errorlevel 1 pause
 
 endlocal
