@@ -20,6 +20,7 @@ from urllib.parse import quote_plus
 from urllib.request import urlopen
 from urllib.parse import urlparse
 import socket
+import types
 
 import logging
 
@@ -652,6 +653,7 @@ def get_client_heartbeat_status(
     control_command_queue: str,
     logger: logging.Logger,
     *,
+    redis_module_python: Optional[str] = None,
     expected_presence_key: Optional[str] = None,
     expected_client_host: Optional[str] = None,
     expected_client_pid: Optional[int] = None,
@@ -673,16 +675,65 @@ def get_client_heartbeat_status(
         - redis-lib-missing
         - redis-url-invalid
     """
-    try:
-        import redis
-    except Exception:
-        return "presence-check-failed", "redis-lib-missing", "redis package missing"
+    def _load_redis_module() -> Tuple[Optional[types.ModuleType], Optional[str]]:
+        try:
+            import redis
+            return redis, None
+        except Exception as primary_exc:
+            logger.debug("Redis import failed in orchestrator interpreter: %s", primary_exc)
+            if not redis_module_python:
+                return None, "redis package missing"
+
+            venv_paths: List[Path] = []
+            try:
+                venv_root = Path(redis_module_python).resolve().parent.parent
+            except Exception:
+                return None, "redis package missing"
+
+            venv_paths.extend(
+                [
+                    venv_root / "Lib" / "site-packages",
+                    venv_root / "lib" / "site-packages",
+                ]
+            )
+            venv_paths.extend(
+                [
+                    p
+                    for p in venv_root.glob("lib/python*/site-packages")
+                    if p not in venv_paths and p.is_dir()
+                ]
+            )
+
+            injected: List[str] = []
+            try:
+                for candidate in venv_paths:
+                    if not candidate.is_dir():
+                        continue
+                    candidate_str = str(candidate)
+                    if candidate_str not in sys.path:
+                        sys.path.insert(0, candidate_str)
+                        injected.append(candidate_str)
+                try:
+                    import redis  # type: ignore[import-not-found]
+                    return redis, None
+                except Exception as secondary_exc:
+                    return None, f"redis package missing: {secondary_exc}"
+            finally:
+                for candidate_str in reversed(injected):
+                    try:
+                        sys.path.remove(candidate_str)
+                    except ValueError:
+                        pass
+
+    redis_module, redis_load_error = _load_redis_module()
+    if redis_module is None:
+        return "presence-check-failed", "redis-lib-missing", redis_load_error
 
     if not redis_url or not control_command_queue:
         return "not-configured", "disconnected", "missing redis_url or control_command_queue"
 
     try:
-        bus = redis.Redis.from_url(
+        bus = redis_module.Redis.from_url(
             redis_url,
             decode_responses=False,
             socket_connect_timeout=3,
@@ -1476,6 +1527,7 @@ def main() -> int:
                             client_reported_redis_url or redis_connection,
                             cfg.control_command_queue,
                             logger,
+                            redis_module_python=str(python_in_venv),
                             expected_presence_key=client_presence_key,
                             expected_client_host=socket.gethostname(),
                             expected_client_pid=client_proc.proc.pid,
