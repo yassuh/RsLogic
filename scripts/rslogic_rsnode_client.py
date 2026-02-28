@@ -1268,6 +1268,7 @@ def main() -> int:
     client_bootstrap_state = {
         "redis": "disconnected",
         "heartbeat": "booting",
+        "presence_key": "unknown",
     }
     client_presence_key: Optional[str] = None
     client_reported_redis_url: Optional[str] = None
@@ -1293,11 +1294,12 @@ def main() -> int:
                         parsed_key = line[marker_index + len(marker):].strip()
                         if parsed_key:
                             client_presence_key = parsed_key
+                            client_bootstrap_state["presence_key"] = parsed_key
                 if "RSNode client startup config redis_url=" in line:
                     marker = "redis_url="
                     marker_index = line.find(marker)
                     if marker_index >= 0:
-                        client_reported_redis_url = line[marker_index + len(marker):].strip()
+                            client_reported_redis_url = line[marker_index + len(marker):].strip()
 
     def request_stop(_signum: Optional[int] = None, _frame: Any = None) -> None:
         nonlocal should_stop
@@ -1500,7 +1502,8 @@ def main() -> int:
                         health = "degraded"
                     uptime = str(timedelta(seconds=max(0, int((datetime.now() - loop_start).total_seconds()))))
                     logger.info(
-                        "STATUS node=%s client=%s autoUpdate=%s health=%s repo=%s uptime=%s clientRedis=%s clientHeartbeat=%s",
+                        "STATUS node=%s client=%s autoUpdate=%s health=%s repo=%s uptime=%s "
+                        "clientRedis=%s clientHeartbeat=%s heartbeatKey=%s",
                         node_up,
                         client_up,
                         not cfg.no_auto_update,
@@ -1509,6 +1512,7 @@ def main() -> int:
                         uptime,
                         client_bootstrap_state["redis"],
                         client_bootstrap_state["heartbeat"],
+                        client_bootstrap_state["presence_key"],
                     )
                     next_status = time.time() + max(cfg.loop_sleep_seconds, 5)
 
