@@ -39,6 +39,41 @@ def _safe_local_app_data_path() -> Path:
     return Path(local) if local else Path.home() / "AppData" / "Local"
 
 
+def _read_dotenv_values(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+                value = value[1:-1]
+            elif value.startswith('"') and value.endswith('"') and len(value) >= 2:
+                value = value[1:-1]
+            values[key] = value
+    except Exception:
+        return {}
+    return values
+
+
+def _coalesce_env(*values: Optional[str]) -> str:
+    for value in values:
+        if value:
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return ""
+
+
 DEFAULT_REPO_URL = "https://github.com/yassuh/RsLogic.git"
 DEFAULT_REPO_BRANCH = "main"
 DEFAULT_SERVER_HOST = "192.168.193.56"
@@ -947,6 +982,29 @@ def get_client_heartbeat_status(
             pass
 
 
+def is_client_heartbeat_ready(status: str) -> bool:
+    return (status or "").strip().lower() == "online"
+
+
+def is_client_heartbeat_missing(status: str) -> bool:
+    normalized = (status or "").strip().lower()
+    if not normalized:
+        return True
+    return normalized in {
+        "absent",
+        "no-valid-presence",
+        "status-missing",
+        "presence-key-decode-error",
+        "presence-key-missing",
+        "presence-check-failed",
+        "not-configured",
+    }
+
+
+def is_client_heartbeat_absent(status: str) -> bool:
+    return (status or "").strip().lower() == "absent"
+
+
 def format_command(cmd: Sequence[str]) -> str:
     return " ".join(f'"{part}"' if " " in part else part for part in cmd)
 
@@ -1232,6 +1290,7 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
     repo_root = Path(ns.repo_root).expanduser()
     if not repo_root.is_absolute():
         repo_root = (Path.cwd() / repo_root).resolve()
+    repo_env = _read_dotenv_values(repo_root / ".env")
 
     venv_path = Path(ns.venv_path).expanduser() if ns.venv_path else repo_root / ".venv"
     if not venv_path.is_absolute():
@@ -1241,14 +1300,37 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
     if not node_executable.is_absolute():
         node_executable = (repo_root / node_executable).resolve()
 
-    server_host = (ns.server_host or "").strip()
+    server_host = _coalesce_env(ns.server_host, os.getenv("RSLOGIC_SERVER_HOST", ""), os.getenv("SERVER_HOST", ""))
     redis_host = (ns.redis_host or "").strip()
     if not redis_host or redis_host.lower() == "localhost":
         redis_host = server_host or "localhost"
 
-    sdk_base_url = (ns.sdk_base_url or "").strip()
+    sdk_base_url = _coalesce_env(
+        ns.sdk_base_url,
+        repo_env.get("RSLOGIC_RSTOOLS_SDK_BASE_URL"),
+        os.getenv("RSLOGIC_RSTOOLS_SDK_BASE_URL"),
+    )
     if not sdk_base_url and server_host and server_host.lower() != "localhost":
         sdk_base_url = f"http://{server_host}:8000"
+
+    control_command_queue = _coalesce_env(
+        ns.control_command_queue,
+        repo_env.get("RSLOGIC_CONTROL_COMMAND_QUEUE"),
+        os.getenv("RSLOGIC_CONTROL_COMMAND_QUEUE"),
+        "rslogic:control:commands",
+    )
+    control_result_queue = _coalesce_env(
+        ns.control_result_queue,
+        repo_env.get("RSLOGIC_CONTROL_RESULT_QUEUE"),
+        os.getenv("RSLOGIC_CONTROL_RESULT_QUEUE"),
+        "rslogic:control:results",
+    )
+    queue_key = _coalesce_env(
+        ns.queue_key,
+        repo_env.get("RSLOGIC_REDIS_QUEUE_KEY"),
+        os.getenv("RSLOGIC_REDIS_QUEUE_KEY"),
+        "rslogic:jobs:queue",
+    )
 
     return RunConfig(
         repo_url=ns.repo_url,
@@ -1265,14 +1347,26 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
         redis_port=int(ns.redis_port),
         redis_db=str(ns.redis_db),
         redis_password=ns.redis_password,
-        control_command_queue=ns.control_command_queue,
-        control_result_queue=ns.control_result_queue,
-        queue_key=ns.queue_key,
+        control_command_queue=control_command_queue,
+        control_result_queue=control_result_queue,
+        queue_key=queue_key,
         server_host=server_host,
         sdk_base_url=sdk_base_url,
-        sdk_client_id=ns.sdk_client_id,
-        sdk_app_token=ns.sdk_app_token,
-        sdk_auth_token=ns.sdk_auth_token,
+        sdk_client_id=_coalesce_env(
+            ns.sdk_client_id,
+            repo_env.get("RSLOGIC_RSTOOLS_SDK_CLIENT_ID"),
+            os.getenv("RSLOGIC_RSTOOLS_SDK_CLIENT_ID"),
+        ),
+        sdk_app_token=_coalesce_env(
+            ns.sdk_app_token,
+            repo_env.get("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
+            os.getenv("RSLOGIC_RSTOOLS_SDK_APP_TOKEN"),
+        ),
+        sdk_auth_token=_coalesce_env(
+            ns.sdk_auth_token,
+            repo_env.get("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
+            os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
+        ),
         client_workers=ns.client_workers,
         node_poll_seconds=ns.node_poll_seconds,
         node_startup_timeout_seconds=ns.node_startup_timeout_seconds,
@@ -1310,6 +1404,23 @@ def main() -> int:
     cfg = normalize_config(args)
     cfg.log_path.parent.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(cfg.log_path)
+    logger.debug(
+        "Startup SDK vars: base_url=%s client_id=%s app_token=%s auth_token=%s",
+        "set" if (cfg.sdk_base_url or "").strip() else "missing",
+        "set" if (cfg.sdk_client_id or "").strip() else "missing",
+        "set" if (cfg.sdk_app_token or "").strip() else "missing",
+        "set" if (cfg.sdk_auth_token or "").strip() else "missing",
+    )
+    if not (
+        (cfg.sdk_base_url or "").strip()
+        and (cfg.sdk_client_id or "").strip()
+        and (cfg.sdk_app_token or "").strip()
+        and (cfg.sdk_auth_token or "").strip()
+    ):
+        logger.warning(
+            "SDK environment values are incomplete (some tokens missing). "
+            "Client will still start; SDK-authenticated commands requiring credentials may be rejected."
+        )
     log_dir = cfg.log_path.parent
     client_stdout_log = log_dir / "rslogic-client-stdout.log"
     client_stderr_log = log_dir / "rslogic-client-stderr.log"
@@ -1323,10 +1434,15 @@ def main() -> int:
     client_proc: Optional[ManagedProcess] = None
     node_stop_reason = "not-started"
     client_stop_reason = "not-started"
+    client_startup_error_count = 0
+    client_heartbeat_startup_fail_count = 0
+    client_bootstrap_started_at: Optional[float] = None
+    max_client_bootstrap_failures = 3
     client_bootstrap_state = {
         "redis": "disconnected",
         "heartbeat": "booting",
         "presence_key": "unknown",
+        "bootstrap_error": "none",
     }
     client_presence_key: Optional[str] = None
     client_reported_redis_url: Optional[str] = None
@@ -1357,7 +1473,11 @@ def main() -> int:
                     marker = "redis_url="
                     marker_index = line.find(marker)
                     if marker_index >= 0:
-                            client_reported_redis_url = line[marker_index + len(marker):].strip()
+                        client_reported_redis_url = line[marker_index + len(marker):].strip()
+                if "Missing required SDK environment variables for rslogic rsnode client startup:" in line:
+                    payload = line.split(":", 1)[1].strip() if ":" in line else ""
+                    if payload:
+                        client_bootstrap_state["bootstrap_error"] = payload
 
     def request_stop(_signum: Optional[int] = None, _frame: Any = None) -> None:
         nonlocal should_stop
@@ -1404,6 +1524,10 @@ def main() -> int:
                 "Client heartbeat config: interval=%ss ttl=%ss",
                 env_values["RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"],
                 env_values["RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS"],
+            )
+            startup_heartbeat_grace_seconds = max(
+                30,
+                int(env_values["RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"]) * 4,
             )
 
             current_head = git_head(cfg.repo_root)
@@ -1501,19 +1625,34 @@ def main() -> int:
                 if client_proc is None or client_proc.proc.poll() is not None:
                     if client_proc is not None and client_proc.proc.poll() is not None:
                         client_stop_reason = f"exit-code={client_proc.proc.returncode}"
+                        exit_tail = tail_lines(client_stderr_log, 20)
+                        if exit_tail:
+                            client_bootstrap_state["bootstrap_error"] = f"exit-tail:{exit_tail}"
+                    client_bootstrap_started_at = None
                     if node_proc and node_proc.proc.poll() is None:
                         client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
                         client_bootstrap_state["redis"] = "booting"
                         client_bootstrap_state["heartbeat"] = "booting"
                         client_bootstrap_state["presence_key"] = "unknown"
+                        client_bootstrap_state["bootstrap_error"] = "none"
                         client_presence_key = None
                         client_reported_redis_url = None
+                        client_bootstrap_started_at = time.time()
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
                         _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
                             logger.warning("rslogic-client failed: %s", client_stop_reason)
+                            client_startup_error_count += 1
+                            if "exit-code" in client_stop_reason:
+                                client_bootstrap_state["bootstrap_error"] = client_stop_reason
                             time.sleep(cfg.client_restart_delay_seconds)
+                            if client_startup_error_count >= max_client_bootstrap_failures:
+                                logger.error(
+                                    "Too many client startup failures (%s).",
+                                    client_startup_error_count,
+                                )
+                                should_stop = True
                     else:
                         client_stop_reason = "waiting-for-node"
 
@@ -1556,6 +1695,55 @@ def main() -> int:
                             client_bootstrap_state["redis"] = "connected"
                         else:
                             client_bootstrap_state["redis"] = "disconnected"
+                        if is_client_heartbeat_ready(heartbeat_status):
+                            client_heartbeat_startup_fail_count = 0
+                            client_startup_error_count = 0
+                            client_bootstrap_started_at = None
+                            client_bootstrap_state["bootstrap_error"] = "none"
+                        elif is_client_heartbeat_absent(heartbeat_status):
+                            if client_bootstrap_started_at and time.time() - client_bootstrap_started_at >= startup_heartbeat_grace_seconds:
+                                client_bootstrap_state["bootstrap_error"] = (
+                                    f"startup-heartbeat-timeout:{heartbeat_status}"
+                                    if not heartbeat_error
+                                    else f"{heartbeat_status}:{heartbeat_error}"
+                                )
+                                logger.debug(
+                                    "rslogic-client heartbeat still absent after %ss; continuing without restart.",
+                                    startup_heartbeat_grace_seconds,
+                                )
+                                client_bootstrap_started_at = None
+                        elif is_client_heartbeat_missing(heartbeat_status):
+                            client_bootstrap_state["bootstrap_error"] = (
+                                f"{heartbeat_status}:{heartbeat_error}" if heartbeat_error else heartbeat_status
+                            )
+                            if client_bootstrap_started_at and time.time() - client_bootstrap_started_at >= startup_heartbeat_grace_seconds:
+                                client_heartbeat_startup_fail_count += 1
+                                if heartbeat_error:
+                                    client_bootstrap_state["bootstrap_error"] = f"{heartbeat_status}:{heartbeat_error}"
+                                logger.warning(
+                                    "rslogic-client heartbeat did not become healthy within %ss (attempt=%s/%s): %s",
+                                    startup_heartbeat_grace_seconds,
+                                    client_heartbeat_startup_fail_count,
+                                    max_client_bootstrap_failures,
+                                    client_bootstrap_state["bootstrap_error"],
+                                )
+                                client_bootstrap_started_at = None
+                                stop_process(client_proc, "rslogic-client", logger)
+                                client_proc = None
+                                client_stop_reason = "startup-heartbeat-timeout"
+                                exit_tail = tail_lines(client_stderr_log, 20)
+                                if exit_tail:
+                                    client_bootstrap_state["bootstrap_error"] = (
+                                        f"heartbeat-timeout-exit-tail:{exit_tail}"
+                                    )
+                                if client_heartbeat_startup_fail_count >= max_client_bootstrap_failures:
+                                    logger.error(
+                                        "Client failed startup heartbeat %s times. Stopping orchestrator for inspection.",
+                                        client_heartbeat_startup_fail_count,
+                                    )
+                                    should_stop = True
+                                time.sleep(cfg.client_restart_delay_seconds)
+                                next_status = time.time() + cfg.client_restart_delay_seconds
                     elif not client_proc or client_proc.proc.poll() is not None:
                         client_bootstrap_state["heartbeat"] = "stopped"
                         client_bootstrap_state["redis"] = "disconnected"
@@ -1572,7 +1760,7 @@ def main() -> int:
                     uptime = str(timedelta(seconds=max(0, int((datetime.now() - loop_start).total_seconds()))))
                     logger.info(
                         "STATUS node=%s client=%s autoUpdate=%s health=%s repo=%s uptime=%s "
-                        "clientRedis=%s clientHeartbeat=%s heartbeatKey=%s",
+                        "clientRedis=%s clientHeartbeat=%s heartbeatKey=%s clientError=%s",
                         node_up,
                         client_up,
                         not cfg.no_auto_update,
@@ -1582,6 +1770,7 @@ def main() -> int:
                         client_bootstrap_state["redis"],
                         client_bootstrap_state["heartbeat"],
                         client_bootstrap_state["presence_key"],
+                        client_bootstrap_state["bootstrap_error"],
                     )
                     next_status = time.time() + max(cfg.loop_sleep_seconds, 5)
 

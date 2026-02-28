@@ -8,7 +8,7 @@ from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"
 LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"

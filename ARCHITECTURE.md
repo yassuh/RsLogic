@@ -35,7 +35,7 @@
     - `RSLOGIC_CONTROL_COMMAND_QUEUE` (default `rslogic:control:commands`)
     - `RSLOGIC_CONTROL_RESULT_QUEUE` (default `rslogic:control:results`)
     - `RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS`, `RSLOGIC_CONTROL_RESULT_TTL_SECONDS`, `RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS`
-- `config.py` loads `.env` with override enabled (`load_dotenv(override=True)`), so project `.env` values are used consistently for local runtime.
+- `config.py` loads `.env` with override disabled (`load_dotenv(override=False)`), so runtime-injected environment values (for example from orchestrator startup) are preserved unless the caller sets them explicitly.
 - Postgres DSN derivation URL-encodes credentials and defaults to `postgis:5432` when explicit DB URL env vars are not provided.
 - S3 bucket routing:
   - Waiting uploads are locked to `drone-imagery-waiting` (`S3Config.bucket_name`).
@@ -167,19 +167,25 @@
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
   - Recommended startup shape on this installer: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -dataRoot "<path>"` with automatic fallback retry using `--dataRoot` when needed.
   - On startup, this worker pings Redis before entering the consume loop and fails fast if control Redis is unreachable.
-  - On startup, this worker validates required SDK environment variables (`RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`, `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN`) and logs masked values for troubleshooting.
+  - On startup, this worker emits masked startup diagnostics for SDK environment variables (`RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`, `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN`) but does not require them to be present at process startup.
   - Presence heartbeat is published continuously to Redis at `<control_command_queue>:presence:<host>:<pid>` as a JSON key with TTL.
     - Default interval: 5s, TTL: 15s.
     - Value includes `status`, `worker_id`, `command_queue`, `result_queue`, `workers`, `pid`, and `last_seen`.
     - Override with `RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS` and `RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS`.
     - The worker updates `status=online` periodically and writes `status=stopped` once shutdown begins.
     - A consumer can treat key expiry as liveness loss.
+    - Orchestrator startup heartbeat policy: wait for `RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS * 4` (minimum 30 seconds) for missing/invalid heartbeat status before applying restart/backoff.
   - `scripts/rslogic_rsnode_client.py` now checks presence directly from Redis for `clientHeartbeat` in status output.
   - `clientRedis` and `clientHeartbeat` status fields are now explicitly set to deterministic states (`connected`, `disconnected`, `booting`, `absent`, etc.) without requiring manual `redis-cli` inspection.
   - Orchestrator probes client bootstrap log lines for actual Redis URL and published presence key to avoid false negatives when startup args differ from launcher defaults.
 - `rslogic-client` startup diagnostics:
-  - Missing SDK env values are reported as a hard startup error with the exact missing variable names.
+  - Missing SDK env values are now reported as startup warnings with the exact missing variable names.
+  - Client startup is allowed to proceed without credentials so `rstool_sdk` discovery/command flows can bootstrap token acquisition path.
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.
+  - The orchestrator now reads `RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`,
+    `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, and `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN` from the active repo `.env`
+    and process environment when CLI arguments are not supplied, but treats missing values as a warning.
+  - STATUS output now includes `clientError=...` to expose startup bootstrap failures observed in child logs.
 - `scripts/rslogic_rsnode_client.py` is the single orchestrator for RSNode hosts:
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
   - Performs `git fetch/checkout` and explicit ahead/behind reconciliation against `main` during startup and periodic checks.

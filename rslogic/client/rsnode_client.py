@@ -812,9 +812,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         auth_token=rs_auth_token,
     )
     if missing_sdk_env:
-        raise SystemExit(
-            "Missing required SDK environment variables for rslogic rsnode client startup: "
-            + ", ".join(missing_sdk_env)
+        logger.warning(
+            "Missing SDK env values at startup: %s. Client will start; SDK-authenticated commands may fail "
+            "until credentials are provided.",
+            ", ".join(missing_sdk_env),
         )
 
     logger.info("RSNode client startup: pinging Redis control queue")
