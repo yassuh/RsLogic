@@ -100,6 +100,7 @@ class RunConfig:
     no_pull: bool
     no_deps: bool
     dry_run: bool
+    git_sync_strategy: str
 
 
 @dataclass
@@ -195,13 +196,20 @@ def setup_logger(log_path: Path) -> logging.Logger:
     return logger
 
 
-def run_command(command: Sequence[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: Sequence[str],
+    cwd: Optional[Path] = None,
+    env: Optional[Dict[str, str]] = None,
+    check: bool = True,
+    capture_output: bool = True,
+) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         list(command),
         cwd=str(cwd) if cwd else None,
         env=env,
         text=True,
-        capture_output=True,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
     )
     if check and proc.returncode != 0:
         raise RuntimeError(
@@ -250,16 +258,72 @@ def ensure_repository(cfg: RunConfig, logger: logging.Logger) -> bool:
             run_command(["git", "clone", "--branch", cfg.repo_branch, cfg.repo_url, str(cfg.repo_root)])
         return True
 
-    before = git_head(cfg.repo_root)
     logger.info("Checking for updates from %s (branch=%s)", cfg.repo_url, cfg.repo_branch)
     if cfg.dry_run:
         return False
 
     run_command(["git", "-C", str(cfg.repo_root), "fetch", "origin", "--prune", "--quiet"])
     run_command(["git", "-C", str(cfg.repo_root), "checkout", cfg.repo_branch])
-    run_command(["git", "-C", str(cfg.repo_root), "pull", "--ff-only"])
-    after = git_head(cfg.repo_root)
-    return bool(before) and bool(after) and before != after
+
+    remote_ref = f"origin/{cfg.repo_branch}"
+    relation = run_command(
+        ["git", "-C", str(cfg.repo_root), "rev-list", "--left-right", "--count", f"HEAD...{remote_ref}"],
+        check=False,
+        capture_output=True,
+    )
+    if relation.returncode != 0:
+        raise RuntimeError(
+            f"Unable to compare against remote ref {remote_ref}: {relation.stderr.strip() or relation.stdout.strip()}"
+        )
+
+    parts = (relation.stdout or "").strip().split()
+    if len(parts) != 2:
+        raise RuntimeError(f"Unexpected git relation output from {remote_ref}: {relation.stdout!r}")
+
+    try:
+        behind = int(parts[0])
+        ahead = int(parts[1])
+    except ValueError:
+        raise RuntimeError(f"Invalid git relation values from {remote_ref}: {relation.stdout!r}")
+
+    if behind == 0 and ahead == 0:
+        return False
+
+    if behind > 0 and ahead == 0:
+        logger.info("Remote is ahead by %s commit(s). Fast-forwarding.", behind)
+        run_command(["git", "-C", str(cfg.repo_root), "merge", "--ff-only", remote_ref])
+        return True
+
+    if behind == 0 and ahead > 0:
+        logger.warning("Local branch is ahead by %s commit(s); leaving local commits in place.", ahead)
+        return False
+
+    if ahead > 0 and behind > 0:
+        logger.warning(
+            "Branch is diverged (behind=%s, ahead=%s). Strategy=%s",
+            behind,
+            ahead,
+            cfg.git_sync_strategy,
+        )
+        if cfg.git_sync_strategy == "hard-reset":
+            logger.warning("Applying hard reset to %s for divergence repair.", remote_ref)
+            run_command(["git", "-C", str(cfg.repo_root), "reset", "--hard", remote_ref])
+            return True
+
+        if cfg.git_sync_strategy == "rebase":
+            logger.warning("Rebasing onto %s for divergence repair.", remote_ref)
+            run_command(["git", "-C", str(cfg.repo_root), "rebase", remote_ref])
+            return True
+
+        if cfg.git_sync_strategy == "ff-only":
+            raise RuntimeError(
+                "Repository diverged and --git-sync-strategy=ff-only is set. "
+                "Re-run with --git-sync-strategy hard-reset (safe) or rebase."
+            )
+
+        raise RuntimeError(f"Unknown git sync strategy '{cfg.git_sync_strategy}'.")
+
+    raise RuntimeError(f"Unsupported git relation state behind={behind} ahead={ahead}")
 
 
 def venv_python(cfg: RunConfig) -> Path:
@@ -338,29 +402,53 @@ def missing_runtime_modules(python_executable: Path) -> List[str]:
     if not python_executable.exists():
         return ["python_executable"]
 
-    check_script = (
-        "import importlib.util, json\\n"
-        f"required = {json.dumps(REQUIRED_CLIENT_MODULES)}\\n"
-        "missing = [name for name in required if importlib.util.find_spec(name) is None]\\n"
-        "print(json.dumps(missing))\\n"
+    import tempfile
+    import textwrap
+
+    check_script = textwrap.dedent(
+        f"""\
+        import importlib.util
+        import json
+
+        required = {json.dumps(REQUIRED_CLIENT_MODULES)}
+        missing = [name for name in required if importlib.util.find_spec(name) is None]
+        print(json.dumps(missing))
+        """
     )
 
-    proc = subprocess.run(
-        [str(python_executable), "-c", check_script],
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py", delete=False) as check_file:
+        check_file.write(check_script)
+        check_file_path = Path(check_file.name)
+
+    try:
+        proc = subprocess.run(
+            [str(python_executable), str(check_file_path)],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        try:
+            check_file_path.unlink()
+        except Exception:
+            pass
     if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        if stderr:
+            return [f"probe_error:{stderr}"]
+        stdout = (proc.stdout or "").strip()
+        if stdout:
+            return [f"probe_error:{stdout}"]
         return ["runtime_probe_failure"]
 
-    output = (proc.stdout or "").strip()
-    if not output:
+    raw_output = (proc.stdout or "").strip().splitlines()
+    if not raw_output:
         return ["runtime_probe_failure"]
 
     try:
-        missing = json.loads(output)
+        payload = raw_output[-1].strip()
+        missing = json.loads(payload)
     except Exception:
-        return ["runtime_probe_failure"]
+        return [f"probe_error:non_json_output:{raw_output[-1].strip()[:240]}"]
 
     if not isinstance(missing, list):
         return ["runtime_probe_failure"]
@@ -395,8 +483,16 @@ def install_project_dependencies(cfg: RunConfig, logger: logging.Logger) -> None
         return
 
     logger.info("Installing RsLogic in editable mode using %s", python_executable)
-    run_command([str(python_executable), "-m", "pip", "install", "--upgrade", "pip"], cwd=cfg.repo_root)
-    run_command([str(python_executable), "-m", "pip", "install", "-e", "."], cwd=cfg.repo_root)
+    run_command(
+        [str(python_executable), "-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip"],
+        cwd=cfg.repo_root,
+        capture_output=False,
+    )
+    run_command(
+        [str(python_executable), "-m", "pip", "install", "--disable-pip-version-check", "-e", "."],
+        cwd=cfg.repo_root,
+        capture_output=False,
+    )
 
 
 def write_install_marker(marker_path: Path, head: str) -> None:
@@ -773,6 +869,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL)
     parser.add_argument("--repo-branch", default=DEFAULT_REPO_BRANCH)
     parser.add_argument("--repo-root", default=str(DEFAULT_REPO_ROOT))
+    parser.add_argument(
+        "--git-sync-strategy",
+        choices=["ff-only", "rebase", "hard-reset"],
+        default="hard-reset",
+        help="How to resolve branch divergence: ff-only, rebase, or hard-reset",
+    )
     parser.add_argument("--python-executable", default="")
     parser.add_argument("--venv-path", default="")
     parser.add_argument("--node-executable", default=str(DEFAULT_NODE_EXECUTABLE))
@@ -875,6 +977,7 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
         no_pull=ns.no_pull,
         no_deps=ns.no_deps,
         dry_run=ns.dry_run,
+        git_sync_strategy=ns.git_sync_strategy,
     )
 
 

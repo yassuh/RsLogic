@@ -179,7 +179,8 @@
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.
 - `scripts/rslogic_rsnode_client.py` is the single orchestrator for RSNode hosts:
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
-  - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.
+  - Performs `git fetch/checkout` and explicit ahead/behind reconciliation against `main` during startup and periodic checks.
+  - Default reconciliation policy is `hard-reset` (`--git-sync-strategy` supports `rebase` and `ff-only` as alternatives).
   - Creates or reuses `.venv`, installs `rslogic` in editable mode, and writes `.env.rsnode-worker`.
   - Before launching the client, probes the virtual environment for a minimum runtime module set (`dotenv`, `sqlalchemy`, `redis`, `requests`, `httpx`, etc.) to avoid stale/partial installs, then reinstall/re-writes the head marker when modules are missing.
   - If existing checkout is missing or invalid, it is backed up (or replaced when bootstrap is needed) and then re-cloned automatically.
@@ -193,11 +194,16 @@
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
   - Starts the Python orchestrator in a persistent console and keeps the window open while the orchestrator runs.
   - If the orchestrator script is missing locally, it bootstraps a fresh checkout to `%ProgramData%\RsLogic\RsLogic` before launch.
+  - Forces `--git-sync-strategy hard-reset` by default to recover from branch divergence automatically.
   - Arguments passed to the batch file are forwarded to the Python orchestrator.
 - The launcher sets `--node-data-root-argument=-dataRoot` by default and writes status/error output to the console while running.
   - A desktop shortcut can be created with `scripts/create_rslogic_rsnode_client_shortcut.bat` (targeting `start_rslogic_rsnode_client.bat`).
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
+- `scripts/sync_rslogic_repo.ps1` performs explicit branch synchronization:
+  - fetches `origin/main` and prints ahead/behind comparison.
+  - resolves behind-only state via fast-forward.
+  - handles divergence with `-Rebase` or `-HardReset`.
 - S3 uploads are routed through the server-configured path:
   - Bucket: locked to `drone-imagery-waiting` (not client-configurable)
   - Prefix: `RSLOGIC_S3_SCRATCHPAD_PREFIX` / `S3_SCRATCHPAD_PREFIX` (default `scratchpad`)
