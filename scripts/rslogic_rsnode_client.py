@@ -555,6 +555,8 @@ def build_client_env(cfg: RunConfig, redis_url: str, python_in_venv: Path) -> Di
         "RSLOGIC_RSNODE_REPO_BRANCH": cfg.repo_branch,
         "RSLOGIC_RSNODE_AUTO_UPDATE": str(not cfg.no_auto_update).lower(),
         "RSLOGIC_RSNODE_REPO_UPDATE_INTERVAL_SECONDS": str(cfg.repo_update_interval_seconds),
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
     }
 
 
@@ -680,15 +682,20 @@ def get_client_heartbeat_status(
         return "not-configured", "disconnected"
 
     try:
-        bus = redis.Redis.from_url(redis_url, decode_responses=True)
+        bus = redis.Redis.from_url(redis_url, decode_responses=False)
+        bus.ping()
     except Exception as exc:
         logger.debug("Failed to connect to redis for heartbeat check: %s", exc)
         return "presence-check-failed", "disconnected"
 
-    def _decode_payload(raw: str, *, key: str) -> Optional[dict]:
+    def _decode_payload(raw: Any, *, key: str) -> Optional[dict]:
         if not raw:
             logger.debug("Presence key %s had empty body.", key)
             return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        elif not isinstance(raw, str):
+            raw = str(raw)
         try:
             payload = json.loads(raw)
         except Exception as exc:
@@ -977,6 +984,8 @@ def run_rslogic_client(cfg: RunConfig, env_values: Dict[str, str], logger: loggi
     managed: Optional[ManagedProcess] = None
     env = dict(os.environ)
     env.update({k: str(v) for k, v in env_values.items()})
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
 
     try:
         managed = start_process_with_logs(
@@ -1159,13 +1168,14 @@ def main() -> int:
         "heartbeat": "booting",
     }
     client_presence_key: Optional[str] = None
+    client_reported_redis_url: Optional[str] = None
     client_log_offsets = {
         str(client_stdout_log): _log_file_position(client_stdout_log),
         str(client_stderr_log): _log_file_position(client_stderr_log),
     }
 
     def _poll_client_bootstrap_state() -> None:
-        nonlocal client_presence_key
+        nonlocal client_presence_key, client_reported_redis_url
         for path_key, offset in list(client_log_offsets.items()):
             path = Path(path_key)
             new_lines, new_offset = _read_new_log_lines(path, offset)
@@ -1181,6 +1191,11 @@ def main() -> int:
                         parsed_key = line[marker_index + len(marker):].strip()
                         if parsed_key:
                             client_presence_key = parsed_key
+                if "RSNode client startup config redis_url=" in line:
+                    marker = "redis_url="
+                    marker_index = line.find(marker)
+                    if marker_index >= 0:
+                        client_reported_redis_url = line[marker_index + len(marker):].strip()
 
     def request_stop(_signum: Optional[int] = None, _frame: Any = None) -> None:
         nonlocal should_stop
@@ -1327,9 +1342,10 @@ def main() -> int:
                     if node_proc and node_proc.proc.poll() is None:
                         client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
-                        client_bootstrap_state["redis"] = "disconnected"
+                        client_bootstrap_state["redis"] = "booting"
                         client_bootstrap_state["heartbeat"] = "booting"
                         client_presence_key = None
+                        client_reported_redis_url = None
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
                         _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
@@ -1353,7 +1369,7 @@ def main() -> int:
                         _poll_client_bootstrap_state()
                     if client_proc and client_proc.proc.poll() is None:
                         heartbeat_status, redis_status = get_client_heartbeat_status(
-                            redis_connection,
+                            client_reported_redis_url or redis_connection,
                             cfg.control_command_queue,
                             logger,
                             expected_presence_key=client_presence_key,

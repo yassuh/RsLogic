@@ -176,6 +176,7 @@
     - A consumer can treat key expiry as liveness loss.
   - `scripts/rslogic_rsnode_client.py` now checks presence directly from Redis for `clientHeartbeat` in status output.
   - `clientRedis` and `clientHeartbeat` status fields are now explicitly set to deterministic states (`connected`, `disconnected`, `booting`, `absent`, etc.) without requiring manual `redis-cli` inspection.
+  - Orchestrator probes client bootstrap log lines for actual Redis URL and published presence key to avoid false negatives when startup args differ from launcher defaults.
 - `rslogic-client` startup diagnostics:
   - Missing SDK env values are reported as a hard startup error with the exact missing variable names.
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.
@@ -189,8 +190,9 @@
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running loop.
   - Heartbeat lookup strategy:
-    - Orchestrator first reads `presence:<hostname>:<pid>` for the active client PID.
-    - If that key is missing, it falls back to `<control_command_queue>:presence:*` scan and selects the latest `last_seen`.
+    - Orchestrator uses a priority chain: explicit key from client logs, then `presence:<hostname>:<pid>` for active client pid, then `<control_command_queue>:presence:*` scan.
+    - Before returning a heartbeat result, orchestrator performs a Redis ping and parses the JSON payload (`status`, `last_seen`) from any matching key.
+  - Client launch environment forces unbuffered Python output (`PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`) so bootstrap logs are always written before status polling.
   - Keeps dedicated launch logs for RSNode/client (`rsnode-stdout.log`, `rsnode-stderr.log`, `rslogic-client-stdout.log`, `rslogic-client-stderr.log`) and includes recent process failure output in status logs.
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
   - Detects repository updates and refreshes dependencies before restarting managed processes.
