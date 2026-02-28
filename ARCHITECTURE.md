@@ -181,6 +181,7 @@
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
   - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.
   - Creates or reuses `.venv`, installs `rslogic` in editable mode, and writes `.env.rsnode-worker`.
+  - Before launching the client, probes the virtual environment for a minimum runtime module set (`dotenv`, `sqlalchemy`, `redis`, `requests`, `httpx`, etc.) to avoid stale/partial installs, then reinstall/re-writes the head marker when modules are missing.
   - If existing checkout is missing or invalid, it is backed up (or replaced when bootstrap is needed) and then re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running loop.

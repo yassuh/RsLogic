@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -45,6 +46,21 @@ DEFAULT_VENV_PATH = DEFAULT_REPO_ROOT / ".venv"
 DEFAULT_NODE_EXECUTABLE = Path(os.getenv("ProgramFiles", str(Path("C:/Program Files"))) ) / "Epic Games" / "RealityScan_2.1" / "RSNode.exe"
 DEFAULT_NODE_DATA_ROOT = _safe_local_app_data_path() / "Epic Games" / "RealityScan" / "RSNodeData"
 DEFAULT_LOG_PATH = _safe_program_data_path() / "RsLogic" / "rsnode-orchestrator.log"
+REQUIRED_CLIENT_MODULES = (
+    "dotenv",
+    "sqlalchemy",
+    "redis",
+    "requests",
+    "httpx",
+    "boto3",
+    "PIL",
+    "textual",
+    "typer",
+    "uvicorn",
+    "psycopg",
+    "geoalchemy2",
+    "alembic",
+)
 
 
 @dataclass
@@ -318,12 +334,48 @@ def ensure_venv(cfg: RunConfig, logger: logging.Logger) -> None:
     run_command([cfg.python_executable, "-m", "venv", str(cfg.venv_path)])
 
 
+def missing_runtime_modules(python_executable: Path) -> List[str]:
+    if not python_executable.exists():
+        return ["python_executable"]
+
+    check_script = (
+        "import importlib.util, json\\n"
+        f"required = {json.dumps(REQUIRED_CLIENT_MODULES)}\\n"
+        "missing = [name for name in required if importlib.util.find_spec(name) is None]\\n"
+        "print(json.dumps(missing))\\n"
+    )
+
+    proc = subprocess.run(
+        [str(python_executable), "-c", check_script],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return ["runtime_probe_failure"]
+
+    output = (proc.stdout or "").strip()
+    if not output:
+        return ["runtime_probe_failure"]
+
+    try:
+        missing = json.loads(output)
+    except Exception:
+        return ["runtime_probe_failure"]
+
+    if not isinstance(missing, list):
+        return ["runtime_probe_failure"]
+
+    return [str(item) for item in missing if str(item).strip()]
+
+
 def needs_dependency_install(cfg: RunConfig, head: str, marker_path: Path) -> bool:
     if cfg.no_deps:
         return False
     if not marker_path.exists():
         return True
     if not venv_python(cfg).exists():
+        return True
+    if missing_runtime_modules(venv_python(cfg)):
         return True
     try:
         installed_head = marker_path.read_text(encoding="utf-8").strip()
@@ -841,7 +893,6 @@ def stop_all(node_proc: Optional[ManagedProcess], client_proc: Optional[ManagedP
     stop_process(node_proc, "RSNode.exe", logger)
     stop_process(client_proc, "rslogic-client", logger)
 
-
 def main() -> int:
     args = parse_args()
     cfg = normalize_config(args)
@@ -929,10 +980,26 @@ def main() -> int:
 
             current_head = git_head(cfg.repo_root)
             if needs_dependency_install(cfg, current_head, marker_path):
+                missing_modules = missing_runtime_modules(venv_python(cfg))
+                if missing_modules:
+                    logger.warning("Runtime module probe before install: missing %s", ", ".join(sorted(missing_modules)))
                 logger.info("Installing dependencies for checkout %s", current_head)
                 install_project_dependencies(cfg, logger)
+                post_install_missing = missing_runtime_modules(venv_python(cfg))
+                if post_install_missing:
+                    raise RuntimeError(
+                        f"Dependency install completed but still missing modules: {', '.join(sorted(post_install_missing))}"
+                    )
                 write_install_marker(marker_path, current_head)
             else:
+                missing_modules = missing_runtime_modules(venv_python(cfg))
+                if missing_modules:
+                    logger.warning("Missing runtime modules despite dependency marker match: %s", ", ".join(sorted(missing_modules)))
+                    if cfg.no_deps:
+                        raise RuntimeError(
+                            "Refusing to run with --no-deps because required runtime modules are missing: "
+                            + ", ".join(sorted(missing_modules))
+                        )
                 logger.info(
                     "Skipping dependency install; environment already initialized for repository commit %s",
                     current_head,
@@ -960,7 +1027,19 @@ def main() -> int:
                     current_head = git_head(cfg.repo_root)
                     logger.info("Repository changed. Refreshing dependencies and restarting managed services.")
                     if needs_dependency_install(cfg, current_head, marker_path):
+                        missing_modules = missing_runtime_modules(venv_python(cfg))
+                        if missing_modules:
+                            logger.warning(
+                                "Runtime module probe before refresh: missing %s",
+                                ", ".join(sorted(missing_modules)),
+                            )
                         install_project_dependencies(cfg, logger)
+                        post_install_missing = missing_runtime_modules(venv_python(cfg))
+                        if post_install_missing:
+                            raise RuntimeError(
+                                "Dependency refresh completed but still missing modules: "
+                                f"{', '.join(sorted(post_install_missing))}"
+                            )
                         write_install_marker(marker_path, current_head)
                     else:
                         logger.info(
