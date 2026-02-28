@@ -102,7 +102,6 @@
   - Any arguments passed to the batch file are forwarded to the PowerShell script parameters.
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
-- `scripts/rsnode_watchdog.ps1`, `scripts/run_rslogic_client_stack.ps1`, and `scripts/repair_rslogic_rsnode_client.ps1` were consolidated into the orchestrator to keep behavior in one code path.
 - S3 uploads are routed through the server-configured path:
   - Bucket: locked to `drone-imagery-waiting` (not client-configurable)
   - Prefix: `RSLOGIC_S3_SCRATCHPAD_PREFIX` / `S3_SCRATCHPAD_PREFIX` (default `scratchpad`)

@@ -67,7 +67,19 @@ $installHeadFile = Join-Path $resolvedVenvPath ".rslogic_install_head.txt"
 $nodeLogPrefix = "RsLogic RSNode client orchestrator"
 $loopStartTime = Get-Date
 $cancelRequested = $false
-[Console]::CancelKeyPress += { $cancelRequested = $true }
+
+try {
+    if ([System.Console].GetEvent("CancelKeyPress")) {
+        [void][System.Console]::add_CancelKeyPress({
+            param([object]$Sender, [System.ConsoleCancelEventArgs]$Args)
+            $script:cancelRequested = $true
+            $Args.Cancel = $true
+        })
+        Write-Log "Registered Ctrl+C handler for graceful shutdown."
+    }
+} catch {
+    Write-Log "Ctrl+C handler not available in this PowerShell host; graceful shutdown via Ctrl+C may be limited." "WARN"
+}
 
 $resolvedServerHost = $ServerHost.Trim()
 if ($resolvedServerHost -and $resolvedServerHost -ne "localhost") {
