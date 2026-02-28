@@ -650,6 +650,7 @@ def get_client_heartbeat_status(
     control_command_queue: str,
     logger: logging.Logger,
     *,
+    expected_presence_key: Optional[str] = None,
     expected_client_host: Optional[str] = None,
     expected_client_pid: Optional[int] = None,
 ) -> Tuple[str, str]:
@@ -707,6 +708,16 @@ def get_client_heartbeat_status(
         return status
 
     try:
+        if expected_presence_key:
+            try:
+                raw_payload = bus.get(expected_presence_key)
+            except Exception as exc:
+                logger.debug("Direct presence key lookup failed for %s: %s", expected_presence_key, exc)
+                raw_payload = None
+            parsed = _decode_payload(raw_payload, key=expected_presence_key)
+            if parsed is not None:
+                return _to_status(parsed), "connected"
+
         if expected_client_host and expected_client_pid:
             direct_key = f"{control_command_queue}:presence:{expected_client_host}:{expected_client_pid}"
             try:
@@ -1147,12 +1158,14 @@ def main() -> int:
         "redis": "disconnected",
         "heartbeat": "booting",
     }
+    client_presence_key: Optional[str] = None
     client_log_offsets = {
         str(client_stdout_log): _log_file_position(client_stdout_log),
         str(client_stderr_log): _log_file_position(client_stderr_log),
     }
 
     def _poll_client_bootstrap_state() -> None:
+        nonlocal client_presence_key
         for path_key, offset in list(client_log_offsets.items()):
             path = Path(path_key)
             new_lines, new_offset = _read_new_log_lines(path, offset)
@@ -1162,6 +1175,12 @@ def main() -> int:
                     client_bootstrap_state["redis"] = "connected"
                 if "RSNode presence heartbeat:" in line:
                     client_bootstrap_state["heartbeat"] = "enabled"
+                    marker = "key="
+                    marker_index = line.find(marker)
+                    if marker_index >= 0:
+                        parsed_key = line[marker_index + len(marker):].strip()
+                        if parsed_key:
+                            client_presence_key = parsed_key
 
     def request_stop(_signum: Optional[int] = None, _frame: Any = None) -> None:
         nonlocal should_stop
@@ -1310,6 +1329,7 @@ def main() -> int:
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
                         client_bootstrap_state["redis"] = "disconnected"
                         client_bootstrap_state["heartbeat"] = "booting"
+                        client_presence_key = None
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
                         _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
@@ -1336,6 +1356,7 @@ def main() -> int:
                             redis_connection,
                             cfg.control_command_queue,
                             logger,
+                            expected_presence_key=client_presence_key,
                             expected_client_host=socket.gethostname(),
                             expected_client_pid=client_proc.proc.pid,
                         )
