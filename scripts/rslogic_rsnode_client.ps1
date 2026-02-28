@@ -770,7 +770,7 @@ try {
             $clientProcess = Start-RSLogicClient -EnvValues $envValues -PythonPath $pythonForClient
         }
 
-        if (Get-Date -ge $nextStatus) {
+        if ((Get-Date) -ge $nextStatus) {
             $head = Get-RepoHead -Path $resolvedRepoPath
             Show-Status -NodeProcess $nodeProcess -ClientProcess $clientProcess -RepoHead $head -AutoUpdate (-not $NoAutoUpdate)
             $nextStatus = (Get-Date).AddSeconds([Math]::Max($LoopSleepSeconds, 5))
