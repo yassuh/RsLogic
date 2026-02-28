@@ -182,6 +182,8 @@
   - Missing SDK env values are now reported as startup warnings with the exact missing variable names.
   - Client startup is allowed to proceed without credentials so `rstool_sdk` discovery/command flows can bootstrap token acquisition path.
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.
+  - `rslogic.client.rsnode_client` performs a startup bootstrap: applies available SDK overrides, calls `node.connect_user()` (best effort), then calls `node.connection()` and updates in-memory `sdk_base_url`/`auth_token` when a connection payload is returned.
+  - The same bootstrap is attempted before `rstool_sdk.command` execution, and connection-shaped command results are folded back into in-memory SDK config.
   - The orchestrator now reads `RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`,
     `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, and `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN` from the active repo `.env`
     and process environment when CLI arguments are not supplied, but treats missing values as a warning.

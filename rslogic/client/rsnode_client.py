@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 import os
 import socket
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from config import load_config
 from rslogic.jobs import RsToolsSdkRunner
@@ -96,6 +96,41 @@ def _collect_missing_sdk_env(
     return missing
 
 
+def _first_non_empty(payload: Optional[Dict[str, Any]], keys: Sequence[str]) -> str:
+    if not payload:
+        return ""
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        rendered = str(value).strip()
+        if rendered:
+            return rendered
+    return ""
+
+
+def _coerce_connection_payload(value: Any) -> Dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if dataclasses.is_dataclass(value):
+        return value.__dict__ if hasattr(value, "__dict__") else {}
+    payload: Dict[str, Any] = {}
+    for attribute in (
+        "protocol",
+        "hostAddress",
+        "port",
+        "authToken",
+        "pairingPage",
+        "landingPage",
+        "allAddresses",
+    ):
+        if hasattr(value, attribute):
+            payload[attribute] = getattr(value, attribute)
+    return payload
+
+
 class RsNodeClient:
     """Runs processing commands pulled from Redis and updates RSNode via SDK."""
 
@@ -122,17 +157,12 @@ class RsNodeClient:
         self._rs_client_id = rs_client_id
         self._rs_app_token = rs_app_token
         self._rs_auth_token = rs_auth_token
-        self._runner = RsToolsSdkRunner(
-            base_url=rs_base_url,
-            client_id=rs_client_id,
-            app_token=rs_app_token,
-            auth_token=rs_auth_token,
-        )
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(worker_count)))
         self._worker_count = max(1, int(worker_count))
         self._stop_event = threading.Event()
         self._heartbeat_stop_event = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
+        self._sdk_state_lock = threading.Lock()
         self._heartbeat_interval_seconds = _parse_positive_int(
             os.getenv("RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"),
             default=5,
@@ -145,7 +175,183 @@ class RsNodeClient:
             self._heartbeat_ttl_seconds = self._heartbeat_interval_seconds + 1
         self._worker_id = f"{socket.gethostname()}:{os.getpid()}"
         self._presence_key = f"{self._command_queue_key}:presence:{self._worker_id}"
+        self._sdk_connection = {}
         self._sdk_target_methods = self._load_sdk_target_methods()
+
+    def _effective_sdk_config(self, *, payload: Optional[Dict[str, Any]] = None) -> Tuple[str, str, str, str]:
+        base_url = _first_non_empty(
+            payload,
+            (
+                "base_url",
+                "rs_base_url",
+                "sdk_base_url",
+                "RSLOGIC_RSTOOLS_SDK_BASE_URL",
+                "RSTOOL_BASE_URL",
+                "rstools_sdk_base_url",
+            ),
+        ) or self._rs_base_url
+        client_id = _first_non_empty(
+            payload,
+            (
+                "client_id",
+                "rs_client_id",
+                "sdk_client_id",
+                "RSLOGIC_RSTOOLS_SDK_CLIENT_ID",
+                "rstools_sdk_client_id",
+            ),
+        ) or self._rs_client_id
+        app_token = _first_non_empty(
+            payload,
+            (
+                "app_token",
+                "rs_app_token",
+                "sdk_app_token",
+                "RSLOGIC_RSTOOLS_SDK_APP_TOKEN",
+                "rstools_sdk_app_token",
+            ),
+        ) or self._rs_app_token
+        auth_token = _first_non_empty(
+            payload,
+            (
+                "auth_token",
+                "rs_auth_token",
+                "sdk_auth_token",
+                "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN",
+                "rstools_sdk_auth_token",
+            ),
+        ) or self._rs_auth_token
+        return base_url.strip(), client_id.strip(), app_token.strip(), auth_token.strip()
+
+    def _apply_payload_sdk_overrides(self, payload: Optional[Dict[str, Any]]) -> bool:
+        if not payload:
+            return False
+
+        base_url, client_id, app_token, auth_token = self._effective_sdk_config(payload=payload)
+        updated = False
+        with self._sdk_state_lock:
+            if base_url and base_url != self._rs_base_url:
+                logger.info("Updating in-memory SDK base URL from command payload.")
+                self._rs_base_url = base_url
+                updated = True
+            if client_id and client_id != self._rs_client_id:
+                logger.info("Updating in-memory SDK client_id from command payload.")
+                self._rs_client_id = client_id
+                updated = True
+            if app_token and app_token != self._rs_app_token:
+                logger.info("Updating in-memory SDK app_token from command payload.")
+                self._rs_app_token = app_token
+                updated = True
+            if auth_token and auth_token != self._rs_auth_token:
+                logger.info("Updating in-memory SDK auth_token from command payload.")
+                self._rs_auth_token = auth_token
+                updated = True
+        return updated
+
+    def _apply_connection_payload(self, payload: Optional[Dict[str, Any]]) -> bool:
+        if not payload:
+            return False
+        normalized = _coerce_connection_payload(payload)
+        if not normalized:
+            return False
+
+        updated = False
+        derived_base_url = self._derive_base_url_from_connection(normalized)
+        if derived_base_url and derived_base_url != self._rs_base_url:
+            with self._sdk_state_lock:
+                if derived_base_url != self._rs_base_url:
+                    logger.info("Updating in-memory SDK base URL from node connection payload.")
+                    self._rs_base_url = derived_base_url
+                    updated = True
+        auth_token = str(normalized.get("authToken", "") or "").strip()
+        with self._sdk_state_lock:
+            if auth_token and auth_token != self._rs_auth_token:
+                logger.info("Updating in-memory SDK auth token from node connection payload.")
+                self._rs_auth_token = auth_token
+                updated = True
+        return updated
+
+    @staticmethod
+    def _derive_base_url_from_connection(payload: Dict[str, Any]) -> str:
+        protocol = str(payload.get("protocol", "")).strip()
+        host = str(payload.get("hostAddress", "")).strip()
+        if not protocol or not host:
+            return ""
+        port_raw = payload.get("port", "")
+        try:
+            port = int(port_raw)
+        except (TypeError, ValueError):
+            port = 0
+        if port > 0:
+            return f"{protocol}://{host}:{port}"
+        return f"{protocol}://{host}"
+
+    def _build_sdk_runner(self, *, payload: Optional[Dict[str, Any]] = None) -> RsToolsSdkRunner:
+        base_url, client_id, app_token, auth_token = self._effective_sdk_config(payload=payload)
+        self._ensure_sdk_client_config(
+            base_url=base_url,
+            client_id=client_id,
+            app_token=app_token,
+            auth_token=auth_token,
+        )
+        return RsToolsSdkRunner(
+            base_url=base_url,
+            client_id=client_id,
+            app_token=app_token,
+            auth_token=auth_token,
+        )
+
+    def _refresh_node_connection(self, *, payload: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        if RealityScanClient is None:
+            return False, "SDK package unavailable"
+
+        if payload is not None:
+            try:
+                _ = self._apply_payload_sdk_overrides(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed applying payload SDK overrides: %s", exc)
+
+        base_url, client_id, app_token, auth_token = self._effective_sdk_config(payload=payload)
+        if not (base_url and client_id and app_token):
+            missing = []
+            if not base_url:
+                missing.append("base_url")
+            if not client_id:
+                missing.append("client_id")
+            if not app_token:
+                missing.append("app_token")
+            return False, "missing_sdk_values: " + ", ".join(missing)
+
+        try:
+            require_auth = bool(auth_token)
+            if not require_auth:
+                logger.debug(
+                    "No auth token available; attempting RSNode bootstrap with empty token to discover refreshed auth info."
+                )
+            with self._build_realityscan_client(payload=payload, require_auth=require_auth) as client:
+                try:
+                    client.node.connect_user()
+                except Exception:
+                    logger.debug(
+                        "connect_user on startup failed; continuing to attempt connection lookup.",
+                        exc_info=True,
+                    )
+                connection = client.node.connection()
+                normalized = _coerce_connection_payload(connection)
+                if not normalized:
+                    return False, "invalid_connection_payload"
+                updated = self._apply_connection_payload(normalized)
+                with self._sdk_state_lock:
+                    self._sdk_connection = normalized
+                if updated:
+                    logger.info("SDK connection payload refreshed from RSNode connection response.")
+                else:
+                    logger.debug("SDK connection lookup returned existing connection state.")
+                inferred = self._derive_base_url_from_connection(normalized)
+                if inferred:
+                    logger.debug("RSNode connection endpoint observed: %s", inferred)
+                return True, "ok"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _normalize_command_payload(value: Any) -> Any:
@@ -285,7 +491,14 @@ class RsNodeClient:
         return methods
 
     @staticmethod
-    def _ensure_sdk_client_config(*, base_url: str, client_id: str, app_token: str, auth_token: str) -> None:
+    def _ensure_sdk_client_config(
+        *,
+        base_url: str,
+        client_id: str,
+        app_token: str,
+        auth_token: str,
+        require_auth: bool = True,
+    ) -> None:
         missing: list[str] = []
         if not base_url:
             missing.append("base_url")
@@ -293,21 +506,24 @@ class RsNodeClient:
             missing.append("client_id")
         if not app_token:
             missing.append("app_token")
-        if not auth_token:
+        if require_auth and not auth_token:
             missing.append("auth_token")
         if missing:
             raise ValueError(f"missing sdk configuration: {', '.join(missing)}")
 
-    def _build_realityscan_client(self, payload: Dict[str, Any]) -> RealityScanClient:
-        base_url = str(payload.get("base_url") or self._rs_base_url).strip()
-        client_id = str(payload.get("client_id") or self._rs_client_id).strip()
-        app_token = str(payload.get("app_token") or self._rs_app_token).strip()
-        auth_token = str(payload.get("auth_token") or self._rs_auth_token).strip()
+    def _build_realityscan_client(
+        self,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        require_auth: bool = True,
+    ) -> RealityScanClient:
+        base_url, client_id, app_token, auth_token = self._effective_sdk_config(payload=payload)
         self._ensure_sdk_client_config(
             base_url=base_url,
             client_id=client_id,
             app_token=app_token,
             auth_token=auth_token,
+            require_auth=require_auth,
         )
         return RealityScanClient(
             base_url=base_url,
@@ -411,6 +627,10 @@ class RsNodeClient:
     def _handle_processing_command(self, command: ProcessingCommand) -> None:
         started_at = _to_utc_iso()
         payload = command.payload
+        try:
+            _ = self._apply_payload_sdk_overrides(payload)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed applying processing payload SDK overrides: %s", exc)
         job_id = str(payload.get("job_id") or "").strip()
         if not job_id:
             self._publish(
@@ -456,7 +676,14 @@ class RsNodeClient:
                 data={"job_id": job_id},
                 started_at=started_at,
             )
-            result = self._runner.run(
+            try:
+                refreshed, refresh_reason = self._refresh_node_connection(payload=payload)
+                if not refreshed:
+                    logger.debug("SDK bootstrap not fully refreshed before processing command: %s", refresh_reason)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("SDK bootstrap refresh failed before processing command: %s", exc)
+            runner = self._build_sdk_runner(payload=payload)
+            result = runner.run(
                 working_directory=working_directory,
                 image_keys=image_keys,
                 filters=filters,
@@ -627,7 +854,16 @@ class RsNodeClient:
         session_action = str(payload.get("session_action") or "").strip().lower()
         session_id = payload.get("session") if payload.get("session") is not None else payload.get("session_id")
         try:
-            with self._build_realityscan_client(payload) as client:
+            try:
+                _ = self._apply_payload_sdk_overrides(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed applying rstool payload SDK overrides: %s", exc)
+
+            refreshed, refresh_reason = self._refresh_node_connection(payload=payload)
+            if not refreshed:
+                logger.debug("SDK bootstrap not refreshed before rstool command: %s", refresh_reason)
+
+            with self._build_realityscan_client(payload=payload) as client:
                 if session_id is not None:
                     client.session = str(session_id)
 
@@ -668,6 +904,11 @@ class RsNodeClient:
 
                 result = method(*args, **kwargs)
                 normalized = self._normalize_command_payload(result)
+                updated_connection = self._apply_connection_payload(_coerce_connection_payload(normalized))
+                if updated_connection:
+                    logger.debug(
+                        "RSTool command returned connection payload and updated in-memory SDK state."
+                    )
                 self._publish(
                     command=command,
                     status=RESULT_STATUS_OK,
@@ -677,6 +918,7 @@ class RsNodeClient:
                         "target": target,
                         "method": method_name,
                         "result": normalized,
+                        "connection_refreshed": bool(updated_connection),
                     },
                     started_at=started_at,
                     finished_at=_to_utc_iso(),
@@ -740,6 +982,14 @@ class RsNodeClient:
         )
         self._start_heartbeat()
         self._publish_presence(status="online")
+        try:
+            refreshed, reason = self._refresh_node_connection()
+            if refreshed:
+                logger.info("SDK bootstrap completed during startup: %s", reason)
+            else:
+                logger.warning("SDK bootstrap incomplete during startup: %s", reason)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("SDK startup bootstrap raised an unexpected error: %s", exc)
         while not self._stop_event.is_set():
             try:
                 self.process_once(self._block_timeout_seconds)
