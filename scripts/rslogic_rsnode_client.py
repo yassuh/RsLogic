@@ -655,8 +655,8 @@ def get_client_heartbeat_status(
     expected_presence_key: Optional[str] = None,
     expected_client_host: Optional[str] = None,
     expected_client_pid: Optional[int] = None,
-) -> Tuple[str, str]:
-    """Return a tuple of (heartbeat_status, redis_connection_status).
+) -> Tuple[str, str, Optional[str]]:
+    """Return a tuple of (heartbeat_status, redis_connection_status, error_detail).
 
     heartbeat_status values:
         - online
@@ -676,17 +676,30 @@ def get_client_heartbeat_status(
     try:
         import redis
     except Exception:
-        return "presence-check-failed", "redis-lib-missing"
+        return "presence-check-failed", "redis-lib-missing", "redis package missing"
 
     if not redis_url or not control_command_queue:
-        return "not-configured", "disconnected"
+        return "not-configured", "disconnected", "missing redis_url or control_command_queue"
 
     try:
         bus = redis.Redis.from_url(redis_url, decode_responses=False)
         bus.ping()
     except Exception as exc:
         logger.debug("Failed to connect to redis for heartbeat check: %s", exc)
-        return "presence-check-failed", "disconnected"
+        return "presence-check-failed", "disconnected", str(exc)
+
+    def _normalize_key(raw_key: Any) -> Optional[str]:
+        if raw_key is None:
+            return None
+        if isinstance(raw_key, bytes):
+            try:
+                return raw_key.decode("utf-8", errors="replace").strip()
+            except Exception:
+                return None
+        if isinstance(raw_key, str):
+            key = raw_key.strip()
+            return key or None
+        return None
 
     def _decode_payload(raw: Any, *, key: str) -> Optional[dict]:
         if not raw:
@@ -714,72 +727,90 @@ def get_client_heartbeat_status(
             return "status-missing"
         return status
 
-    try:
-        if expected_presence_key:
-            try:
-                raw_payload = bus.get(expected_presence_key)
-            except Exception as exc:
-                logger.debug("Direct presence key lookup failed for %s: %s", expected_presence_key, exc)
-                raw_payload = None
-            parsed = _decode_payload(raw_payload, key=expected_presence_key)
-            if parsed is not None:
-                return _to_status(parsed), "connected"
-
-        if expected_client_host and expected_client_pid:
-            direct_key = f"{control_command_queue}:presence:{expected_client_host}:{expected_client_pid}"
-            try:
-                raw_payload = bus.get(direct_key)
-            except Exception as exc:
-                logger.debug("Direct presence key lookup failed for %s: %s", direct_key, exc)
-                raw_payload = None
-            parsed = _decode_payload(raw_payload, key=direct_key)
-            if parsed is not None:
-                direct_status = _to_status(parsed)
-                return direct_status, "connected"
-
-        latest_payload: Optional[dict] = None
-        latest_seen = None
+    def _collect_host_variants(host: Optional[str]) -> List[str]:
+        if not host:
+            return []
+        normalized = str(host).strip()
+        if not normalized:
+            return []
+        candidates: List[str] = [normalized]
         try:
-            keys = bus.keys(f"{control_command_queue}:presence:*")
-        except Exception as exc:
-            logger.debug("Failed to query heartbeat keys: %s", exc)
-            return "presence-check-failed", "disconnected"
+            fqdn = socket.getfqdn()
+        except Exception:
+            fqdn = ""
+        if fqdn and fqdn not in candidates:
+            candidates.append(fqdn)
+        if "." in normalized:
+            short = normalized.split(".", 1)[0].strip()
+            if short and short not in candidates:
+                candidates.append(short)
+        normalized_lower = normalized.lower()
+        normalized_upper = normalized.upper()
+        if normalized_lower not in candidates:
+            candidates.append(normalized_lower)
+        if normalized_upper not in candidates:
+            candidates.append(normalized_upper)
+        if fqdn and "." in fqdn:
+            short_fqdn = fqdn.split(".", 1)[0].strip()
+            if short_fqdn and short_fqdn not in candidates:
+                candidates.append(short_fqdn)
+        return list(dict.fromkeys([candidate for candidate in candidates if candidate]))
 
-        if not keys:
-            return "absent", "connected"
-
-        for key in keys:
+    def _check_presence_key(candidates: Sequence[Optional[Any]]) -> Optional[str]:
+        for raw_key in candidates:
+            key = _normalize_key(raw_key)
+            if not key:
+                continue
             try:
                 raw_payload = bus.get(key)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Presence key lookup failed for %s: %s", key, exc)
                 continue
             parsed = _decode_payload(raw_payload, key=key)
             if parsed is None:
                 continue
-            seen = _safe_parse_iso_timestamp(str(parsed.get("last_seen", "")))
-            if latest_seen is None or (seen and seen > latest_seen):
-                latest_seen = seen
-                latest_payload = parsed
-            try:
-                logger.debug(
-                    "Heartbeat probe key=%s status=%s last_seen=%s",
-                    key,
-                    parsed.get("status"),
-                    parsed.get("last_seen"),
-                )
-            except Exception:
-                pass
+            status = _to_status(parsed)
+            return status
+        return None
 
-        if not latest_payload:
-            return "no-valid-presence", "connected"
+    def _scan_for_any_presence() -> Optional[str]:
+        pattern = f"{control_command_queue}:presence:*"
+        try:
+            for raw_key in bus.scan_iter(match=pattern, count=100):
+                key = _normalize_key(raw_key)
+                if not key:
+                    continue
+                try:
+                    raw_payload = bus.get(key)
+                except Exception as exc:
+                    logger.debug("Presence key lookup failed for scanned key=%s: %s", key, exc)
+                    continue
+                parsed = _decode_payload(raw_payload, key=key)
+                if parsed is not None:
+                    return _to_status(parsed)
+        except Exception as exc:
+            logger.debug("Failed to scan heartbeat keys for queue=%s: %s", control_command_queue, exc)
+            raise RuntimeError(str(exc))
+        return None
 
-        status = str(latest_payload.get("status", "")).strip().lower()
-        if not status:
-            return "status-missing", "connected"
-        return status, "connected"
+    try:
+        candidates: List[Optional[Any]] = [expected_presence_key]
+        if expected_client_host and expected_client_pid:
+            for host_variant in _collect_host_variants(expected_client_host):
+                candidates.append(f"{control_command_queue}:presence:{host_variant}:{expected_client_pid}")
+
+        status = _check_presence_key(candidates)
+        if status is not None:
+            return status, "connected", None
+
+        scanned_status = _scan_for_any_presence()
+        if scanned_status is not None:
+            return scanned_status, "connected", None
+
+        return "absent", "connected", None
     except Exception:
         logger.debug("Presence check failed.", exc_info=True)
-        return "presence-check-failed", "disconnected"
+        return "presence-check-failed", "disconnected", "presence probe failed"
     finally:
         try:
             bus.close()
@@ -1368,7 +1399,7 @@ def main() -> int:
                     if client_proc and client_proc.proc.poll() is None:
                         _poll_client_bootstrap_state()
                     if client_proc and client_proc.proc.poll() is None:
-                        heartbeat_status, redis_status = get_client_heartbeat_status(
+                        heartbeat_status, redis_status, heartbeat_error = get_client_heartbeat_status(
                             client_reported_redis_url or redis_connection,
                             cfg.control_command_queue,
                             logger,
@@ -1377,6 +1408,8 @@ def main() -> int:
                             expected_client_pid=client_proc.proc.pid,
                         )
                         client_bootstrap_state["heartbeat"] = heartbeat_status
+                        if heartbeat_error:
+                            client_bootstrap_state["heartbeat"] = f"{heartbeat_status}:{heartbeat_error}"
                         if redis_status == "connected":
                             client_bootstrap_state["redis"] = "connected"
                         else:

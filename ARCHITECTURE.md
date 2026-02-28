@@ -191,7 +191,8 @@
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running loop.
   - Heartbeat lookup strategy:
     - Orchestrator uses a priority chain: explicit key from client logs, then `presence:<hostname>:<pid>` for active client pid, then `<control_command_queue>:presence:*` scan.
-    - Before returning a heartbeat result, orchestrator performs a Redis ping and parses the JSON payload (`status`, `last_seen`) from any matching key.
+    - Before returning a heartbeat result, orchestrator performs a Redis ping and parses the JSON payload (`status`, `last_seen`) from matched keys.
+    - Redis heartbeat discovery uses direct key checks first, then `scan_iter` fallback to avoid requiring `KEYS` permissions.
   - Client launch environment forces unbuffered Python output (`PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`) so bootstrap logs are always written before status polling.
   - Keeps dedicated launch logs for RSNode/client (`rsnode-stdout.log`, `rsnode-stderr.log`, `rslogic-client-stdout.log`, `rslogic-client-stderr.log`) and includes recent process failure output in status logs.
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
