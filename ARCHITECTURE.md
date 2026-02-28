@@ -87,26 +87,24 @@
   - This client is intended for the RSNode host (or any machine with access to the RSNode API).
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
   - Recommended startup shape on this installer: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -dataRoot "<path>"` with automatic fallback retry using `--dataRoot` when needed.
-- `scripts/rslogic_rsnode_client.ps1` is the single orchestrator for RSNode hosts:
+- `scripts/rslogic_rsnode_client.py` is the single orchestrator for RSNode hosts:
   - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
   - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.
   - Creates or reuses `.venv`, installs `rslogic` in editable mode, and writes `.env.rsnode-worker`.
-  - If existing checkout is missing or invalid, it is moved aside and re-cloned automatically.
+  - If existing checkout is missing or invalid, it is backed up (or replaced when bootstrap is needed) and then re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
-  - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running process.
-  - RSNode launch now passes arguments with `Start-Process -ArgumentList` as an array so `-dataRoot` and paths containing spaces are forwarded directly without fragile custom quoting.
+  - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running loop.
   - Keeps dedicated launch logs for RSNode/client (`rsnode-stdout.log`, `rsnode-stderr.log`, `rslogic-client-stdout.log`, `rslogic-client-stderr.log`) and includes recent process failure output in status logs.
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
-  - Client startup now logs the bootstrap revision and uses multiple process-start fallbacks (ProcessStartInfo, Start-Process string args, Start-Process array args, cmd wrapper) to avoid shell parsing edge cases on Windows.
   - Detects repository updates and refreshes dependencies before restarting managed processes.
-  - Supports custom RSNode startup args through `-NodeArguments` and `-NodeDataRootArgument`.
+  - Supports custom RSNode startup args through `--node-arguments` and `--node-data-root-argument`.
   - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
-  - Starts the orchestrator in a persistent PowerShell console and keeps the window open.
-  - If the local orchestrator script is missing, it bootstraps from `C:\ProgramData\RsLogic\RsLogic`.
-  - Any arguments passed to the batch file are forwarded to the PowerShell script parameters.
-  - The launcher now sets `-NodeDataRootArgument -dataRoot` explicitly to match RSNode CLI expectations.
-  - The launcher can be used to generate a desktop shortcut via `scripts/create_rslogic_rsnode_client_shortcut.bat`.
+  - Starts the Python orchestrator in a persistent console and keeps the window open while the orchestrator runs.
+  - If the orchestrator script is missing locally, it bootstraps a fresh checkout to `%ProgramData%\RsLogic\RsLogic` before launch.
+  - Arguments passed to the batch file are forwarded to the Python orchestrator.
+  - The launcher sets `--node-data-root-argument -dataRoot` by default and writes status/error output to the console while running.
+  - A desktop shortcut can be created with `scripts/create_rslogic_rsnode_client_shortcut.bat` (targeting `start_rslogic_rsnode_client.bat`).
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
 - S3 uploads are routed through the server-configured path:
