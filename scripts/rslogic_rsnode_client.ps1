@@ -640,6 +640,11 @@ try {
     Write-Log "$nodeLogPrefix bootstrapping"
     Write-Log "Repo path: $resolvedRepoPath"
 
+    $bootstrapHead = Get-RepoHead -Path $resolvedRepoPath
+    if ($bootstrapHead) {
+        Write-Log "Repository HEAD before bootstrap/update: $bootstrapHead"
+    }
+
     $initialUpdate = Ensure-Repository
     if (-not (Test-Path $envFilePath)) {
         $null = New-Item -ItemType File -Path $envFilePath -Force
