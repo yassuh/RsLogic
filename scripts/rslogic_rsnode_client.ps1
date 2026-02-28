@@ -497,22 +497,22 @@ function Start-RSNode {
         New-Item -ItemType Directory -Path $NodeDataRoot -Force | Out-Null
     }
 
-    $args = @()
+    $nodeArgs = @()
     if ($NodeDataRoot) {
-        $args += $NodeDataRootArgument
-        $args += $NodeDataRoot
+        $nodeArgs += $NodeDataRootArgument
+        $nodeArgs += $NodeDataRoot
     }
     if ($NodeArguments) {
-        $args += $NodeArguments
+        $nodeArgs += $NodeArguments
     }
 
-    Write-Log "Starting RSNode: $NodeExecutable $($args -join ' ')"
+    Write-Log "Starting RSNode: $NodeExecutable $($nodeArgs -join ' ')"
     if ($DryRun) {
         Write-Log "DRY RUN: skip RSNode launch"
         return $null
     }
 
-    return Start-Process -FilePath $NodeExecutable -ArgumentList $args -PassThru -WindowStyle Hidden
+    return Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden
 }
 
 function Start-RSLogicClient {
