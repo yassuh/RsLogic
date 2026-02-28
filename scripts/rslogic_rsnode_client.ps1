@@ -560,32 +560,22 @@ function Start-RSLogicClient {
     }
 
     try {
-        $stderrPath = Join-Path $logDir "rslogic-client-stderr.log"
-        $stdoutPath = Join-Path $logDir "rslogic-client-stdout.log"
-        try {
-            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgLine -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
-        } catch {
-            Write-Log "Primary client launch with string args failed: $($_.Exception.Message)" "WARN"
-            try {
-                return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
-            } catch {
-                $fallbackError = $_.Exception.Message
-                Write-Log "Fallback launch with array args failed: $fallbackError" "WARN"
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = $PythonPath
-                $psi.Arguments = $pythonArgLine
-                $psi.UseShellExecute = $false
-                $psi.CreateNoWindow = $true
-                $psi.RedirectStandardError = $false
-                $psi.RedirectStandardOutput = $false
-                $proc = [System.Diagnostics.Process]::Start($psi)
-                if (-not $proc) {
-                    throw "ProcessStartInfo launch failed after multiple launch attempts: string/array failed and fallback returned null."
-                }
-                $proc.EnableRaisingEvents = $true
-                return $proc
-            }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonPath
+        $psi.Arguments = $pythonArgLine
+        $psi.WorkingDirectory = $resolvedRepoPath
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+
+        $psi.RedirectStandardError = $false
+        $psi.RedirectStandardOutput = $false
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $psi
+        $started = $process.Start()
+        if (-not $started) {
+            throw "Process.Start() returned false for client process."
         }
+        return $process
     } finally {
         foreach ($key in $backup.Keys) {
             $envVar = "env:$key"
