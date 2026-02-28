@@ -156,9 +156,9 @@ def setup_logger(log_path: Path) -> logging.Logger:
     logger.handlers.clear()
 
     formatter = logging.Formatter(
-        "[{asctime}] [{levelname}] {message}",
+        "[{asctime}.{msecs:03.0f}] [{levelname}] {message}",
         style="{",
-        datefmt="%Y-%m-%d %H:%M:%S.%f",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     stream_handler = logging.StreamHandler()
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
