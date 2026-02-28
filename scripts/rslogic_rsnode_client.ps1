@@ -518,7 +518,20 @@ function Start-RSNode {
 function Start-RSLogicClient {
     param([hashtable]$EnvValues, [string]$PythonPath)
 
-    $args = @(
+    function Convert-ProcessArgument {
+        param([string]$Value)
+        if ([string]::IsNullOrEmpty($Value)) {
+            return '""'
+        }
+        if ($Value -match '[\s"\\]') {
+            $escaped = $Value -replace '\\', '\\\\'
+            $escaped = $escaped -replace '"', '\"'
+            return '"' + $escaped + '"'
+        }
+        return $Value
+    }
+
+    $pythonArgs = @(
         "-m",
         "rslogic.client.rsnode_client",
         "run",
@@ -526,7 +539,7 @@ function Start-RSLogicClient {
         [string]$ClientWorkers
     )
 
-    Write-Log "Starting rslogic-client: python $($args -join ' ')"
+    Write-Log "Starting rslogic-client: $PythonPath $($pythonArgs -join ' ')"
     if ($DryRun) {
         return $null
     }
@@ -544,7 +557,17 @@ function Start-RSLogicClient {
     }
 
     try {
-        return Start-Process -FilePath $PythonPath -ArgumentList $args -PassThru -WindowStyle Hidden
+        $quotedArgs = @()
+        foreach ($arg in $pythonArgs) {
+            $quotedArgs += Convert-ProcessArgument -Value $arg
+        }
+
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $PythonPath
+        $startInfo.Arguments = ($quotedArgs -join " ")
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        return [System.Diagnostics.Process]::Start($startInfo)
     } finally {
         foreach ($key in $backup.Keys) {
             $envVar = "env:$key"
