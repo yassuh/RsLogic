@@ -1,5 +1,13 @@
 # ARCHITECTURE
 
+## Operational Network Map
+
+- Local service defaults: `host:localhost → API(rslogic api:8000), DB(pgbouncer/postgres via config:5432/9000), Redis(redis:6379/9002)`
+- Container stack (`internal_tools/label-db/studio-db/docker-compose.yaml`): `postgis:5432@9000`, `pgbouncer:5432@9001`, `redis:6379@9002` on `studio-network`
+- RSNode deployment target (config default): `192.168.193.56:8000` (API), `192.168.193.56:9002` (Redis)
+- RSNode client launch/runtime defaults: `C:\ProgramData\RsLogic\RsLogic` checkout + `C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe`
+- Integration/test references (validate before hardcoding): `192.168.193.59:7878`, `192.168.193.59` as previously used for manual API contact
+
 ## Core Concepts
 
 - Shared schema lives in `label-db` and is managed by Alembic.
@@ -32,6 +40,57 @@
 - S3 bucket routing:
   - Waiting uploads are locked to `drone-imagery-waiting` (`S3Config.bucket_name`).
   - Post-ingest storage is locked to `drone-imagery` (`S3Config.processed_bucket_name`; env override `RSLOGIC_S3_PROCESSED_BUCKET_NAME` / `S3_PROCESSED_BUCKET_NAME`).
+
+## Service Ports
+
+- API runtime:
+  - Runtime entrypoint `rslogic.api.server.main` defaults to `host=0.0.0.0`, `port=8000`.
+  - Config default base URL is `RSLOGIC_API_BASE_URL=http://localhost:8000` (trimmed).
+  - SDK fallback for the RSNode client default is `http://{server_host}:8000`.
+- Queue/runtime services:
+  - Redis default connection in `config.py` is `REDIS_HOST: REDIS_PORT` (`6379`) with DB `RSLOGIC_REDIS_DB` default `0`.
+  - Orchestrator default CLI queue connection is `--server-host 192.168.193.56`, `--redis-port 9002` (derived from default `--server-host`).
+  - Control bus keys default to:
+    - `RSLOGIC_CONTROL_COMMAND_QUEUE=rslogic:control:commands`
+    - `RSLOGIC_CONTROL_RESULT_QUEUE=rslogic:control:results`
+    - Queue backend key base: `RSLOGIC_REDIS_QUEUE_KEY=rslogic:jobs:queue`
+- Processing queue workers:
+  - `rslogic-worker` reads and writes Redis queues.
+  - `rslogic-worker` does not expose an HTTP port; it consumes `redis` queues (`:processing`, `:upload`).
+- RSNode orchestration runtime:
+  - `scripts/rslogic_rsnode_client.py` starts with defaults:
+    - `--repo-root C:\ProgramData\RsLogic\RsLogic`
+    - `--node-executable "C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe"`
+    - `--node-data-root "%LOCALAPPDATA%\\Epic Games\\RealityScan\\RSNodeData"`
+    - `--node-data-root-argument -dataRoot`
+  - Internal API endpoint calls by the SDK client target `http://{server_host}:8000` when `server_host` is non-localhost.
+- DB services:
+  - `config.py` defaults `POSTGRES_HOST=postgis`, `POSTGRES_PORT=5432`.
+  - Docker-compose stack maps `9000` to `5432` for `postgis`, `9001` to `5432` for `pgbouncer` (optional), and `9002` to `6379` for `redis`.
+- Script/runtime CLI references:
+  - `start_rslogic_rsnode_client.bat` default launcher path: `%ProgramData%\RsLogic\RsLogic`.
+  - `scripts/rslogic_rsnode_client.py` can be pointed directly to custom ports/hosts with `--redis-host`, `--redis-port`, `--server-host`, `--sdk-base-url`.
+
+## Machines, IPs, and Network Topology
+
+- Known default host in code:
+  - `192.168.193.56` (defined as `DEFAULT_SERVER_HOST` in `scripts/rslogic_rsnode_client.py`).
+  - User-facing startup defaults in the same script assume:
+    - RS API: `http://192.168.193.56:8000`
+    - Redis: `192.168.193.56:9002`
+  - Label: **configuration default / deployment target**, not an auto-discovered runtime value.
+- Known user-reported node reference:
+  - `192.168.193.59` was used in prior manual contact attempts and in `internal_tools/rstool-sdk/file.py` sample (`http://192.168.193.59:7878`).
+  - Label: **test/integration reference**, validate whether this is still active before hardcoding.
+- Active container network (in-repo docker model):
+  - `internal_tools/label-db/studio-db/docker-compose.yaml`
+    - Network name: `studio-network` (bridge).
+    - Services: `postgis`, `pgbouncer`, `redis`.
+    - All run in `studio-network` and expose host ports (`9000`, `9001`, `9002`) for local access.
+- Data/config hostnames (current repo `.env`):
+  - `POSTGRES_HOST=postgis`, `POSTGRES_PORT=5432` (docker service name / internal network context).
+  - `REDIS_HOST=redis`, `REDIS_PORT=6379`.
+  - For direct remote host deployments, overrides can point `RSLOGIC_REDIS_HOST`, `RSLOGIC_REDIS_PORT`, `POSTGRES_HOST`, `POSTGRES_PORT` to host network values.
 
 ## Database
 
@@ -83,6 +142,26 @@
   - Batch upload no longer aborts on a single-file failure: per-file errors are reported in-line and remaining files continue uploading
 - `rslogic-client` CLI runs the remote RSNode worker:
   - `run` / `worker`: runs a processing worker process that consumes `processing_job.execute` commands from Redis and executes them through `realityscan_sdk`.
+  - Additional control command types:
+    - `rstool_sdk.discover`: returns discoverable methods for `node` and `project` targets from `realityscan_sdk.resources.node.NodeAPI` and `.project.ProjectAPI`.
+      - Discovery currently enumerates public methods from the imported SDK classes and falls back to AST parsing of the local `internal_tools/rstool-sdk` sources when classes cannot be imported.
+      - Current repo snapshot exports 6 `node` methods and 72 `project` methods (including documented aliases).
+      - Include aliases like `connectuser` as discoverable command keys.
+    - `rstool_sdk.command`: invokes arbitrary SDK call paths via Redis control queue (not hardcoded to a fixed allow-list).
+      - `target` is optional and defaults to `node`.
+      - `target` supports `node`, `project`, or `client`.
+      - `target_object` is an optional dotted path resolved from the target root (for example `project` or `project.command` when `target` is `client`).
+      - `method` is the final dotted method path (for example `create`, `status`, `command`, or `project.command`).
+      - A private-name guard blocks any segment that starts with `_`.
+  - `rstool_sdk.discover` payload examples:
+    - `{"target": "node"}` to list node APIs.
+    - `{"target": "project"}` to list project APIs.
+    - `{}` to return both.
+  - `rstool_sdk.command` payload example:
+    - `{"target":"node","method":"connect_user","args":[],"kwargs":{}}` for `connectuser` equivalent.
+    - `{"target":"project","method":"create","args":[],"kwargs":{}}` creates/opens project session in current client.
+    - `{"target":"client","method":"node.status","args":[],"kwargs":{}}` executes a nested method on the raw client object.
+    - `{"target":"client","target_object":"project","method":"command","args":["save",{"param1":"value"}],"kwargs":{}}` executes project command helpers with arbitrary kwargs.
   - Worker results are published as progress/error/complete events to the control result queue and the per-command reply queue.
   - This client is intended for the RSNode host (or any machine with access to the RSNode API).
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).

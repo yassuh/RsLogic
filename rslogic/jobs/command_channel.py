@@ -16,6 +16,8 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency until inst
 
 
 COMMAND_TYPE_PROCESSING_JOB = "processing_job.execute"
+COMMAND_TYPE_RSTOOL_DISCOVER = "rstool_sdk.discover"
+COMMAND_TYPE_RSTOOL_COMMAND = "rstool_sdk.command"
 
 RESULT_STATUS_ACCEPTED = "accepted"
 RESULT_STATUS_PROGRESS = "progress"
@@ -191,6 +193,8 @@ class RedisCommandBus:
 
 __all__ = [
     "COMMAND_TYPE_PROCESSING_JOB",
+    "COMMAND_TYPE_RSTOOL_DISCOVER",
+    "COMMAND_TYPE_RSTOOL_COMMAND",
     "RESULT_STATUS_ACCEPTED",
     "RESULT_STATUS_PROGRESS",
     "RESULT_STATUS_OK",
