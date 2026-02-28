@@ -94,6 +94,7 @@
   - If existing checkout is missing or invalid, it is moved aside and re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running process.
+  - Client startup now logs the bootstrap revision and uses multiple process-start fallbacks (ProcessStartInfo, Start-Process string args, Start-Process array args, cmd wrapper) to avoid shell parsing edge cases on Windows.
   - Detects repository updates and refreshes dependencies before restarting managed processes.
   - Supports custom RSNode startup args through `-NodeArguments` and `-NodeDataRootArgument`.
   - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.

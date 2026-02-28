@@ -560,6 +560,10 @@ function Start-RSLogicClient {
     }
 
     try {
+        $stderrPath = Join-Path $logDir "rslogic-client-stderr.log"
+        $stdoutPath = Join-Path $logDir "rslogic-client-stdout.log"
+
+        # Preferred launch path.
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonPath
         $psi.Arguments = $pythonArgLine
@@ -567,15 +571,42 @@ function Start-RSLogicClient {
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
 
-        $psi.RedirectStandardError = $false
-        $psi.RedirectStandardOutput = $false
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $psi
-        $started = $process.Start()
-        if (-not $started) {
-            throw "Process.Start() returned false for client process."
+        try {
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $psi
+            $started = $process.Start()
+            if (-not $started) {
+                throw "Process.Start() returned false for client process."
+            }
+            return $process
+        } catch {
+            Write-Log "Launch attempt 1 failed (ProcessStartInfo). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
         }
-        return $process
+
+        # Fallback 1: direct Start-Process with string arguments.
+        try {
+            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgLine -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+        } catch {
+            Write-Log "Launch attempt 2 failed (Start-Process string args). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
+        }
+
+        # Fallback 2: direct Start-Process with array arguments.
+        try {
+            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+        } catch {
+            Write-Log "Launch attempt 3 failed (Start-Process array args). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
+        }
+
+        # Fallback 3: CMD wrapper with explicit quoting.
+        $cmd = "`"$PythonPath`" $pythonArgLine"
+        $cmdPath = Join-Path $env:SystemRoot "System32\cmd.exe"
+        try {
+            return Start-Process -FilePath $cmdPath -ArgumentList @("/d", "/c", $cmd) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+        } catch {
+            $fallbackMessage = "$($_.Exception.GetType().FullName): $($_.Exception.Message)"
+            Write-Log "Launch attempt 4 failed (cmd wrapper). $fallbackMessage" "ERROR"
+            throw "All client launch strategies failed. Last error: $fallbackMessage"
+        }
     } finally {
         foreach ($key in $backup.Keys) {
             $envVar = "env:$key"
