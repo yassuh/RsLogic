@@ -582,7 +582,7 @@ function Start-RSNode {
         } catch {
             $lastError = "$($_.Exception.Message)"
             Write-Log "RSNode start attempt $attempt failed with arg '$rootArg': $lastError" "WARN"
-            $script:nodeStopReason = "attempt=$attempt:$lastError"
+            $script:nodeStopReason = "attempt=$($attempt):$($lastError)"
             if ($attempt -ge $rootArgCandidates.Count) {
                 throw "Failed to start RSNode. Last error: $lastError"
             }
