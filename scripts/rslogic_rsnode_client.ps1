@@ -102,6 +102,12 @@ if ($logDir -and -not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
 $alreadyRunning = $false
+$nodeStdOutPath = Join-Path $logDir "rsnode-stdout.log"
+$nodeStdErrPath = Join-Path $logDir "rsnode-stderr.log"
+$clientStdOutPath = Join-Path $logDir "rslogic-client-stdout.log"
+$clientStdErrPath = Join-Path $logDir "rslogic-client-stderr.log"
+$script:nodeStopReason = "not-started"
+$script:clientStopReason = "not-started"
 
 if (-not (Test-Path (Join-Path $resolvedRepoPath ".git"))) {
     $gitHint = if (Test-Path $resolvedRepoPath) { "Directory exists but is not a git repository: $resolvedRepoPath" } else { "No local repository found at $resolvedRepoPath" }
@@ -117,6 +123,22 @@ function Write-Log {
         Add-Content -Path $LogPath -Value $line
     } catch {
         # Logging should not stop the orchestrator.
+    }
+}
+
+function Get-RecentLogTail {
+    param([string]$Path, [int]$LineCount = 20)
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+    try {
+        $lines = Get-Content -Path $Path -Tail $LineCount -ErrorAction Stop
+        if (-not $lines) {
+            return ""
+        }
+        return $lines -join "`n"
+    } catch {
+        return ""
     }
 }
 
@@ -512,7 +534,26 @@ function Start-RSNode {
         return $null
     }
 
-    return Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden
+    try {
+        $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
+        Start-Sleep -Milliseconds 900
+        if ($nodeProcess.HasExited) {
+            $nodeExitReason = "exit-code=$($nodeProcess.ExitCode)"
+            $stderrTail = Get-RecentLogTail -Path $nodeStdErrPath -LineCount 30
+            if ($stderrTail) {
+                Write-Log "RSNode exited immediately ($nodeExitReason). stderr tail: $stderrTail" "ERROR"
+            } else {
+                Write-Log "RSNode exited immediately ($nodeExitReason)."
+            }
+            $script:nodeStopReason = $nodeExitReason
+            return $null
+        }
+        $script:nodeStopReason = "running"
+        return $nodeProcess
+    } catch {
+        $script:nodeStopReason = $_.Exception.Message
+        throw "Failed to start RSNode: $($script:nodeStopReason)"
+    }
 }
 
 function Start-RSLogicClient {
@@ -526,22 +567,7 @@ function Start-RSLogicClient {
         [string]$ClientWorkers
     )
 
-    $escapedPythonArgs = @()
-    foreach ($arg in $pythonArgs) {
-        if ([string]::IsNullOrEmpty($arg)) {
-            $escapedPythonArgs += '""'
-            continue
-        }
-        $needsQuoting = $arg -match '[\s"\\]'
-        if ($needsQuoting) {
-            $escaped = $arg -replace '\\', '\\\\'
-            $escaped = $escaped -replace '"', '\"'
-            $escapedPythonArgs += '"' + $escaped + '"'
-        } else {
-            $escapedPythonArgs += $arg
-        }
-    }
-    $pythonArgLine = $escapedPythonArgs -join " "
+    $pythonArgLine = $pythonArgs -join " "
     Write-Log "Starting rslogic-client: $PythonPath $pythonArgLine"
     if ($DryRun) {
         return $null
@@ -560,9 +586,6 @@ function Start-RSLogicClient {
     }
 
     try {
-        $stderrPath = Join-Path $logDir "rslogic-client-stderr.log"
-        $stdoutPath = Join-Path $logDir "rslogic-client-stdout.log"
-
         # Preferred launch path.
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonPath
@@ -578,6 +601,29 @@ function Start-RSLogicClient {
             if (-not $started) {
                 throw "Process.Start() returned false for client process."
             }
+            Start-Sleep -Milliseconds 900
+            if ($process.HasExited) {
+                $processWaitOutput = ""
+                try {
+                    $processWaitOutput = $process.StandardError.ReadToEnd()
+                } catch {
+                    # ignore
+                }
+                $fallbackOutput = ""
+                if (-not $processWaitOutput) {
+                    $fallbackOutput = Get-RecentLogTail -Path $clientStdErrPath -LineCount 30
+                } else {
+                    $fallbackOutput = $processWaitOutput
+                }
+                if ($fallbackOutput) {
+                    Write-Log "Client process exited immediately (exit-code=$($process.ExitCode)). stderr: $fallbackOutput" "ERROR"
+                } else {
+                    Write-Log "Client process exited immediately (exit-code=$($process.ExitCode))."
+                }
+                $script:clientStopReason = "exit-code=$($process.ExitCode)"
+                return $null
+            }
+            $script:clientStopReason = "running"
             return $process
         } catch {
             Write-Log "Launch attempt 1 failed (ProcessStartInfo). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
@@ -585,14 +631,40 @@ function Start-RSLogicClient {
 
         # Fallback 1: direct Start-Process with string arguments.
         try {
-            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgLine -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+            $process = Start-Process -FilePath $PythonPath -ArgumentList $pythonArgLine -PassThru -WindowStyle Hidden -RedirectStandardError $clientStdErrPath -RedirectStandardOutput $clientStdOutPath -ErrorAction Stop
+            Start-Sleep -Milliseconds 900
+            if ($process.HasExited) {
+                $tail = Get-RecentLogTail -Path $clientStdErrPath -LineCount 30
+                if ($tail) {
+                    Write-Log "Launch attempt 1 returned process that exited immediately (exit-code=$($process.ExitCode)). stderr: $tail" "ERROR"
+                } else {
+                    Write-Log "Launch attempt 1 returned process that exited immediately (exit-code=$($process.ExitCode))."
+                }
+                $script:clientStopReason = "exit-code=$($process.ExitCode)"
+                return $null
+            }
+            $script:clientStopReason = "running"
+            return $process
         } catch {
             Write-Log "Launch attempt 2 failed (Start-Process string args). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
         }
 
         # Fallback 2: direct Start-Process with array arguments.
         try {
-            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+            $process = Start-Process -FilePath $PythonPath -ArgumentList $pythonArgs -PassThru -WindowStyle Hidden -RedirectStandardError $clientStdErrPath -RedirectStandardOutput $clientStdOutPath -ErrorAction Stop
+            Start-Sleep -Milliseconds 900
+            if ($process.HasExited) {
+                $tail = Get-RecentLogTail -Path $clientStdErrPath -LineCount 30
+                if ($tail) {
+                    Write-Log "Launch attempt 2 returned process that exited immediately (exit-code=$($process.ExitCode)). stderr: $tail" "ERROR"
+                } else {
+                    Write-Log "Launch attempt 2 returned process that exited immediately (exit-code=$($process.ExitCode))."
+                }
+                $script:clientStopReason = "exit-code=$($process.ExitCode)"
+                return $null
+            }
+            $script:clientStopReason = "running"
+            return $process
         } catch {
             Write-Log "Launch attempt 3 failed (Start-Process array args). type=$($_.Exception.GetType().FullName) message=$($_.Exception.Message)" "WARN"
         }
@@ -601,7 +673,20 @@ function Start-RSLogicClient {
         $cmd = "`"$PythonPath`" $pythonArgLine"
         $cmdPath = Join-Path $env:SystemRoot "System32\cmd.exe"
         try {
-            return Start-Process -FilePath $cmdPath -ArgumentList @("/d", "/c", $cmd) -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+            $process = Start-Process -FilePath $cmdPath -ArgumentList @("/d", "/c", $cmd) -PassThru -WindowStyle Hidden -RedirectStandardError $clientStdErrPath -RedirectStandardOutput $clientStdOutPath -ErrorAction Stop
+            Start-Sleep -Milliseconds 900
+            if ($process.HasExited) {
+                $tail = Get-RecentLogTail -Path $clientStdErrPath -LineCount 30
+                if ($tail) {
+                    Write-Log "Launch attempt 3 returned process that exited immediately (exit-code=$($process.ExitCode)). stderr: $tail" "ERROR"
+                } else {
+                    Write-Log "Launch attempt 3 returned process that exited immediately (exit-code=$($process.ExitCode))."
+                }
+                $script:clientStopReason = "exit-code=$($process.ExitCode)"
+                return $null
+            }
+            $script:clientStopReason = "running"
+            return $process
         } catch {
             $fallbackMessage = "$($_.Exception.GetType().FullName): $($_.Exception.Message)"
             Write-Log "Launch attempt 4 failed (cmd wrapper). $fallbackMessage" "ERROR"
@@ -621,8 +706,8 @@ function Start-RSLogicClient {
 
 function Show-Status {
     param([System.Diagnostics.Process]$NodeProcess, [System.Diagnostics.Process]$ClientProcess, [string]$RepoHead, [bool]$AutoUpdate)
-    $nodeUp = if (Test-ProcessAlive $NodeProcess) { $NodeProcess.Id } else { "stopped" }
-    $clientUp = if (Test-ProcessAlive $ClientProcess) { $ClientProcess.Id } else { "stopped" }
+    $nodeUp = if (Test-ProcessAlive $NodeProcess) { $NodeProcess.Id } else { "stopped/$script:nodeStopReason" }
+    $clientUp = if (Test-ProcessAlive $ClientProcess) { $ClientProcess.Id } else { "stopped/$script:clientStopReason" }
     $health = if (Get-NodeHealth) { "ok" } else { "degraded" }
     $uptime = ((Get-Date) - $loopStartTime).ToString("dd\.hh\:mm\:ss")
     Write-Log "STATUS node=$nodeUp client=$clientUp autoUpdate=$AutoUpdate health=$health repo=$RepoHead uptime=$uptime"
@@ -743,6 +828,13 @@ try {
         }
 
         if (-not (Test-ProcessAlive $nodeProcess)) {
+            if ($nodeProcess -and $nodeProcess.HasExited) {
+                try {
+                    $script:nodeStopReason = "exit-code=$($nodeProcess.ExitCode)"
+                } catch {
+                    $script:nodeStopReason = "terminated"
+                }
+            }
             $nodeProcess = Start-RSNode
             if ($nodeProcess) {
                 $healthy = if ($NodeHealthUrl) { Get-NodeHealth } else { $true }
@@ -764,6 +856,13 @@ try {
         }
 
         if (-not (Test-ProcessAlive $clientProcess)) {
+            if ($clientProcess -and $clientProcess.HasExited) {
+                try {
+                    $script:clientStopReason = "exit-code=$($clientProcess.ExitCode)"
+                } catch {
+                    $script:clientStopReason = "terminated"
+                }
+            }
             if ($nodeProcess -and -not (Test-ProcessAlive $nodeProcess)) {
                 Start-Sleep -Seconds 1
             }
