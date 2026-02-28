@@ -174,6 +174,7 @@
     - Override with `RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS` and `RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS`.
     - The worker updates `status=online` periodically and writes `status=stopped` once shutdown begins.
     - A consumer can treat key expiry as liveness loss.
+  - `scripts/rslogic_rsnode_client.py` now checks presence directly from Redis for `clientHeartbeat` in status output.
 - `rslogic-client` startup diagnostics:
   - Missing SDK env values are reported as a hard startup error with the exact missing variable names.
   - Redis failures report as `Redis ping failed for <url>` immediately before worker creation.

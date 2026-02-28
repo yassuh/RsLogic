@@ -63,6 +63,23 @@ REQUIRED_CLIENT_MODULES = (
 )
 
 
+def _safe_parse_iso_timestamp(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone().replace(tzinfo=None)
+
+
 @dataclass
 class RunConfig:
     repo_url: str
@@ -628,6 +645,64 @@ def _check_redis_connectivity(redis_url: str, logger: logging.Logger) -> bool:
         return False
 
 
+def get_client_heartbeat_status(redis_url: str, control_command_queue: str, logger: logging.Logger) -> str:
+    try:
+        import redis
+    except Exception:
+        return "redis-lib-missing"
+
+    if not redis_url or not control_command_queue:
+        return "not-configured"
+
+    try:
+        bus = redis.Redis.from_url(redis_url, decode_responses=True)
+    except Exception as exc:
+        logger.debug("Failed to connect to redis for heartbeat check: %s", exc)
+        return "redis-unreachable"
+
+    try:
+        try:
+            keys = bus.keys(f"{control_command_queue}:presence:*")
+        except Exception as exc:
+            logger.debug("Failed to query heartbeat keys: %s", exc)
+            return "redis-query-failed"
+        if not keys:
+            return "absent"
+
+        latest_seen = None
+        latest_payload = None
+        for key in keys:
+            try:
+                raw_payload = bus.get(key)
+                if not raw_payload:
+                    continue
+                payload = json.loads(raw_payload)
+                seen = _safe_parse_iso_timestamp(str(payload.get("last_seen", "")))
+                if latest_seen is None or (seen and seen > latest_seen):
+                    latest_seen = seen
+                    latest_payload = payload
+            except Exception:
+                continue
+
+        if not latest_payload:
+            return "no-valid-presence"
+
+        status = str(latest_payload.get("status", "")).strip().lower()
+        if not status:
+            return "status-missing"
+        if status == "stopped":
+            return "stopped"
+        return status
+    except Exception:
+        logger.debug("Presence check failed.", exc_info=True)
+        return "presence-check-failed"
+    finally:
+        try:
+            bus.close()
+        except Exception:
+            pass
+
+
 def format_command(cmd: Sequence[str]) -> str:
     return " ".join(f'"{part}"' if " " in part else part for part in cmd)
 
@@ -1190,6 +1265,16 @@ def main() -> int:
                 if time.time() >= next_status:
                     if client_proc and client_proc.proc.poll() is None:
                         _poll_client_bootstrap_state()
+                    if client_proc and client_proc.proc.poll() is None:
+                        client_bootstrap_state["heartbeat"] = get_client_heartbeat_status(
+                            redis_connection,
+                            cfg.control_command_queue,
+                            logger,
+                        )
+                        if client_bootstrap_state["heartbeat"] == "online":
+                            client_bootstrap_state["redis"] = "connected"
+                        elif client_bootstrap_state["heartbeat"] in {"redis-unreachable", "redis-query-failed", "redis-lib-missing"}:
+                            client_bootstrap_state["redis"] = "disconnected"
                     current_head = git_head(cfg.repo_root)
                     node_up = str(node_proc.proc.pid) if node_proc and node_proc.proc.poll() is None else f"stopped/{node_stop_reason}"
                     client_up = (
