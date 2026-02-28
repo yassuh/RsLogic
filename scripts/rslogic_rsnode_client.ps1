@@ -127,12 +127,12 @@ function Ensure-Tool {
 }
 
 function Build-RedisUrl {
-    param([string]$Explicit, [string]$Host, [int]$Port, [string]$Database, [string]$Password)
+    param([string]$Explicit, [string]$RedisHost, [int]$Port, [string]$Database, [string]$Password)
     if ($Explicit) {
         return $Explicit
     }
 
-    $cleanHost = $Host.Trim()
+    $cleanHost = $RedisHost.Trim()
     if (-not $cleanHost) {
         $cleanHost = "localhost"
     }
@@ -512,6 +512,8 @@ function Ensure-Singleton {
 }
 
 $singleton = Ensure-Singleton
+$nodeProcess = $null
+$clientProcess = $null
 $alreadyRunning = [bool]$alreadyRunning
 if ($alreadyRunning) {
     Write-Log "Another orchestrator is already running. Exiting this instance."
@@ -533,7 +535,7 @@ try {
         $null = New-Item -ItemType File -Path $envFilePath -Force
     }
 
-    $redisConnection = Build-RedisUrl -Explicit $RedisUrl -Host $RedisHost -Port $RedisPort -Database $RedisDb -Password $RedisPassword
+    $redisConnection = Build-RedisUrl -Explicit $RedisUrl -RedisHost $RedisHost -Port $RedisPort -Database $RedisDb -Password $RedisPassword
     $pythonForClient = Get-PythonExecutable
     $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
     Ensure-Venv
@@ -549,8 +551,6 @@ try {
         throw "Python executable not found in venv: $pythonForClient"
     }
 
-    $nodeProcess = $null
-    $clientProcess = $null
     $lastUpdateCheck = Get-Date
     $nextStatus = Get-Date
     Write-Log "Startup complete. Entering watch loop."
