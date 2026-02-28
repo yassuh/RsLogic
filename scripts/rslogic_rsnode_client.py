@@ -77,6 +77,7 @@ def _coalesce_env(*values: Optional[str]) -> str:
 DEFAULT_REPO_URL = "https://github.com/yassuh/RsLogic.git"
 DEFAULT_REPO_BRANCH = "main"
 DEFAULT_SERVER_HOST = "192.168.193.59"
+DEFAULT_REDIS_HOST = "192.168.193.56"
 DEFAULT_REPO_ROOT = _safe_program_data_path() / "RsLogic" / "RsLogic"
 DEFAULT_VENV_PATH = DEFAULT_REPO_ROOT / ".venv"
 DEFAULT_NODE_EXECUTABLE = Path(os.getenv("ProgramFiles", str(Path("C:/Program Files"))) ) / "Epic Games" / "RealityScan_2.1" / "RSNode.exe"
@@ -1261,7 +1262,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--node-authtoken", default=DEFAULT_NODE_AUTH_TOKEN)
 
     parser.add_argument("--redis-url", default="")
-    parser.add_argument("--redis-host", default="")
+    parser.add_argument("--redis-host", default=DEFAULT_REDIS_HOST)
     parser.add_argument("--redis-port", type=int, default=9002)
     parser.add_argument("--redis-db", default="0")
     parser.add_argument("--redis-password", default="")
@@ -1309,7 +1310,14 @@ def normalize_config(ns: argparse.Namespace) -> RunConfig:
     server_host = _coalesce_env(ns.server_host, os.getenv("RSLOGIC_SERVER_HOST", ""), os.getenv("SERVER_HOST", ""))
     redis_host = (ns.redis_host or "").strip()
     if not redis_host or redis_host.lower() == "localhost":
-        redis_host = server_host or "localhost"
+        redis_host = _coalesce_env(
+            repo_env.get("RSLOGIC_REDIS_HOST"),
+            os.getenv("RSLOGIC_REDIS_HOST"),
+            os.getenv("REDIS_HOST"),
+            DEFAULT_REDIS_HOST,
+            server_host,
+            "localhost",
+        )
 
     sdk_base_url = _coalesce_env(
         ns.sdk_base_url,
