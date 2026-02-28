@@ -67,6 +67,7 @@ $installHeadFile = Join-Path $resolvedVenvPath ".rslogic_install_head.txt"
 $nodeLogPrefix = "RsLogic RSNode client orchestrator"
 $loopStartTime = Get-Date
 $cancelRequested = $false
+$script:basePythonExecutable = ""
 
 try {
     if ([System.Console].GetEvent("CancelKeyPress")) {
@@ -142,6 +143,74 @@ function Build-RedisUrl {
         return "redis://:{0}@{1}:{2}/{3}" -f $escapedPassword, $cleanHost, $Port, $Database
     }
     return "redis://{0}:{1}/{2}" -f $cleanHost, $Port, $Database
+}
+
+function Resolve-PythonCandidate {
+    param([string]$Candidate)
+
+    if ([string]::IsNullOrWhiteSpace($Candidate)) {
+        return ""
+    }
+
+    $candidatePath = ""
+    try {
+        if (Test-Path $Candidate -PathType Leaf) {
+            $candidatePath = (Resolve-Path $Candidate -ErrorAction SilentlyContinue).Path
+        } else {
+            $resolvedCommand = Get-Command $Candidate -CommandType Application -ErrorAction SilentlyContinue
+            if ($resolvedCommand -and $resolvedCommand.Source) {
+                $candidatePath = $resolvedCommand.Source
+            }
+        }
+    } catch {
+        return ""
+    }
+
+    if (-not $candidatePath -or -not (Test-Path $candidatePath)) {
+        return ""
+    }
+
+    try {
+        $leaf = (Split-Path -Leaf $candidatePath).ToLowerInvariant()
+        if ($leaf -eq "py.exe") {
+            $probe = & $candidatePath -3 -c "import sys; print(sys.executable)"
+        } else {
+            $probe = & $candidatePath -c "import sys; print(sys.executable)"
+        }
+        if ($LASTEXITCODE -ne 0) {
+            return ""
+        }
+
+        $probePath = $probe.ToString().Trim()
+        if ($probePath -and (Test-Path $probePath)) {
+            return $probePath
+        }
+        return ""
+    } catch {
+        return ""
+    }
+}
+
+function Get-SystemPythonExecutable {
+    if ($script:basePythonExecutable) {
+        return $script:basePythonExecutable
+    }
+
+    $candidates = @()
+    if ($PythonExecutable) {
+        $candidates += $PythonExecutable
+    }
+    $candidates += @("py", "python3", "python")
+
+    foreach ($candidate in $candidates) {
+        $resolved = Resolve-PythonCandidate -Candidate $candidate
+        if ($resolved) {
+            $script:basePythonExecutable = $resolved
+            return $resolved
+        }
+    }
+
+    throw "Python executable could not be resolved. Tried: $($candidates -join ', ')"
 }
 
 function Get-RepoHead {
@@ -237,6 +306,8 @@ function Update-Repository {
 }
 
 function Ensure-Venv {
+    param([string]$PythonExecutable)
+
     if (-not (Test-Path $resolvedVenvPath)) {
         Write-Log "Creating python virtual environment at $resolvedVenvPath"
         if (-not $DryRun) {
@@ -250,17 +321,10 @@ function Ensure-Venv {
 
 function Get-PythonExecutable {
     $path = Join-Path $resolvedVenvPath "Scripts\python.exe"
-    if (-not (Test-Path $path)) {
-        $pythonCommand = Get-Command $PythonExecutable -CommandType Application -ErrorAction SilentlyContinue
-        if (-not $pythonCommand) {
-            throw "Python executable not found: $PythonExecutable"
-        }
-        if ($pythonCommand.Source) {
-            return $pythonCommand.Source
-        }
-        return $pythonCommand.Name
+    if (Test-Path $path) {
+        return $path
     }
-    return $path
+    return Get-SystemPythonExecutable
 }
 
 function Install-ProjectDeps {
@@ -511,6 +575,11 @@ function Ensure-Singleton {
             $script:alreadyRunning = $true
             return $null
         }
+        if (-not $mutex.WaitOne([TimeSpan]::FromSeconds(3))) {
+            $script:alreadyRunning = $true
+            $mutex.Dispose()
+            return $null
+        }
         $script:ownsMutex = $true
         return $mutex
     } catch {
@@ -535,7 +604,7 @@ if ($singleton) {
 
 try {
     Ensure-Tool -Name git
-    Ensure-Tool -Name $PythonExecutable
+    $basePython = Get-SystemPythonExecutable
 
     Write-Log "$nodeLogPrefix bootstrapping"
     Write-Log "Repo path: $resolvedRepoPath"
@@ -546,12 +615,20 @@ try {
     }
 
     $redisConnection = Build-RedisUrl -Explicit $RedisUrl -RedisHost $RedisHost -Port $RedisPort -Database $RedisDb -Password $RedisPassword
+    Write-Log "Resolved Python executable: $basePython"
+    Ensure-Venv -PythonExecutable $basePython
     $pythonForClient = Get-PythonExecutable
+    if (-not (Test-Path $pythonForClient)) {
+        throw "Python executable not found in virtual environment: $pythonForClient"
+    }
+
     $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
-    Ensure-Venv
     $currentHead = Get-RepoHead -Path $resolvedRepoPath
     $shouldInstall = Test-NeedsDependencyInstall -CurrentHead $currentHead
     if ($shouldInstall) {
+        if ($currentHead -and -not $DryRun) {
+            Write-Log "Installing dependencies for checkout $currentHead"
+        }
         Install-ProjectDeps
         Set-DependencyInstallMarker -CurrentHead $currentHead
     } else {
@@ -584,9 +661,14 @@ try {
         if ($updated) {
             Write-Log "Repository changed. Running dependency refresh and restarting managed services."
             $updatedHead = Get-RepoHead -Path $resolvedRepoPath
+            Ensure-Venv -PythonExecutable $basePython
+            $pythonForClient = Get-PythonExecutable
+            if (-not (Test-Path $pythonForClient)) {
+                throw "Python executable not found in virtual environment after update: $pythonForClient"
+            }
+            $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
             Install-ProjectDeps
             Set-DependencyInstallMarker -CurrentHead $updatedHead
-            $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
             Stop-Processes -NodeProcess $nodeProcess -ClientProcess $clientProcess
             $nodeProcess = $null
             $clientProcess = $null

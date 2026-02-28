@@ -98,8 +98,10 @@
   - Supports custom RSNode startup args through `-NodeArguments` and `-NodeDataRootArgument`.
   - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.
 - `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
-  - Starts the orchestrator in a persistent PowerShell console.
+  - Starts the orchestrator in a persistent PowerShell console and keeps the window open.
+  - If the local orchestrator script is missing, it bootstraps from `C:\ProgramData\RsLogic\RsLogic`.
   - Any arguments passed to the batch file are forwarded to the PowerShell script parameters.
+  - The launcher can be used to generate a desktop shortcut via `scripts/create_rslogic_rsnode_client_shortcut.bat`.
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
 - S3 uploads are routed through the server-configured path:
