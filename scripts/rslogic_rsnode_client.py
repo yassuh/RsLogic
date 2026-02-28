@@ -17,8 +17,15 @@ from typing import IO, Any, Dict, List, Optional, Sequence, Tuple
 from urllib.error import URLError
 from urllib.parse import quote_plus
 from urllib.request import urlopen
+from urllib.parse import urlparse
 
 import logging
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from rslogic.jobs.command_channel import RedisCommandBus
 
 
 def _safe_program_data_path() -> Path:
@@ -89,6 +96,14 @@ class ManagedProcess:
     proc: subprocess.Popen
     stdout_handle: IO[bytes]
     stderr_handle: IO[bytes]
+
+
+def _parse_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, 1)
 
 
 class FileSingletonLock:
@@ -352,6 +367,14 @@ def build_redis_url(explicit_url: str, host: str, port: int, db: str, password: 
 
 
 def build_client_env(cfg: RunConfig, redis_url: str, python_in_venv: Path) -> Dict[str, str]:
+    heartbeat_interval = _parse_positive_int(os.getenv("RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"), default=5)
+    heartbeat_ttl = _parse_positive_int(
+        os.getenv("RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS"),
+        default=max(heartbeat_interval * 3, 15),
+    )
+    if heartbeat_ttl < heartbeat_interval + 1:
+        heartbeat_ttl = heartbeat_interval + 1
+
     return {
         "RSLOGIC_APP_NAME": "RsLogic RSNode Worker",
         "RSLOGIC_DEFAULT_GROUP_NAME": "default-group",
@@ -364,6 +387,8 @@ def build_client_env(cfg: RunConfig, redis_url: str, python_in_venv: Path) -> Di
         "RSLOGIC_CONTROL_RESULT_TTL_SECONDS": "3600",
         "RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS": "7200",
         "RSLOGIC_WORKER_COUNT": str(cfg.client_workers),
+        "RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS": str(heartbeat_interval),
+        "RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS": str(heartbeat_ttl),
         "RSLOGIC_RSTOOLS_MODE": "remote",
         "RSLOGIC_RSTOOLS_SDK_BASE_URL": cfg.sdk_base_url,
         "RSLOGIC_RSTOOLS_SDK_CLIENT_ID": cfg.sdk_client_id,
@@ -409,6 +434,71 @@ def tail_lines(path: Path, line_count: int = 30) -> str:
         return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-line_count:])
     except Exception:
         return ""
+
+
+def _log_file_position(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        return path.stat().st_size
+    except Exception:
+        return 0
+
+
+def _read_new_log_lines(path: Path, cursor: int) -> Tuple[List[str], int]:
+    if not path.exists():
+        return [], cursor
+    try:
+        current = path.stat().st_size
+    except Exception:
+        return [], cursor
+
+    if current < cursor:
+        cursor = 0
+
+    if current == cursor:
+        return [], cursor
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(cursor)
+            raw = handle.read(current - cursor)
+        text = raw.decode("utf-8", errors="replace")
+        return [line for line in text.splitlines() if line], current
+    except Exception:
+        return [], current
+
+
+def _check_redis_connectivity(redis_url: str, logger: logging.Logger) -> bool:
+    if not redis_url:
+        logger.warning("Redis URL empty; skipping connectivity check.")
+        return False
+
+    try:
+        bus = RedisCommandBus(redis_url)
+        bus.ping()
+        bus.close()
+        logger.info("Redis ping successful for %s", redis_url)
+        return True
+    except Exception as ping_exc:
+        parsed = urlparse(redis_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+        try:
+            import socket
+
+            with socket.create_connection((host, port), timeout=3):
+                pass
+            logger.warning(
+                "Redis TCP reachable for %s:%s but ping command failed: %s",
+                host,
+                port,
+                ping_exc,
+            )
+            return True
+        except Exception as socket_exc:
+            logger.error("Redis connectivity check failed for %s:%s. ping=%s tcp=%s", host, port, ping_exc, socket_exc)
+            return False
 
 
 def format_command(cmd: Sequence[str]) -> str:
@@ -766,6 +856,9 @@ def main() -> int:
     cfg = normalize_config(args)
     cfg.log_path.parent.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(cfg.log_path)
+    log_dir = cfg.log_path.parent
+    client_stdout_log = log_dir / "rslogic-client-stdout.log"
+    client_stderr_log = log_dir / "rslogic-client-stderr.log"
 
     loop_start = datetime.now()
     marker_path = cfg.venv_path / ".rslogic_install_head.txt"
@@ -776,6 +869,25 @@ def main() -> int:
     client_proc: Optional[ManagedProcess] = None
     node_stop_reason = "not-started"
     client_stop_reason = "not-started"
+    client_bootstrap_state = {
+        "redis": "unknown",
+        "heartbeat": "unknown",
+    }
+    client_log_offsets = {
+        str(client_stdout_log): _log_file_position(client_stdout_log),
+        str(client_stderr_log): _log_file_position(client_stderr_log),
+    }
+
+    def _poll_client_bootstrap_state() -> None:
+        for path_key, offset in list(client_log_offsets.items()):
+            path = Path(path_key)
+            new_lines, new_offset = _read_new_log_lines(path, offset)
+            client_log_offsets[path_key] = new_offset
+            for line in new_lines:
+                if "RSNode client startup: redis ping successful" in line:
+                    client_bootstrap_state["redis"] = "connected"
+                if "RSNode presence heartbeat:" in line:
+                    client_bootstrap_state["heartbeat"] = "enabled"
 
     def request_stop(_signum: Optional[int] = None, _frame: Any = None) -> None:
         nonlocal should_stop
@@ -800,6 +912,9 @@ def main() -> int:
             logger.info("RsLogic RSNode client orchestrator bootstrapping")
             logger.info("Repo path: %s", cfg.repo_root)
             logger.info("Repository HEAD before bootstrap/update: %s", git_head(cfg.repo_root))
+            redis_connection = build_redis_url(cfg.redis_url, cfg.redis_host, cfg.redis_port, cfg.redis_db, cfg.redis_password)
+            redis_preflight_ok = _check_redis_connectivity(redis_connection, logger)
+            logger.info("Redis connectivity preflight: %s", "connected" if redis_preflight_ok else "disconnected")
 
             bootstrapped = ensure_repository(cfg, logger)
             if bootstrapped:
@@ -813,9 +928,13 @@ def main() -> int:
             if not python_in_venv.exists():
                 raise RuntimeError(f"Python executable not found in virtual environment: {python_in_venv}")
 
-            redis_connection = build_redis_url(cfg.redis_url, cfg.redis_host, cfg.redis_port, cfg.redis_db, cfg.redis_password)
             env_values = build_client_env(cfg, redis_connection, python_in_venv)
             write_client_env_file(env_file, env_values)
+            logger.info(
+                "Client heartbeat config: interval=%ss ttl=%ss",
+                env_values["RSLOGIC_CLIENT_HEARTBEAT_INTERVAL_SECONDS"],
+                env_values["RSLOGIC_CLIENT_HEARTBEAT_TTL_SECONDS"],
+            )
 
             current_head = git_head(cfg.repo_root)
             if needs_dependency_install(cfg, current_head, marker_path):
@@ -868,7 +987,7 @@ def main() -> int:
                 if node_proc is None or node_proc.proc.poll() is not None:
                     if node_proc is not None and node_proc.proc.poll() is not None:
                         node_stop_reason = f"exit-code={node_proc.proc.returncode}"
-                    node_proc, node_stop_reason = run_rsnode(cfg, logger, cfg.log_path.parent)
+                    node_proc, node_stop_reason = run_rsnode(cfg, logger, log_dir)
                     if node_proc:
                         node_stop_reason = "running"
                         if not wait_for_node_health(cfg, logger):
@@ -885,7 +1004,12 @@ def main() -> int:
                     if client_proc is not None and client_proc.proc.poll() is not None:
                         client_stop_reason = f"exit-code={client_proc.proc.returncode}"
                     if node_proc and node_proc.proc.poll() is None:
-                        client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, cfg.log_path.parent)
+                        client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
+                        client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
+                        client_bootstrap_state["redis"] = "unknown"
+                        client_bootstrap_state["heartbeat"] = "unknown"
+                        client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
+                        _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
                             logger.warning("rslogic-client failed: %s", client_stop_reason)
                             time.sleep(cfg.client_restart_delay_seconds)
@@ -903,6 +1027,8 @@ def main() -> int:
                         time.sleep(cfg.node_restart_delay_seconds)
 
                 if time.time() >= next_status:
+                    if client_proc and client_proc.proc.poll() is None:
+                        _poll_client_bootstrap_state()
                     current_head = git_head(cfg.repo_root)
                     node_up = str(node_proc.proc.pid) if node_proc and node_proc.proc.poll() is None else f"stopped/{node_stop_reason}"
                     client_up = (
@@ -915,13 +1041,15 @@ def main() -> int:
                         health = "degraded"
                     uptime = str(timedelta(seconds=max(0, int((datetime.now() - loop_start).total_seconds()))))
                     logger.info(
-                        "STATUS node=%s client=%s autoUpdate=%s health=%s repo=%s uptime=%s",
+                        "STATUS node=%s client=%s autoUpdate=%s health=%s repo=%s uptime=%s clientRedis=%s clientHeartbeat=%s",
                         node_up,
                         client_up,
                         not cfg.no_auto_update,
                         health,
                         current_head,
                         uptime,
+                        client_bootstrap_state["redis"],
+                        client_bootstrap_state["heartbeat"],
                     )
                     next_status = time.time() + max(cfg.loop_sleep_seconds, 5)
 

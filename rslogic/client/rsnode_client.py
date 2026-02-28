@@ -822,6 +822,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     try:
         bus = RedisCommandBus(redis_url)
         bus.ping()
+        logger.info("RSNode client startup: redis ping successful")
     except Exception as exc:
         raise SystemExit(f"Redis ping failed for {redis_url}: {exc}") from exc
     finally:
