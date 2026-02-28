@@ -1,77 +1,107 @@
 [CmdletBinding()]
 param(
     [string]$RepoUrl = "https://github.com/yassuh/RsLogic.git",
-    [string]$RepoPath = "",
     [string]$RepoBranch = "main",
+    [string]$RepoPath = "",
     [string]$PythonExecutable = "python",
     [string]$VenvPath = "",
-    [string]$EnvFileName = ".env.rsnode-worker",
     [string]$NodeExecutable = "C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe",
-    [string]$NodeDataRoot = "$env:LOCALAPPDATA\Epic Games\RealityScan\RSNodeData",
-
+    [string]$NodeDataRoot = "",
+    [string]$NodeDataRootArgument = "--dataRoot",
+    [string[]]$NodeArguments = @(),
     [string]$RedisUrl = "",
     [string]$RedisHost = "localhost",
-    [int]$RedisPort = 6379,
+    [int]$RedisPort = 9002,
     [string]$RedisDb = "0",
     [string]$RedisPassword = "",
-
     [string]$ControlCommandQueue = "rslogic:control:commands",
     [string]$ControlResultQueue = "rslogic:control:results",
     [string]$QueueKey = "rslogic:jobs:queue",
+    [string]$ServerHost = "192.168.193.56",
     [string]$SdkBaseUrl = "http://localhost:8000",
     [string]$SdkClientId = "",
     [string]$SdkAppToken = "",
     [string]$SdkAuthToken = "",
-    [string]$ServerHost = "",
-
-    [int]$WorkerCount = 1,
     [int]$ClientWorkers = 1,
-    [int]$ClientRestartSeconds = 8,
-    [int]$WatchdogPollSeconds = 10,
-    [int]$WatchdogStartupTimeoutSeconds = 60,
-    [int]$WatchdogRestartCooldownSeconds = 5,
-    [int]$WatchdogRepoUpdateIntervalSeconds = 300,
-    [string]$WatchdogHealthUrl = "",
-    [bool]$AutoUpdate = $true,
-
+    [int]$NodePollSeconds = 10,
+    [int]$NodeStartupTimeoutSeconds = 60,
+    [int]$RepoUpdateIntervalSeconds = 300,
+    [int]$LoopSleepSeconds = 8,
+    [int]$ClientRestartDelaySeconds = 8,
+    [int]$NodeRestartDelaySeconds = 5,
+    [string]$NodeHealthUrl = "",
+    [string]$LogPath = "$env:ProgramData\RsLogic\rsnode-orchestrator.log",
+    [switch]$NoAutoUpdate,
     [switch]$NoPull,
     [switch]$NoDeps,
-    [switch]$StartNow,
-    [switch]$StartDetached,
-    [switch]$CreateStartupTask,
-    [string]$StartupTaskName = "RsLogic.RSNodeClient",
-    [switch]$NoPromptForSecrets,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$ProgressPreference = "SilentlyContinue"
 
-function Resolve-ScriptRoot {
-    return Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $PSCommandPath }
+if (-not $NodeDataRoot) {
+    $NodeDataRoot = Join-Path $env:LOCALAPPDATA "Epic Games\RealityScan\RSNodeData"
 }
 
-if (-not $RepoPath) {
-    $candidateFromScript = Join-Path (Resolve-ScriptRoot) ".."
-    if (Test-Path (Join-Path $candidateFromScript "pyproject.toml")) {
-        $defaultRepoPath = $candidateFromScript
+$resolvedRepoPath = ""
+if ($RepoPath) {
+    $resolvedRepoPath = [System.IO.Path]::GetFullPath($RepoPath)
+} else {
+    $scriptParent = (Resolve-Path (Join-Path $scriptRoot "..")).Path
+    if (Test-Path (Join-Path $scriptParent "pyproject.toml")) {
+        $resolvedRepoPath = $scriptParent
     } else {
-        $defaultRepoPath = Join-Path $env:ProgramData "RsLogic\RsLogic"
+        $resolvedRepoPath = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData "RsLogic\RsLogic"))
     }
-    $RepoPath = $defaultRepoPath
 }
 
-function Write-Step {
-    param([string]$Message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Host "[$timestamp] $Message"
+if (-not $VenvPath) {
+    $VenvPath = Join-Path $resolvedRepoPath ".venv"
+}
+$resolvedVenvPath = [System.IO.Path]::GetFullPath($VenvPath)
+$envFilePath = Join-Path $resolvedRepoPath ".env.rsnode-worker"
+$installHeadFile = Join-Path $resolvedVenvPath ".rslogic_install_head.txt"
+$nodeLogPrefix = "RsLogic RSNode client orchestrator"
+$loopStartTime = Get-Date
+$cancelRequested = $false
+[Console]::CancelKeyPress += { $cancelRequested = $true }
+
+$resolvedServerHost = $ServerHost.Trim()
+if ($resolvedServerHost -and $resolvedServerHost -ne "localhost") {
+    if (-not $PSBoundParameters.ContainsKey("RedisHost") -or -not $RedisHost -or $RedisHost -eq "localhost") {
+        $RedisHost = $resolvedServerHost
+    }
+    if (-not $PSBoundParameters.ContainsKey("SdkBaseUrl") -or -not $SdkBaseUrl -or $SdkBaseUrl -eq "http://localhost:8000") {
+        $SdkBaseUrl = "http://$resolvedServerHost:8000"
+    }
 }
 
-function Invoke-OrThrow {
-    param([scriptblock]$Action, [string]$ErrorMessage)
-    & $Action
-    if ($LASTEXITCODE -ne 0) {
-        throw "$ErrorMessage (exit code: $LASTEXITCODE)"
+if (-not $LogPath) {
+    $LogPath = Join-Path $env:ProgramData "RsLogic\rsnode-orchestrator.log"
+}
+$logDir = Split-Path -Parent $LogPath
+if ($logDir -and -not (Test-Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+$alreadyRunning = $false
+
+if (-not (Test-Path (Join-Path $resolvedRepoPath ".git"))) {
+    $gitHint = if (Test-Path $resolvedRepoPath) { "Directory exists but is not a git repository: $resolvedRepoPath" } else { "No local repository found at $resolvedRepoPath" }
+    Write-Host "$nodeLogPrefix | $gitHint"
+}
+
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+
+    $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"), $Level, $Message
+    Write-Host $line
+    try {
+        Add-Content -Path $LogPath -Value $line
+    } catch {
+        # Logging should not stop the orchestrator.
     }
 }
 
@@ -83,16 +113,9 @@ function Ensure-Tool {
 }
 
 function Build-RedisUrl {
-    param(
-        [string]$Explicit,
-        [string]$Host,
-        [int]$Port,
-        [string]$Database,
-        [string]$Password
-    )
-
-    if ($Explicit -and $Explicit.Trim()) {
-        return $Explicit.Trim()
+    param([string]$Explicit, [string]$Host, [int]$Port, [string]$Database, [string]$Password)
+    if ($Explicit) {
+        return $Explicit
     }
 
     $cleanHost = $Host.Trim()
@@ -102,288 +125,500 @@ function Build-RedisUrl {
 
     $escapedPassword = if ($Password) { [System.Uri]::EscapeDataString($Password) } else { "" }
     if ($escapedPassword) {
-        return ("redis://:{0}@{1}:{2}/{3}" -f $escapedPassword, $cleanHost, $Port, $Database)
+        return "redis://:{0}@{1}:{2}/{3}" -f $escapedPassword, $cleanHost, $Port, $Database
     }
-    return ("redis://{0}:{1}/{2}" -f $cleanHost, $Port, $Database)
+    return "redis://{0}:{1}/{2}" -f $cleanHost, $Port, $Database
 }
 
-function Resolve-Required {
-    param(
-        [string]$PromptText,
-        [string]$Current
-    )
-    if ($Current) {
-        return $Current
-    }
-    if ($NoPromptForSecrets) {
+function Get-RepoHead {
+    param([string]$Path)
+    try {
+        $head = & git -C $Path rev-parse HEAD
+        if ($LASTEXITCODE -ne 0) {
+            return ""
+        }
+        return $head.ToString().Trim()
+    } catch {
         return ""
     }
-    return (Read-Host $PromptText)
 }
 
-function Write-EnvFile {
-    param(
-        [string]$Path,
-        [hashtable]$Values
-    )
-
-    $lines = @(
-        "# RsLogic RSNode worker environment."
-        "RSLOGIC_APP_NAME=RsLogic RSNode Worker"
-        "RSLOGIC_DEFAULT_GROUP_NAME=default-group"
-        "RSLOGIC_QUEUE_BACKEND=redis"
-        "RSLOGIC_QUEUE_START_LOCAL_WORKERS=false"
-        "RSLOGIC_WORKER_COUNT=$($Values.worker_count)"
-        "RSLOGIC_REDIS_URL=$($Values.redis_url)"
-        "RSLOGIC_REDIS_QUEUE_KEY=$($Values.queue_key)"
-        "RSLOGIC_CONTROL_COMMAND_QUEUE=$($Values.control_command_queue)"
-        "RSLOGIC_CONTROL_RESULT_QUEUE=$($Values.control_result_queue)"
-        "RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS=7200"
-        "RSLOGIC_CONTROL_RESULT_TTL_SECONDS=3600"
-        "RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS=2"
-
-        "RSLOGIC_RSTOOLS_MODE=remote"
-        "RSLOGIC_RSTOOLS_SDK_BASE_URL=$($Values.sdk_base_url)"
-        "RSLOGIC_RSTOOLS_SDK_CLIENT_ID=$($Values.sdk_client_id)"
-        "RSLOGIC_RSTOOLS_SDK_APP_TOKEN=$($Values.sdk_app_token)"
-        "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN=$($Values.sdk_auth_token)"
-        "RSLOGIC_LOG_LEVEL=INFO"
-        "RSLOGIC_LOG_FORMAT=%(asctime)s %(levelname)s %(name)s: %(message)s"
-        ""
-        "# Installer/runtime helpers (read by run_rslogic_client_stack.ps1)"
-        "RSLOGIC_CLIENT_PYTHON=$($Values.python_path)"
-        "RSLOGIC_CLIENT_RESTART_SECONDS=$($Values.client_restart_seconds)"
-        "RSLOGIC_CLIENT_VERBOSE=1"
-        "RSLOGIC_RSNODE_EXECUTABLE=$($Values.node_executable)"
-        "RSLOGIC_RSNODE_DATA_ROOT=$($Values.node_data_root)"
-        "RSLOGIC_RSNODE_WATCHDOG_POLL_SECONDS=$($Values.watchdog_poll_seconds)"
-        "RSLOGIC_RSNODE_WATCHDOG_STARTUP_TIMEOUT_SECONDS=$($Values.watchdog_startup_timeout_seconds)"
-        "RSLOGIC_RSNODE_WATCHDOG_RESTART_COOLDOWN_SECONDS=$($Values.watchdog_restart_cooldown_seconds)"
-        "RSLOGIC_RSNODE_REPO_URL=$RepoUrl"
-        "RSLOGIC_RSNODE_REPO_BRANCH=$RepoBranch"
-        "RSLOGIC_RSNODE_AUTO_UPDATE=$($Values.repo_auto_update)"
-        "RSLOGIC_RSNODE_REPO_UPDATE_INTERVAL_SECONDS=$($Values.watchdog_repo_update_interval_seconds)"
-    )
-
-    if ($Values.watchdog_health_url) {
-        $lines += "RSLOGIC_RSNODE_WATCHDOG_HEALTH_URL=$($Values.watchdog_health_url)"
+function Ensure-Repository {
+    if (-not (Test-Path $resolvedRepoPath)) {
+        New-Item -ItemType Directory -Path $resolvedRepoPath -Force | Out-Null
     }
 
-    Set-Content -Path $Path -Encoding UTF8 -Value ($lines -join "`r`n")
-}
-
-Write-Step "Starting RsLogic RSNode worker install/setup"
-
-Ensure-Tool -Name $PythonExecutable
-
-$repoPath = [System.IO.Path]::GetFullPath($RepoPath)
-$venvResolved = if ($VenvPath) { $VenvPath } else { Join-Path $repoPath ".venv" }
-$venvResolved = [System.IO.Path]::GetFullPath($venvResolved)
-$envFilePath = Join-Path $repoPath $EnvFileName
-
-if (Test-Path $repoPath) {
-    $hasPyproject = Test-Path (Join-Path $repoPath "pyproject.toml")
-    $hasGitCheckout = Test-Path (Join-Path $repoPath ".git")
-    if (-not $hasPyproject -and -not $hasGitCheckout) {
-        if ((Get-ChildItem -Path $repoPath -Force | Measure-Object).Count -gt 0) {
-            throw "RepoPath exists but is not a git checkout and missing pyproject.toml: $repoPath"
+    if (-not (Test-Path (Join-Path $resolvedRepoPath ".git"))) {
+        if (-not $RepoUrl) {
+            throw "RepoPath points to a non-repo location and no RepoUrl was provided."
         }
+        if ((Get-ChildItem -Path $resolvedRepoPath -Force -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0 -and -not $DryRun) {
+            $backupName = "{0}.invalid-{1:yyyyMMddHHmmss}" -f $resolvedRepoPath, (Get-Date)
+            Write-Log "Existing directory at $resolvedRepoPath is not a valid repo. Backing it up to $backupName and recreating."
+            Move-Item -Path $resolvedRepoPath -Destination $backupName -Force
+            New-Item -ItemType Directory -Path $resolvedRepoPath -Force | Out-Null
+        }
+
+        if (-not $NoPull -and -not $DryRun) {
+            Write-Log "Cloning $RepoUrl -> $resolvedRepoPath ($RepoBranch)"
+            & git clone --branch $RepoBranch $RepoUrl $resolvedRepoPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "Git clone failed for $RepoUrl"
+            }
+        } else {
+            throw "Repository missing at $resolvedRepoPath and cloning is disabled with -NoPull."
+        }
+        return $true
     }
-} else {
-    New-Item -ItemType Directory -Path (Split-Path -Parent $repoPath) -Force | Out-Null
-    New-Item -ItemType Directory -Path $repoPath -Force | Out-Null
-}
 
-$hasPyproject = Test-Path (Join-Path $repoPath "pyproject.toml")
-$hasGitCheckout = Test-Path (Join-Path $repoPath ".git")
-$repoCheckoutPath = $repoPath
-
-if (-not $hasPyproject -and -not $hasGitCheckout) {
-    if (-not $RepoUrl) {
-        throw "RepoPath points to a non-repo destination and no RepoUrl was provided."
+    if (Test-Path (Join-Path $resolvedRepoPath "pyproject.toml")) {
+        return Update-Repository
     }
 
-    Ensure-Tool -Name git
-    Write-Step "Cloning repo from $RepoUrl to $repoPath"
+    if ($NoPull) {
+        throw "Invalid repository checkout at $resolvedRepoPath: missing pyproject.toml"
+    }
+
+    Write-Log "Existing repository at $resolvedRepoPath is invalid (missing pyproject.toml). Rebuilding."
+    $backupName = "{0}.invalid-{1:yyyyMMddHHmmss}" -f $resolvedRepoPath, (Get-Date)
     if (-not $DryRun) {
-        Invoke-OrThrow -Action {
-            git clone --branch $RepoBranch $RepoUrl $repoPath
-        } -ErrorMessage "Failed to clone repository"
-    }
-    $hasPyproject = Test-Path (Join-Path $repoPath "pyproject.toml")
-    $hasGitCheckout = Test-Path (Join-Path $repoPath ".git")
-}
-
-if ($hasGitCheckout -and -not $NoPull -and -not $DryRun) {
-    Ensure-Tool -Name git
-    Write-Step "Updating repository at $repoPath (branch=$RepoBranch)"
-    Invoke-OrThrow -Action {
-        git -C $repoPath fetch --all --prune
-    } -ErrorMessage "Failed to fetch repository"
-    Invoke-OrThrow -Action {
-        git -C $repoPath checkout $RepoBranch
-    } -ErrorMessage "Failed to checkout branch $RepoBranch"
-    Invoke-OrThrow -Action {
-        git -C $repoPath pull --ff-only
-    } -ErrorMessage "Failed to pull latest changes"
-}
-
-if (-not (Test-Path (Join-Path $repoCheckoutPath "pyproject.toml"))) {
-    throw "Could not locate rslogic repository at $repoCheckoutPath"
-}
-
-$repoRoot = $repoCheckoutPath
-Set-Location $repoRoot
-
-if ($ServerHost) {
-    $resolvedServerHost = $ServerHost.Trim()
-    if ($resolvedServerHost) {
-        if (-not $RedisHost -or $RedisHost -eq "localhost") {
-            $RedisHost = $resolvedServerHost
+        Move-Item -Path $resolvedRepoPath -Destination $backupName -Force
+        New-Item -ItemType Directory -Path $resolvedRepoPath -Force | Out-Null
+        Write-Log "Backed up invalid checkout to $backupName."
+        Write-Log "Cloning $RepoUrl -> $resolvedRepoPath ($RepoBranch)"
+        & git clone --branch $RepoBranch $RepoUrl $resolvedRepoPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Git clone failed for $RepoUrl"
         }
-        if (-not $SdkBaseUrl -or $SdkBaseUrl -eq "http://localhost:8000") {
-            $SdkBaseUrl = "http://{0}:8000" -f $resolvedServerHost
+        return $true
+    }
+
+    return $true
+}
+
+function Update-Repository {
+    if ($NoPull) {
+        return $false
+    }
+
+    Write-Log "Checking for updates from $RepoUrl (branch=$RepoBranch)"
+    $before = Get-RepoHead -Path $resolvedRepoPath
+    & git -C $resolvedRepoPath fetch --all --prune
+    if ($LASTEXITCODE -ne 0) {
+        throw "git fetch failed."
+    }
+
+    & git -C $resolvedRepoPath checkout $RepoBranch
+    if ($LASTEXITCODE -ne 0) {
+        throw "git checkout $RepoBranch failed."
+    }
+
+    & git -C $resolvedRepoPath pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        throw "git pull --ff-only failed."
+    }
+
+    $after = Get-RepoHead -Path $resolvedRepoPath
+    return ($before -and $after -and $before -ne $after)
+}
+
+function Ensure-Venv {
+    if (-not (Test-Path $resolvedVenvPath)) {
+        Write-Log "Creating python virtual environment at $resolvedVenvPath"
+        if (-not $DryRun) {
+            & $PythonExecutable -m venv $resolvedVenvPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not create virtual environment at $resolvedVenvPath"
+            }
         }
     }
 }
 
-if (-not (Test-Path $venvResolved)) {
-    Write-Step "Creating virtual environment: $venvResolved"
-    if (-not $DryRun) {
-        Invoke-OrThrow -Action {
-            & $PythonExecutable -m venv $venvResolved
-        } -ErrorMessage "Failed to create virtual environment"
+function Get-PythonExecutable {
+    $path = Join-Path $resolvedVenvPath "Scripts\python.exe"
+    if (-not (Test-Path $path)) {
+        return (Resolve-Path $PythonExecutable -ErrorAction SilentlyContinue).Path
     }
+    return $path
 }
 
-$pythonPath = Join-Path $venvResolved "Scripts\python.exe"
+function Install-ProjectDeps {
+    if ($NoDeps) {
+        Write-Log "Skipping dependency install due -NoDeps."
+        return
+    }
+    if (-not (Test-Path (Join-Path $resolvedRepoPath "pyproject.toml"))) {
+        throw "Cannot install dependencies without repository pyproject.toml at $resolvedRepoPath"
+    }
 
-if (-not $NoDeps -and -not $DryRun) {
-    Write-Step "Installing project dependencies in venv"
-    Invoke-OrThrow -Action {
-        & $pythonPath -m pip install --upgrade pip
-    } -ErrorMessage "Failed to upgrade pip"
-    Invoke-OrThrow -Action {
-        & $pythonPath -m pip install -e .
-    } -ErrorMessage "Failed to install this package in editable mode"
-}
-
-$sdkClientId = Resolve-Required -Current $SdkClientId -PromptText "RSLOGIC_RSTOOLS_SDK_CLIENT_ID"
-$sdkAppToken = Resolve-Required -Current $SdkAppToken -PromptText "RSLOGIC_RSTOOLS_SDK_APP_TOKEN"
-$sdkAuthToken = Resolve-Required -Current $SdkAuthToken -PromptText "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"
-
-$redisUrlResolved = Build-RedisUrl -Explicit $RedisUrl -Host $RedisHost -Port $RedisPort -Database $RedisDb -Password $RedisPassword
-
-$envValues = @{
-    worker_count               = $WorkerCount
-    redis_url                  = $redisUrlResolved
-    queue_key                  = $QueueKey
-    control_command_queue      = $ControlCommandQueue
-    control_result_queue       = $ControlResultQueue
-    sdk_base_url               = $SdkBaseUrl
-    sdk_client_id              = $sdkClientId
-    sdk_app_token              = $sdkAppToken
-    sdk_auth_token             = $sdkAuthToken
-    python_path                = $pythonPath
-    client_restart_seconds     = $ClientRestartSeconds
-    node_executable            = $NodeExecutable
-    node_data_root             = $NodeDataRoot
-    watchdog_poll_seconds      = $WatchdogPollSeconds
-    watchdog_startup_timeout_seconds = $WatchdogStartupTimeoutSeconds
-    watchdog_restart_cooldown_seconds = $WatchdogRestartCooldownSeconds
-    watchdog_health_url        = $WatchdogHealthUrl
-    watchdog_repo_update_interval_seconds = $WatchdogRepoUpdateIntervalSeconds
-    repo_auto_update          = if ($AutoUpdate) { "true" } else { "false" }
-}
-
-if ($WorkerCount -lt 1) {
-    throw "WorkerCount must be at least 1"
-}
-if ($ClientWorkers -lt 1) {
-    Write-Step "ClientWorkers was less than 1. Using WorkerCount instead."
-    $ClientWorkers = $WorkerCount
-}
-
-if ($ClientWorkers -ne $WorkerCount) {
-    Write-Step "Using client worker count=$ClientWorkers for rslogic-client"
-    $envValues.worker_count = $ClientWorkers
-}
-
-Write-Step "Writing RSNode worker environment to $envFilePath"
-if (-not $DryRun) {
-    Write-EnvFile -Path $envFilePath -Values $envValues
-}
-
-$stackScript = Join-Path $repoRoot "scripts\run_rslogic_client_stack.ps1"
-if (-not (Test-Path $stackScript)) {
-    throw "Missing stack script: $stackScript"
-}
-
-Write-Step "Install completed. Env file: $envFilePath"
-Write-Step "Start command: pwsh -File `"$stackScript`" -RepoRoot `"$repoRoot`" -EnvFile `"$EnvFileName`""
-
-if ($CreateStartupTask) {
+    $python = Get-PythonExecutable
+    Write-Log "Installing RsLogic into $resolvedVenvPath (python=$python)"
     if ($DryRun) {
-        Write-Step "DRY RUN: would create startup task '$StartupTaskName'"
-    } else {
-        $taskCommand = "pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$stackScript`" -RepoRoot `"$repoRoot`" -EnvFile `"$EnvFileName`" -RepoUrl `"$RepoUrl`" -RepoBranch `"$RepoBranch`""
-        if (-not $AutoUpdate) {
-            $taskCommand += " -AutoUpdate false"
+        Write-Log "DRY RUN: pip install -e ."
+        return
+    }
+    Push-Location $resolvedRepoPath
+    try {
+        & $python -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip upgrade failed"
         }
-        if ($WatchdogRepoUpdateIntervalSeconds -gt 0) {
-            $taskCommand += " -RepoUpdateIntervalSeconds $WatchdogRepoUpdateIntervalSeconds"
+        & $python -m pip install -e .
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip install -e . failed"
         }
-        Write-Step "Creating/replacing startup task: $StartupTaskName"
-        $taskArgs = @(
-            "/Create",
-            "/F",
-            "/TN", $StartupTaskName,
-            "/SC", "ONLOGON",
-            "/RL", "HIGHEST",
-            "/IT",
-            "/TR", $taskCommand
-        )
-        Invoke-OrThrow -Action {
-            schtasks.exe @taskArgs
-        } -ErrorMessage "Failed to create scheduled task. Open PowerShell as admin and retry, or start manually."
+    } finally {
+        Pop-Location
     }
 }
 
-if ($StartNow) {
-    $stackArg = @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        $stackScript,
-        "-RepoRoot",
-        $repoRoot,
-        "-EnvFile",
-        $EnvFileName,
-        "-RepoUrl",
-        $RepoUrl,
-        "-RepoBranch",
-        $RepoBranch,
-        "-AutoUpdate",
-        "$AutoUpdate",
-        "-RepoUpdateIntervalSeconds",
-        "$WatchdogRepoUpdateIntervalSeconds"
+function Test-NeedsDependencyInstall {
+    param([string]$CurrentHead)
+
+    if (-not (Test-Path (Join-Path $resolvedVenvPath "Scripts\python.exe"))) {
+        return $true
+    }
+    if ($NoDeps) {
+        return $false
+    }
+    if (-not (Test-Path $installHeadFile)) {
+        return $true
+    }
+
+    try {
+        $installedHead = (Get-Content -Path $installHeadFile -Raw).Trim()
+        return $installedHead -ne $CurrentHead
+    } catch {
+        return $true
+    }
+}
+
+function Set-DependencyInstallMarker {
+    param([string]$CurrentHead)
+    if ($DryRun) {
+        return
+    }
+    Set-Content -Path $installHeadFile -Encoding UTF8 -Value $CurrentHead
+}
+
+function Build-RSNodeEnv {
+    param([string]$RedisUrlValue, [string]$PythonPath)
+
+    $values = @{
+        RSLOGIC_APP_NAME = "RsLogic RSNode Worker"
+        RSLOGIC_DEFAULT_GROUP_NAME = "default-group"
+        RSLOGIC_QUEUE_BACKEND = "redis"
+        RSLOGIC_REDIS_URL = $RedisUrlValue
+        RSLOGIC_REDIS_QUEUE_KEY = $QueueKey
+        RSLOGIC_CONTROL_COMMAND_QUEUE = $ControlCommandQueue
+        RSLOGIC_CONTROL_RESULT_QUEUE = $ControlResultQueue
+        RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS = "2"
+        RSLOGIC_CONTROL_RESULT_TTL_SECONDS = "3600"
+        RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS = "7200"
+
+        RSLOGIC_WORKER_COUNT = [string]$ClientWorkers
+        RSLOGIC_RSTOOLS_MODE = "remote"
+        RSLOGIC_RSTOOLS_SDK_BASE_URL = $SdkBaseUrl
+        RSLOGIC_RSTOOLS_SDK_CLIENT_ID = $SdkClientId
+        RSLOGIC_RSTOOLS_SDK_APP_TOKEN = $SdkAppToken
+        RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN = $SdkAuthToken
+
+        RSLOGIC_LOG_LEVEL = "INFO"
+        RSLOGIC_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        RSLOGIC_CLIENT_RESTART_SECONDS = [string]$ClientRestartDelaySeconds
+        RSLOGIC_CLIENT_PYTHON = $PythonPath
+        RSLOGIC_RSNODE_EXECUTABLE = $NodeExecutable
+        RSLOGIC_RSNODE_DATA_ROOT = $NodeDataRoot
+        RSLOGIC_RSNODE_WATCHDOG_POLL_SECONDS = [string]$NodePollSeconds
+        RSLOGIC_RSNODE_WATCHDOG_STARTUP_TIMEOUT_SECONDS = [string]$NodeStartupTimeoutSeconds
+        RSLOGIC_RSNODE_WATCHDOG_RESTART_COOLDOWN_SECONDS = [string]$NodeRestartDelaySeconds
+        RSLOGIC_RSNODE_REPO_URL = $RepoUrl
+        RSLOGIC_RSNODE_REPO_BRANCH = $RepoBranch
+        RSLOGIC_RSNODE_AUTO_UPDATE = $(-not $NoAutoUpdate).ToString().ToLowerInvariant()
+        RSLOGIC_RSNODE_REPO_UPDATE_INTERVAL_SECONDS = [string]$RepoUpdateIntervalSeconds
+        RSLOGIC_RSNODE_WATCHDOG_HEALTH_URL = $NodeHealthUrl
+    }
+    if ($NodeHealthUrl) {
+        $values["RSLOGIC_RSNODE_WATCHDOG_HEALTH_URL"] = $NodeHealthUrl
+    }
+
+    $lines = @()
+    foreach ($entry in $values.GetEnumerator()) {
+        if ($entry.Value -ne $null -and $entry.Value -ne "") {
+            $lines += "{0}={1}" -f $entry.Key, $entry.Value
+        }
+    }
+    Set-Content -Path $envFilePath -Encoding UTF8 -Value $lines
+    return $values
+}
+
+function Test-ProcessAlive {
+    param([System.Diagnostics.Process]$Process)
+    if (-not $Process) {
+        return $false
+    }
+    try {
+        if ($Process.HasExited) {
+            return $false
+        }
+        Get-Process -Id $Process.Id -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Stop-ManagedProcess {
+    param([System.Diagnostics.Process]$Process, [string]$Name)
+    if (-not (Test-ProcessAlive $Process)) {
+        return
+    }
+    Write-Log "Stopping $Name (pid=$($Process.Id))"
+    try {
+        $Process.CloseMainWindow() | Out-Null
+        $Process.WaitForExit(3000) | Out-Null
+    } catch {
+        # ignore
+    }
+    if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Stop-Processes {
+    param([System.Diagnostics.Process]$NodeProcess, [System.Diagnostics.Process]$ClientProcess)
+    Stop-ManagedProcess -Process $ClientProcess -Name "rslogic-client"
+    Stop-ManagedProcess -Process $NodeProcess -Name "RSNode.exe"
+}
+
+function Get-NodeHealth {
+    if (-not $NodeHealthUrl) {
+        return $true
+    }
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $NodeHealthUrl -Method Get -TimeoutSec 2
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
+}
+
+function Start-RSNode {
+    if (-not (Test-Path $NodeExecutable)) {
+        throw "RSNode executable missing: $NodeExecutable"
+    }
+
+    if (-not (Test-Path $NodeDataRoot)) {
+        New-Item -ItemType Directory -Path $NodeDataRoot -Force | Out-Null
+    }
+
+    $args = @()
+    if ($NodeDataRoot) {
+        $args += $NodeDataRootArgument
+        $args += $NodeDataRoot
+    }
+    if ($NodeArguments) {
+        $args += $NodeArguments
+    }
+
+    Write-Log "Starting RSNode: $NodeExecutable $($args -join ' ')"
+    if ($DryRun) {
+        Write-Log "DRY RUN: skip RSNode launch"
+        return $null
+    }
+
+    return Start-Process -FilePath $NodeExecutable -ArgumentList $args -PassThru -WindowStyle Hidden
+}
+
+function Start-RSLogicClient {
+    param([hashtable]$EnvValues, [string]$PythonPath)
+
+    $args = @(
+        "-m",
+        "rslogic.client.rsnode_client",
+        "run",
+        "--workers",
+        [string]$ClientWorkers
     )
 
-    if ($StartDetached) {
-        Write-Step "Starting detached RSNode stack process"
-        if ($DryRun) {
-            Write-Step "DRY RUN: pwsh.exe $($stackArg -join ' ')"
+    Write-Log "Starting rslogic-client: python $($args -join ' ')"
+    if ($DryRun) {
+        return $null
+    }
+
+    $backup = @{}
+    foreach ($key in $EnvValues.Keys) {
+        $envVar = "env:$key"
+        $exists = Get-Item -Path $envVar -ErrorAction SilentlyContinue
+        if ($exists) {
+            $backup[$key] = $exists.Value
         } else {
-            Start-Process -FilePath "pwsh.exe" -ArgumentList $stackArg -WindowStyle Hidden | Out-Null
-            Write-Step "Detached supervisor started. Check process list for run_rslogic_client_stack.ps1"
+            $backup[$key] = $null
         }
+        Set-Item -Path $envVar -Value $EnvValues[$key]
+    }
+
+    try {
+        return Start-Process -FilePath $PythonPath -ArgumentList $args -PassThru -WindowStyle Hidden
+    } finally {
+        foreach ($key in $backup.Keys) {
+            $envVar = "env:$key"
+            if ($null -eq $backup[$key]) {
+                Remove-Item $envVar -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -Path $envVar -Value $backup[$key]
+            }
+        }
+    }
+}
+
+function Show-Status {
+    param([System.Diagnostics.Process]$NodeProcess, [System.Diagnostics.Process]$ClientProcess, [string]$RepoHead, [bool]$AutoUpdate)
+    $nodeUp = if (Test-ProcessAlive $NodeProcess) { $NodeProcess.Id } else { "stopped" }
+    $clientUp = if (Test-ProcessAlive $ClientProcess) { $ClientProcess.Id } else { "stopped" }
+    $health = if (Get-NodeHealth) { "ok" } else { "degraded" }
+    $uptime = ((Get-Date) - $loopStartTime).ToString("dd\.hh\:mm\:ss")
+    Write-Log "STATUS node=$nodeUp client=$clientUp autoUpdate=$AutoUpdate health=$health repo=$RepoHead uptime=$uptime"
+}
+
+function Ensure-Singleton {
+    $mutexName = "Global\RsLogic.RSNodeClientOrchestrator"
+    try {
+        $created = $false
+        $mutex = New-Object System.Threading.Mutex($false, $mutexName, [ref]$created)
+        if (-not $created) {
+            $script:alreadyRunning = $true
+            return $null
+        }
+        return $mutex
+    } catch {
+        Write-Log "Singleton lock unavailable. Running without process lock." "WARN"
+        return $null
+    }
+}
+
+$singleton = Ensure-Singleton
+$alreadyRunning = [bool]$alreadyRunning
+if ($alreadyRunning) {
+    Write-Log "Another orchestrator is already running. Exiting this instance."
+    exit 0
+}
+if ($singleton) {
+    Write-Log "Acquired singleton lock."
+}
+
+try {
+    Ensure-Tool -Name git
+    Ensure-Tool -Name $PythonExecutable
+
+    Write-Log "$nodeLogPrefix bootstrapping"
+    Write-Log "Repo path: $resolvedRepoPath"
+
+    $initialUpdate = Ensure-Repository
+    if (-not (Test-Path $envFilePath)) {
+        $null = New-Item -ItemType File -Path $envFilePath -Force
+    }
+
+    $redisConnection = Build-RedisUrl -Explicit $RedisUrl -Host $RedisHost -Port $RedisPort -Database $RedisDb -Password $RedisPassword
+    $pythonForClient = Get-PythonExecutable
+    $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
+    Ensure-Venv
+    $currentHead = Get-RepoHead -Path $resolvedRepoPath
+    $shouldInstall = Test-NeedsDependencyInstall -CurrentHead $currentHead
+    if ($shouldInstall) {
+        Install-ProjectDeps
+        Set-DependencyInstallMarker -CurrentHead $currentHead
     } else {
-        Write-Step "Running supervisor in current console"
-        if ($DryRun) {
-            Write-Step "DRY RUN: command would run in foreground"
-        } else {
-            & "pwsh.exe" @stackArg
+        Write-Log "Skipping dependency install; environment already initialized for repository commit $currentHead."
+    }
+    if (-not (Test-Path $pythonForClient)) {
+        throw "Python executable not found in venv: $pythonForClient"
+    }
+
+    $nodeProcess = $null
+    $clientProcess = $null
+    $lastUpdateCheck = Get-Date
+    $nextStatus = Get-Date
+    Write-Log "Startup complete. Entering watch loop."
+
+    if ($initialUpdate) {
+        Write-Log "Repository bootstrap detected; fresh install complete."
+    }
+
+    while (-not $cancelRequested) {
+        $updated = $false
+        if (-not $NoAutoUpdate -and -not $NoPull -and $RepoUpdateIntervalSeconds -gt 0 -and (Get-Date) -ge $lastUpdateCheck.AddSeconds($RepoUpdateIntervalSeconds)) {
+            $lastUpdateCheck = Get-Date
+            try {
+                $updated = Update-Repository
+            } catch {
+                Write-Log "Update check failed: $($_.Exception.Message)" "WARN"
+                $updated = $false
+            }
         }
+
+        if ($updated) {
+            Write-Log "Repository changed. Running dependency refresh and restarting managed services."
+            $updatedHead = Get-RepoHead -Path $resolvedRepoPath
+            Install-ProjectDeps
+            Set-DependencyInstallMarker -CurrentHead $updatedHead
+            $envValues = Build-RSNodeEnv -RedisUrlValue $redisConnection -PythonPath $pythonForClient
+            Stop-Processes -NodeProcess $nodeProcess -ClientProcess $clientProcess
+            $nodeProcess = $null
+            $clientProcess = $null
+            Write-Log "Repo HEAD now $updatedHead"
+        }
+
+        if (-not (Test-ProcessAlive $nodeProcess)) {
+            $nodeProcess = Start-RSNode
+            if ($nodeProcess) {
+                $healthy = if ($NodeHealthUrl) { Get-NodeHealth } else { $true }
+                if (-not $healthy) {
+                    Write-Log "RSNode failed startup health check." "WARN"
+                    Stop-ManagedProcess -Process $nodeProcess -Name "RSNode.exe"
+                    Start-Sleep -Seconds $NodeRestartDelaySeconds
+                    $nodeProcess = $null
+                }
+            }
+        }
+
+        if ($nodeProcess -and -not (Get-NodeHealth)) {
+            Write-Log "RSNode health check failed. Restarting RSNode and client."
+            Stop-Processes -NodeProcess $nodeProcess -ClientProcess $clientProcess
+            $nodeProcess = $null
+            $clientProcess = $null
+            Start-Sleep -Seconds $NodeRestartDelaySeconds
+        }
+
+        if (-not (Test-ProcessAlive $clientProcess)) {
+            if ($nodeProcess -and -not (Test-ProcessAlive $nodeProcess)) {
+                Start-Sleep -Seconds 1
+            }
+            $clientProcess = Start-RSLogicClient -EnvValues $envValues -PythonPath $pythonForClient
+        }
+
+        if (Get-Date -ge $nextStatus) {
+            $head = Get-RepoHead -Path $resolvedRepoPath
+            Show-Status -NodeProcess $nodeProcess -ClientProcess $clientProcess -RepoHead $head -AutoUpdate (-not $NoAutoUpdate)
+            $nextStatus = (Get-Date).AddSeconds([Math]::Max($LoopSleepSeconds, 5))
+        }
+
+        Start-Sleep -Seconds $LoopSleepSeconds
+    }
+
+    Write-Log "Shutdown requested. Stopping managed processes."
+} catch {
+    Write-Log "Fatal error: $($_.Exception.Message)" "ERROR"
+    exit 1
+} finally {
+    try {
+        Stop-Processes -NodeProcess $nodeProcess -ClientProcess $clientProcess
+        if ($singleton) {
+            $singleton.ReleaseMutex() | Out-Null
+            $singleton.Dispose()
+        }
+        Write-Log "Orchestrator stopped."
+    } catch {
+        Write-Log "Error during cleanup: $($_.Exception.Message)" "WARN"
     }
 }

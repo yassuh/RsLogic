@@ -87,40 +87,20 @@
   - This client is intended for the RSNode host (or any machine with access to the RSNode API).
   - Startup behavior must provide a stable session location through `--dataRoot` (SDK docs show `dataRoot` with default `%LOCALAPPDATA%\Epic Games\RealityScan\RSNodeData`).
   - Recommended startup shape: `"C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" --dataRoot "<path>"`.
-- `scripts/rslogic_rsnode_client.ps1` is the primary Windows bootstrap entrypoint for RSNode hosts:
-  - Clones a repo if missing, creates the virtual environment, installs dependencies, writes `.env.rsnode-worker`, and launches the supervisor stack.
-  - Defaults to cloning from `https://github.com/yassuh/RsLogic.git` when repo path is missing.
-  - Injects `RSLOGIC_RSTOOLS_SDK_*` credentials and Redis control keys so API jobs can dispatch into this client.
-  - Supports scheduled task bootstrap and on-demand `-AutoUpdate` controls.
-- `scripts/start_rslogic_rsnode_client.bat` is the one-click Windows launcher:
-  - Auto-detects repo context only when the launcher is in a checked-out repo; otherwise defaults to `%ProgramData%\RsLogic\RsLogic`.
-  - If a valid local checkout exists (`.git` + `pyproject.toml`), it skips clone/update/pull, checks whether the RSNode stack/watchdog/client are running, starts them in detached mode if needed, then prints terminal status.
-  - If no valid checkout exists, it clones into `%ProgramData%\RsLogic\RsLogic`, runs bootstrap, then shows runtime status.
-  - Terminal output now includes a short live log-watch loop (`rsnode-watchdog.log`) followed by a final prompt so the window does not auto-close immediately on double-click.
-  - If the host is offline to source control, it aborts fresh bootstrap (offline install) and continues only from existing local files when already valid.
-  - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.
-  - Repairs known legacy `rslogic_rsnode_client.ps1` parse issues during fresh bootstrap.
-  - Installer path uses git + Python `.venv` only; no Docker dependency is required.
-- The launcher now sets `RSLOGIC_SERVER_HOST=192.168.193.56` (`RSLOGIC_REDIS_PORT=9002`, `RSLOGIC_SERVER_API_URL=http://192.168.193.56:8000`) when running the RSNode bootstrap so generated worker env values default to Redis URL `redis://192.168.193.56:9002/0` and SDK base `http://192.168.193.56:8000` unless explicitly overridden.
-- `scripts/repair_rslogic_rsnode_client.ps1` is a one-shot fixer:
-  - Rewrites known broken `Build-RedisUrl` and `Resolve-Required` forms in `scripts/rslogic_rsnode_client.ps1`.
-  - Validates script syntax after patching so syntax regressions fail early.
-- `scripts/run_rslogic_client_stack.ps1` runs the remote RSNode worker stack:
-  - Loads `RSLOGIC_CLIENT_*`, `RSLOGIC_RSNODE_*`, and queue-control settings from the env file.
-  - Launches `scripts/rsnode_watchdog.ps1` to keep `RSNode.exe` alive.
-  - Launches `rslogic.client.rsnode_client run --workers <RSLOGIC_WORKER_COUNT>` and restarts it if it exits (unless `-Once` is passed).
-- `rslogic jobs` remote mode (new client flow):
-  - API-side orchestration uses `RsToolsRemoteRunner` to publish `processing_job.execute` commands to `RSLOGIC_CONTROL_COMMAND_QUEUE`.
-  - RSNode-side `rslogic.client.rsnode_client` consumes command messages, runs SDK jobs, and publishes structured status updates to `RSLOGIC_CONTROL_RESULT_QUEUE` and its per-job reply queue.
-- `scripts/rsnode_watchdog.ps1` is the Windows watchdog process for the RSNode host:
-  - Watches for `RSNode.exe` and starts it from `C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe` when missing.
-  - Uses `--dataRoot` by default as the RSNode session root.
-  - Restarts RSNode on process death or failed health checks; supports configurable poll interval and restart/backoff limits.
-  - Auto-updates the local checkout when `AutoUpdate` is enabled, using `RepoUrl`/`RepoBranch`/`UpdateIntervalSeconds`, then restarts RSNode if changes are detected.
-  - Enforces singleton monitor instance using a named mutex (`Global\RsLogic.RSNode.Watchdog`) so only one watchdog runs at a time.
-  - Writes runtime logs to `ProgramData\RsLogic\rsnode-watchdog.log` by default.
-  - Example invocation:
-    - `.\scripts\rsnode_watchdog.ps1 -ExecutablePath "C:\Program Files\Epic Games\RealityScan_2.1\RSNode.exe" -DataRootArgument "--dataRoot" -AdditionalArguments @("--headless")`.
+- `scripts/rslogic_rsnode_client.ps1` is the single orchestrator for RSNode hosts:
+  - Clones or reuses the local checkout at `C:\ProgramData\RsLogic\RsLogic` by default.
+  - Performs `git fetch/checkout/pull` against `main` during startup and periodic checks.
+  - Creates or reuses `.venv`, installs `rslogic` in editable mode, and writes `.env.rsnode-worker`.
+  - If existing checkout is missing or invalid, it is moved aside and re-cloned automatically.
+  - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
+  - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running process.
+  - Detects repository updates and refreshes dependencies before restarting managed processes.
+  - Supports custom RSNode startup args through `-NodeArguments` and `-NodeDataRootArgument`.
+  - Uses Studio defaults for host `192.168.193.56`, Redis `192.168.193.56:9002`, and API base `http://192.168.193.56:8000`.
+- `scripts/start_rslogic_rsnode_client.bat` is the one-click launcher:
+  - Starts the orchestrator in a persistent PowerShell console.
+  - Any arguments passed to the batch file are forwarded to the PowerShell script parameters.
+- `scripts/rsnode_watchdog.ps1`, `scripts/run_rslogic_client_stack.ps1`, and `scripts/repair_rslogic_rsnode_client.ps1` were consolidated into the orchestrator to keep behavior in one code path.
 - S3 uploads are routed through the server-configured path:
   - Bucket: locked to `drone-imagery-waiting` (not client-configurable)
   - Prefix: `RSLOGIC_S3_SCRATCHPAD_PREFIX` / `S3_SCRATCHPAD_PREFIX` (default `scratchpad`)
