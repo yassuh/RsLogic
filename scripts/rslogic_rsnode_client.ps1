@@ -75,10 +75,10 @@ try {
             $script:cancelRequested = $true
             $Args.Cancel = $true
         })
-        Write-Log "Registered Ctrl+C handler for graceful shutdown."
+        Write-Host "[{0}] [INFO] Registered Ctrl+C handler for graceful shutdown." -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff")
     }
 } catch {
-    Write-Log "Ctrl+C handler not available in this PowerShell host; graceful shutdown via Ctrl+C may be limited." "WARN"
+    Write-Host "[{0}] [WARN] Ctrl+C handler not available in this PowerShell host; graceful shutdown via Ctrl+C may be limited." -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff")
 }
 
 $resolvedServerHost = $ServerHost.Trim()
