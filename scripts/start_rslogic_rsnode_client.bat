@@ -31,7 +31,7 @@ if exist "%REPO_ROOT%\.git" (
         set "HAS_VALID_REPO=1"
     )
 )
-
+ 
 if "%HAS_VALID_REPO%"=="1" (
     set "SKIP_BOOTSTRAP=1"
     echo Repository is already installed at %REPO_ROOT%.
@@ -116,6 +116,7 @@ if "%HAS_VALID_REPO%"=="0" (
     echo ERROR: Could not create a valid local repository at %REPO_ROOT%.
     exit /b 1
 )
+
 
 set "BOOTSTRAP_PS=%REPO_ROOT%\scripts\rslogic_rsnode_client.ps1"
 if not exist "%REPAIR_PS%" set "REPAIR_PS=%REPO_ROOT%\scripts\repair_rslogic_rsnode_client.ps1"
