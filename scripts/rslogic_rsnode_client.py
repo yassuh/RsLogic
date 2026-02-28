@@ -648,6 +648,13 @@ def _check_redis_connectivity(redis_url: str, logger: logging.Logger) -> bool:
         return False
 
 
+def build_expected_presence_key(control_command_queue: str, host: str, pid: int) -> str:
+    safe_host = (host or "").strip()
+    if not safe_host:
+        safe_host = "host"
+    return f"{control_command_queue}:presence:{safe_host}:{pid}"
+
+
 def get_client_heartbeat_status(
     redis_url: str,
     control_command_queue: str,
@@ -1499,6 +1506,7 @@ def main() -> int:
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
                         client_bootstrap_state["redis"] = "booting"
                         client_bootstrap_state["heartbeat"] = "booting"
+                        client_bootstrap_state["presence_key"] = "unknown"
                         client_presence_key = None
                         client_reported_redis_url = None
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
@@ -1523,6 +1531,15 @@ def main() -> int:
                     if client_proc and client_proc.proc.poll() is None:
                         _poll_client_bootstrap_state()
                     if client_proc and client_proc.proc.poll() is None:
+                        derived_key = build_expected_presence_key(
+                            cfg.control_command_queue,
+                            socket.gethostname(),
+                            client_proc.proc.pid,
+                        )
+                        if not client_presence_key:
+                            client_presence_key = derived_key
+                        if client_bootstrap_state["presence_key"] in ("", "unknown"):
+                            client_bootstrap_state["presence_key"] = derived_key
                         heartbeat_status, redis_status, heartbeat_error = get_client_heartbeat_status(
                             client_reported_redis_url or redis_connection,
                             cfg.control_command_queue,
