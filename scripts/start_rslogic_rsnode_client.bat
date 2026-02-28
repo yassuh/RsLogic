@@ -24,4 +24,4 @@ if not exist "%PS_SCRIPT%" (
 )
 
 title RsLogic RSNode Client Orchestrator
-"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -NoExit -File "%PS_SCRIPT%" -RepoUrl "%REPO_URL%" -RepoBranch "%REPO_BRANCH%" -RepoPath "%REPO_ROOT%" %*
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -NoExit -File "%PS_SCRIPT%" -RepoUrl "%REPO_URL%" -RepoBranch "%REPO_BRANCH%" -RepoPath "%REPO_ROOT%" -NodeDataRootArgument -dataRoot %*

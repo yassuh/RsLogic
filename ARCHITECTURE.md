@@ -104,6 +104,7 @@
   - Starts the orchestrator in a persistent PowerShell console and keeps the window open.
   - If the local orchestrator script is missing, it bootstraps from `C:\ProgramData\RsLogic\RsLogic`.
   - Any arguments passed to the batch file are forwarded to the PowerShell script parameters.
+  - The launcher now sets `-NodeDataRootArgument -dataRoot` explicitly to match RSNode CLI expectations.
   - The launcher can be used to generate a desktop shortcut via `scripts/create_rslogic_rsnode_client_shortcut.bat`.
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
