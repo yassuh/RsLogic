@@ -18,6 +18,8 @@ set "REPO_REACHABLE=0"
 set "BOOTSTRAP_NO_PULL="
 set "REPAIR_PS=%SCRIPT_DIR%repair_rslogic_rsnode_client.ps1"
 set "SKIP_BOOTSTRAP=0"
+set "LOG_POLL_COUNT=8"
+set "LOG_POLL_SECONDS=3"
 
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
@@ -83,13 +85,13 @@ if "%HAS_VALID_REPO%"=="0" (
     if "%GIT_AVAILABLE%"=="0" (
         echo ERROR: No valid repository found at %REPO_ROOT% and git is unavailable.
         echo Install or sync the repository manually, then rerun this script.
-        exit /b 1
+        call :pause_on_error 1
     )
 
     if "%REPO_REACHABLE%"=="0" (
         echo ERROR: No valid repository found at %REPO_ROOT% and remote source is unreachable.
         echo Ensure network access to the repository source or pre-seed %REPO_ROOT%.
-        exit /b 1
+        call :pause_on_error 1
     )
 
     if exist "%REPO_ROOT%\pyproject.toml" (
@@ -102,7 +104,7 @@ if "%HAS_VALID_REPO%"=="0" (
     "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "git clone --branch '%REPO_BRANCH%' '%REPO_URL%' '%REPO_ROOT%'"
     if errorlevel 1 (
         echo ERROR: Failed to clone repository from %REPO_URL%.
-        exit /b 1
+        call :pause_on_error 1
     )
 
     if exist "%BOOTSTRAP_PS%" (
@@ -114,7 +116,7 @@ if "%HAS_VALID_REPO%"=="0" (
 
 if "%HAS_VALID_REPO%"=="0" (
     echo ERROR: Could not create a valid local repository at %REPO_ROOT%.
-    exit /b 1
+    call :pause_on_error 1
 )
 
 
@@ -123,7 +125,7 @@ if not exist "%REPAIR_PS%" set "REPAIR_PS=%REPO_ROOT%\scripts\repair_rslogic_rsn
 
 if "%HAS_VALID_REPO%"=="0" (
     echo ERROR: Could not locate rslogic repository root at %REPO_ROOT%.
-    exit /b 1
+    call :pause_on_error 1
 )
 
 if "%SKIP_BOOTSTRAP%"=="0" (
@@ -131,7 +133,7 @@ if "%SKIP_BOOTSTRAP%"=="0" (
         "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%REPAIR_PS%" -Path "%BOOTSTRAP_PS%"
         if errorlevel 1 (
             echo ERROR: Failed to repair bootstrap script.
-            exit /b 1
+            call :pause_on_error 1
         )
     ) else (
         echo WARNING: Missing repair helper script (%REPAIR_PS%).
@@ -142,12 +144,12 @@ if "%SKIP_BOOTSTRAP%"=="0" (
 if not exist "%BOOTSTRAP_PS%" (
     echo ERROR: Could not install a valid bootstrap script.
     echo Check that the clone completed correctly.
-    exit /b 1
+    call :pause_on_error 1
 )
 
 if not exist "%REPO_ROOT%\pyproject.toml" (
     echo ERROR: Repository root is invalid at %REPO_ROOT%.
-    exit /b 1
+    call :pause_on_error 1
 )
 
 if "%SKIP_BOOTSTRAP%"=="1" goto :status_only
@@ -156,7 +158,7 @@ if "%SKIP_BOOTSTRAP%"=="1" goto :status_only
 if errorlevel 1 (
     echo.
     echo Install or startup failed.
-    exit /b 1
+    call :pause_on_error 1
 )
 
 echo.
@@ -191,7 +193,30 @@ if exist "%WATCHDOG_LOG%" (
 echo.
 echo ===== Process snapshot =====
 "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_rslogic_client_stack.ps1*' -or $_.CommandLine -like '*rsnode_watchdog.ps1*' -or $_.CommandLine -like '*rslogic.client.rsnode_client*' -or $_.Name -eq 'RSNode.exe' } | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize"
+goto :watchdog_log_loop
+
+:watchdog_log_loop
+echo.
+echo ===== Live watchdog log watch =====
+echo Showing recent log output (%LOG_POLL_COUNT% polls, %LOG_POLL_SECONDS%s interval).
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$watchdogLog = '%WATCHDOG_LOG%'; $pollCount = %LOG_POLL_COUNT%; $sleepSeconds = %LOG_POLL_SECONDS%; for ($i=1; $i -le $pollCount; $i++) { $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'; if (Test-Path $watchdogLog) { Write-Host \"[$stamp] Poll $i/$pollCount - rsnode-watchdog.log\"; Get-Content -Path $watchdogLog -Tail 18 }; if ($i -lt $pollCount) { Start-Sleep -Seconds $sleepSeconds } }"
+goto :hold_terminal
+
+:hold_terminal
+echo.
+echo.
+echo Script completed. Press any key to close.
+pause >nul
 goto :eof
+
+:pause_on_error
+set "ERROR_CODE=%~1"
+if not defined ERROR_CODE set "ERROR_CODE=1"
+echo.
+echo Script exited with code %ERROR_CODE%.
+echo Press any key to close.
+pause >nul
+exit /b %ERROR_CODE%
 
 :ensure_stack_running
 if not exist "%REPO_ROOT%\scripts\run_rslogic_client_stack.ps1" (

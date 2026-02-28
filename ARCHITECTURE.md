@@ -96,6 +96,7 @@
   - Auto-detects repo context only when the launcher is in a checked-out repo; otherwise defaults to `%ProgramData%\RsLogic\RsLogic`.
   - If a valid local checkout exists (`.git` + `pyproject.toml`), it skips clone/update/pull, checks whether the RSNode stack/watchdog/client are running, starts them in detached mode if needed, then prints terminal status.
   - If no valid checkout exists, it clones into `%ProgramData%\RsLogic\RsLogic`, runs bootstrap, then shows runtime status.
+  - Terminal output now includes a short live log-watch loop (`rsnode-watchdog.log`) followed by a final prompt so the window does not auto-close immediately on double-click.
   - If the host is offline to source control, it aborts fresh bootstrap (offline install) and continues only from existing local files when already valid.
   - Uses `-NoPull` when remote source access is not available so startup remains usable on hosts with no network access to the source.
   - Repairs known legacy `rslogic_rsnode_client.ps1` parse issues during fresh bootstrap.
