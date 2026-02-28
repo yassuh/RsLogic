@@ -558,13 +558,17 @@ function Start-RSNode {
     if (-not $rootArgCandidates) {
         $rootArgCandidates = @("")
     }
+    if ($NodeDataRoot) {
+        $rootArgCandidates += "__RSNODE_NO_DATAROOT__"
+        $rootArgCandidates = @($rootArgCandidates | Select-Object -Unique)
+    }
 
     $attempt = 0
     $lastError = ""
     foreach ($rootArg in $rootArgCandidates) {
         $attempt += 1
         $nodeArgs = @()
-        if ($NodeDataRoot) {
+        if ($NodeDataRoot -and $rootArg -ne "__RSNODE_NO_DATAROOT__") {
             $nodeArgs += $rootArg
             $nodeArgs += $NodeDataRoot
         }
@@ -572,8 +576,9 @@ function Start-RSNode {
             $nodeArgs += $NodeArguments
         }
 
+        $labelRootArg = if ($rootArg -eq "__RSNODE_NO_DATAROOT__") { "none" } else { $rootArg }
         $nodeArgLine = ($nodeArgs | ForEach-Object { Quote-CmdArg -Value $_ }) -join " "
-        Write-Log "Starting RSNode (attempt=$attempt arg=$rootArg): $NodeExecutable $nodeArgLine"
+        Write-Log "Starting RSNode (attempt=$attempt arg=$labelRootArg): $NodeExecutable $nodeArgLine"
         try {
             $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgLine -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
             Start-Sleep -Milliseconds 900
