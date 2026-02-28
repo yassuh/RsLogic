@@ -518,19 +518,6 @@ function Start-RSNode {
 function Start-RSLogicClient {
     param([hashtable]$EnvValues, [string]$PythonPath)
 
-    function Convert-ProcessArgument {
-        param([string]$Value)
-        if ([string]::IsNullOrEmpty($Value)) {
-            return '""'
-        }
-        if ($Value -match '[\s"\\]') {
-            $escaped = $Value -replace '\\', '\\\\'
-            $escaped = $escaped -replace '"', '\"'
-            return '"' + $escaped + '"'
-        }
-        return $Value
-    }
-
     $pythonArgs = @(
         "-m",
         "rslogic.client.rsnode_client",
@@ -539,7 +526,23 @@ function Start-RSLogicClient {
         [string]$ClientWorkers
     )
 
-    Write-Log "Starting rslogic-client: $PythonPath $($pythonArgs -join ' ')"
+    $escapedPythonArgs = @()
+    foreach ($arg in $pythonArgs) {
+        if ([string]::IsNullOrEmpty($arg)) {
+            $escapedPythonArgs += '""'
+            continue
+        }
+        $needsQuoting = $arg -match '[\s"\\]'
+        if ($needsQuoting) {
+            $escaped = $arg -replace '\\', '\\\\'
+            $escaped = $escaped -replace '"', '\"'
+            $escapedPythonArgs += '"' + $escaped + '"'
+        } else {
+            $escapedPythonArgs += $arg
+        }
+    }
+    $pythonArgLine = $escapedPythonArgs -join " "
+    Write-Log "Starting rslogic-client: $PythonPath $pythonArgLine"
     if ($DryRun) {
         return $null
     }
@@ -557,17 +560,32 @@ function Start-RSLogicClient {
     }
 
     try {
-        $quotedArgs = @()
-        foreach ($arg in $pythonArgs) {
-            $quotedArgs += Convert-ProcessArgument -Value $arg
+        $stderrPath = Join-Path $logDir "rslogic-client-stderr.log"
+        $stdoutPath = Join-Path $logDir "rslogic-client-stdout.log"
+        try {
+            return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgLine -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+        } catch {
+            Write-Log "Primary client launch with string args failed: $($_.Exception.Message)" "WARN"
+            try {
+                return Start-Process -FilePath $PythonPath -ArgumentList $pythonArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrPath -RedirectStandardOutput $stdoutPath -ErrorAction Stop
+            } catch {
+                $fallbackError = $_.Exception.Message
+                Write-Log "Fallback launch with array args failed: $fallbackError" "WARN"
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $PythonPath
+                $psi.Arguments = $pythonArgLine
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                $psi.RedirectStandardError = $false
+                $psi.RedirectStandardOutput = $false
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                if (-not $proc) {
+                    throw "ProcessStartInfo launch failed after multiple launch attempts: string/array failed and fallback returned null."
+                }
+                $proc.EnableRaisingEvents = $true
+                return $proc
+            }
         }
-
-        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $startInfo.FileName = $PythonPath
-        $startInfo.Arguments = ($quotedArgs -join " ")
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        return [System.Diagnostics.Process]::Start($startInfo)
     } finally {
         foreach ($key in $backup.Keys) {
             $envVar = "env:$key"
