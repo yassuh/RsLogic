@@ -682,11 +682,24 @@ def get_client_heartbeat_status(
         return "not-configured", "disconnected", "missing redis_url or control_command_queue"
 
     try:
-        bus = redis.Redis.from_url(redis_url, decode_responses=False)
-        bus.ping()
+        bus = redis.Redis.from_url(
+            redis_url,
+            decode_responses=False,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
     except Exception as exc:
-        logger.debug("Failed to connect to redis for heartbeat check: %s", exc)
-        return "presence-check-failed", "disconnected", str(exc)
+        logger.debug("Failed to build redis client for heartbeat check: %s", exc)
+        return "presence-check-failed", "disconnected", f"redis_client_init_failed: {exc}"
+
+    ping_error: Optional[str] = None
+    ping_ok = False
+    try:
+        bus.ping()
+        ping_ok = True
+    except Exception as exc:
+        ping_error = str(exc)
+        logger.debug("Redis heartbeat ping failed: %s", exc)
 
     def _normalize_key(raw_key: Any) -> Optional[str]:
         if raw_key is None:
@@ -756,42 +769,99 @@ def get_client_heartbeat_status(
                 candidates.append(short_fqdn)
         return list(dict.fromkeys([candidate for candidate in candidates if candidate]))
 
-    def _check_presence_key(candidates: Sequence[Optional[Any]]) -> Optional[str]:
+    def _check_presence_keys(candidates: Sequence[Optional[Any]]) -> Tuple[Optional[str], Optional[str], bool]:
+        found_any = False
+        last_query_error: Optional[str] = None
         for raw_key in candidates:
             key = _normalize_key(raw_key)
             if not key:
                 continue
             try:
                 raw_payload = bus.get(key)
+                found_any = True
             except Exception as exc:
                 logger.debug("Presence key lookup failed for %s: %s", key, exc)
+                last_query_error = str(exc)
                 continue
             parsed = _decode_payload(raw_payload, key=key)
             if parsed is None:
+                if raw_payload is not None and raw_payload != b"":
+                    return "presence-key-decode-error", None, True
                 continue
             status = _to_status(parsed)
-            return status
-        return None
+            return status, None, True
+        return None, last_query_error, found_any
 
-    def _scan_for_any_presence() -> Optional[str]:
-        pattern = f"{control_command_queue}:presence:*"
-        try:
-            for raw_key in bus.scan_iter(match=pattern, count=100):
-                key = _normalize_key(raw_key)
-                if not key:
-                    continue
-                try:
-                    raw_payload = bus.get(key)
-                except Exception as exc:
-                    logger.debug("Presence key lookup failed for scanned key=%s: %s", key, exc)
-                    continue
-                parsed = _decode_payload(raw_payload, key=key)
-                if parsed is not None:
-                    return _to_status(parsed)
-        except Exception as exc:
-            logger.debug("Failed to scan heartbeat keys for queue=%s: %s", control_command_queue, exc)
-            raise RuntimeError(str(exc))
-        return None
+    def _scan_for_any_presence() -> Tuple[Optional[str], Optional[str], bool]:
+        patterns = [
+            f"{control_command_queue}:presence:*",
+            "*:presence:*",
+        ]
+        seen_any_key = False
+        last_query_error: Optional[str] = None
+        for pattern in patterns:
+            try:
+                matched_any = False
+                for raw_key in bus.scan_iter(match=pattern, count=100):
+                    key = _normalize_key(raw_key)
+                    if not key:
+                        continue
+                    matched_any = True
+                    seen_any_key = True
+                    try:
+                        raw_payload = bus.get(key)
+                    except Exception as exc:
+                        logger.debug("Presence key lookup failed for scanned key=%s: %s", key, exc)
+                        last_query_error = str(exc)
+                        continue
+                    parsed = _decode_payload(raw_payload, key=key)
+                    if parsed is None:
+                        if raw_payload is not None and raw_payload != b"":
+                            return "presence-key-decode-error", None, True
+                        continue
+                    return _to_status(parsed), None, True
+                if matched_any:
+                    # matched keys but all were empty/invalid; this still indicates redis is reachable
+                    return "no-valid-presence", None, True
+            except Exception as exc:
+                logger.debug("Failed to scan heartbeat keys for queue=%s: %s", control_command_queue, exc)
+                last_query_error = str(exc)
+                continue
+        return None, last_query_error, seen_any_key
+
+    def _has_connection(query_executed: bool, scan_executed: bool) -> bool:
+        return ping_ok or query_executed or scan_executed
+
+    def _select_status(
+        explicit_status: Optional[str],
+        explicit_error: Optional[str],
+        explicit_queried: bool,
+        scanned_status: Optional[str],
+        scanned_error: Optional[str],
+        scanned_queried: bool,
+    ) -> Tuple[str, str, Optional[str]]:
+        if explicit_status is not None:
+            if explicit_status == "presence-key-decode-error" and explicit_error is None:
+                explicit_error = "invalid presence payload"
+            redis_connection = "connected" if _has_connection(explicit_queried, scanned_queried) else "disconnected"
+            return explicit_status, redis_connection, explicit_error
+
+        if scanned_status is not None:
+            redis_connection = "connected" if _has_connection(explicit_queried, scanned_queried) else "disconnected"
+            return scanned_status, redis_connection, scanned_error
+
+        query_executed = explicit_queried or scanned_queried
+        redis_connection = "connected" if _has_connection(explicit_queried, scanned_queried) else "disconnected"
+        if not redis_connection:
+            if ping_error:
+                return "presence-check-failed", "disconnected", ping_error
+            return "presence-check-failed", "disconnected", "redis ping failed"
+
+        if explicit_error:
+            return "presence-check-failed", "connected", explicit_error
+        if scanned_error:
+            return "presence-check-failed", "connected", scanned_error
+        return "absent", "connected", None
 
     try:
         candidates: List[Optional[Any]] = [expected_presence_key]
@@ -799,15 +869,16 @@ def get_client_heartbeat_status(
             for host_variant in _collect_host_variants(expected_client_host):
                 candidates.append(f"{control_command_queue}:presence:{host_variant}:{expected_client_pid}")
 
-        status = _check_presence_key(candidates)
-        if status is not None:
-            return status, "connected", None
-
-        scanned_status = _scan_for_any_presence()
-        if scanned_status is not None:
-            return scanned_status, "connected", None
-
-        return "absent", "connected", None
+        explicit_status, explicit_error, explicit_queried = _check_presence_keys(candidates)
+        scanned_status, scanned_error, scanned_queried = _scan_for_any_presence()
+        return _select_status(
+            explicit_status,
+            explicit_error,
+            explicit_queried,
+            scanned_status,
+            scanned_error,
+            scanned_queried,
+        )
     except Exception:
         logger.debug("Presence check failed.", exc_info=True)
         return "presence-check-failed", "disconnected", "presence probe failed"
