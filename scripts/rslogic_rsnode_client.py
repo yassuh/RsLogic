@@ -645,29 +645,46 @@ def _check_redis_connectivity(redis_url: str, logger: logging.Logger) -> bool:
         return False
 
 
-def get_client_heartbeat_status(redis_url: str, control_command_queue: str, logger: logging.Logger) -> str:
+def get_client_heartbeat_status(redis_url: str, control_command_queue: str, logger: logging.Logger) -> Tuple[str, str]:
+    """Return a tuple of (heartbeat_status, redis_connection_status).
+
+    heartbeat_status values:
+        - online
+        - stopped
+        - absent
+        - no-valid-presence
+        - status-missing
+        - presence-key-decode-error
+        - presence-key-missing
+        - not-configured
+    redis_connection_status values:
+        - connected
+        - disconnected
+        - redis-lib-missing
+        - redis-url-invalid
+    """
     try:
         import redis
     except Exception:
-        return "redis-lib-missing"
+        return "presence-check-failed", "redis-lib-missing"
 
     if not redis_url or not control_command_queue:
-        return "not-configured"
+        return "not-configured", "disconnected"
 
     try:
         bus = redis.Redis.from_url(redis_url, decode_responses=True)
     except Exception as exc:
         logger.debug("Failed to connect to redis for heartbeat check: %s", exc)
-        return "redis-unreachable"
+        return "presence-check-failed", "disconnected"
 
     try:
         try:
             keys = bus.keys(f"{control_command_queue}:presence:*")
         except Exception as exc:
             logger.debug("Failed to query heartbeat keys: %s", exc)
-            return "redis-query-failed"
+            return "presence-check-failed", "disconnected"
         if not keys:
-            return "absent"
+            return "absent", "connected"
 
         latest_seen = None
         latest_payload = None
@@ -675,6 +692,7 @@ def get_client_heartbeat_status(redis_url: str, control_command_queue: str, logg
             try:
                 raw_payload = bus.get(key)
                 if not raw_payload:
+                    logger.debug("Presence key %s had empty body.", key)
                     continue
                 payload = json.loads(raw_payload)
                 seen = _safe_parse_iso_timestamp(str(payload.get("last_seen", "")))
@@ -683,19 +701,30 @@ def get_client_heartbeat_status(redis_url: str, control_command_queue: str, logg
                     latest_payload = payload
             except Exception:
                 continue
+            try:
+                # Emit additional observability while scanning presence records.
+                if isinstance(payload, dict):
+                    logger.debug(
+                        "Heartbeat probe key=%s status=%s last_seen=%s",
+                        key,
+                        payload.get("status"),
+                        payload.get("last_seen"),
+                    )
+            except Exception:
+                pass
 
         if not latest_payload:
-            return "no-valid-presence"
+            return "no-valid-presence", "connected"
 
         status = str(latest_payload.get("status", "")).strip().lower()
         if not status:
-            return "status-missing"
+            return "status-missing", "connected"
         if status == "stopped":
-            return "stopped"
-        return status
+            return "stopped", "connected"
+        return status, "connected"
     except Exception:
         logger.debug("Presence check failed.", exc_info=True)
-        return "presence-check-failed"
+        return "presence-check-failed", "disconnected"
     finally:
         try:
             bus.close()
@@ -1078,8 +1107,8 @@ def main() -> int:
     node_stop_reason = "not-started"
     client_stop_reason = "not-started"
     client_bootstrap_state = {
-        "redis": "unknown",
-        "heartbeat": "unknown",
+        "redis": "disconnected",
+        "heartbeat": "booting",
     }
     client_log_offsets = {
         str(client_stdout_log): _log_file_position(client_stdout_log),
@@ -1242,8 +1271,8 @@ def main() -> int:
                     if node_proc and node_proc.proc.poll() is None:
                         client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
-                        client_bootstrap_state["redis"] = "unknown"
-                        client_bootstrap_state["heartbeat"] = "unknown"
+                        client_bootstrap_state["redis"] = "disconnected"
+                        client_bootstrap_state["heartbeat"] = "booting"
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
                         _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
@@ -1266,15 +1295,19 @@ def main() -> int:
                     if client_proc and client_proc.proc.poll() is None:
                         _poll_client_bootstrap_state()
                     if client_proc and client_proc.proc.poll() is None:
-                        client_bootstrap_state["heartbeat"] = get_client_heartbeat_status(
+                        heartbeat_status, redis_status = get_client_heartbeat_status(
                             redis_connection,
                             cfg.control_command_queue,
                             logger,
                         )
-                        if client_bootstrap_state["heartbeat"] == "online":
+                        client_bootstrap_state["heartbeat"] = heartbeat_status
+                        if redis_status == "connected":
                             client_bootstrap_state["redis"] = "connected"
-                        elif client_bootstrap_state["heartbeat"] in {"redis-unreachable", "redis-query-failed", "redis-lib-missing"}:
+                        else:
                             client_bootstrap_state["redis"] = "disconnected"
+                    elif not client_proc or client_proc.proc.poll() is not None:
+                        client_bootstrap_state["heartbeat"] = "stopped"
+                        client_bootstrap_state["redis"] = "disconnected"
                     current_head = git_head(cfg.repo_root)
                     node_up = str(node_proc.proc.pid) if node_proc and node_proc.proc.poll() is None else f"stopped/{node_stop_reason}"
                     client_up = (
