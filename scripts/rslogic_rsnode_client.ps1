@@ -142,19 +142,6 @@ function Get-RecentLogTail {
     }
 }
 
-function Quote-CmdArg {
-    param([Parameter(Mandatory)][string]$Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return '""'
-    }
-    if ($Value -notmatch "[\s\"']") {
-        return $Value
-    }
-    $escaped = $Value -replace '"', '\"'
-    return '"' + $escaped + '"'
-}
-
 function Ensure-Tool {
     param([string]$Name)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -577,10 +564,14 @@ function Start-RSNode {
         }
 
         $labelRootArg = if ($rootArg -eq "__RSNODE_NO_DATAROOT__") { "none" } else { $rootArg }
-        $nodeArgLine = ($nodeArgs | ForEach-Object { Quote-CmdArg -Value $_ }) -join " "
-        Write-Log "Starting RSNode (attempt=$attempt arg=$labelRootArg): $NodeExecutable $nodeArgLine"
+        $nodeArgText = if ($nodeArgs.Count -gt 0) {
+            " $($nodeArgs | ForEach-Object { '("{0}")' -f ($_ -replace '"', '""') } -join " ")"
+        } else {
+            ""
+        }
+        Write-Log "Starting RSNode (attempt=$attempt arg=$labelRootArg): $NodeExecutable$nodeArgText"
         try {
-            $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgLine -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
+            $nodeProcess = Start-Process -FilePath $NodeExecutable -ArgumentList $nodeArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $nodeStdOutPath -RedirectStandardError $nodeStdErrPath -ErrorAction Stop
             Start-Sleep -Milliseconds 900
             if ($nodeProcess.HasExited) {
                 $nodeExitReason = "exit-code=$($nodeProcess.ExitCode)"
@@ -600,7 +591,7 @@ function Start-RSNode {
             return $nodeProcess
         } catch {
             $lastError = "$($_.Exception.Message)"
-            Write-Log "RSNode start attempt $attempt failed with arg '$rootArg': $lastError" "WARN"
+            Write-Log ("RSNode start attempt {0} failed with arg '{1}': {2}" -f $attempt, $labelRootArg, $lastError) "WARN"
             $script:nodeStopReason = "attempt=$($attempt):$($lastError)"
             if ($attempt -ge $rootArgCandidates.Count) {
                 throw "Failed to start RSNode. Last error: $lastError"

@@ -94,6 +94,7 @@
   - If existing checkout is missing or invalid, it is moved aside and re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.
   - Starts and monitors both `RSNode.exe` and `rslogic.client.rsnode_client` in a single long-running process.
+  - RSNode launch now passes arguments with `Start-Process -ArgumentList` as an array so `-dataRoot` and paths containing spaces are forwarded directly without fragile custom quoting.
   - Keeps dedicated launch logs for RSNode/client (`rsnode-stdout.log`, `rsnode-stderr.log`, `rslogic-client-stdout.log`, `rslogic-client-stderr.log`) and includes recent process failure output in status logs.
   - On unexpected stop, status now emits `stopped/<reason>` so `node`/`client` health checks show explicit stop reason (exit code or termination state).
   - Client startup now logs the bootstrap revision and uses multiple process-start fallbacks (ProcessStartInfo, Start-Process string args, Start-Process array args, cmd wrapper) to avoid shell parsing edge cases on Windows.
