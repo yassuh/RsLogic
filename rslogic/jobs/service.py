@@ -54,6 +54,7 @@ class ImageFilter:
     sdk_run_align: bool = True
     sdk_run_normal_model: bool = True
     sdk_run_ortho_projection: bool = True
+    stage_only: bool = False
     sdk_task_timeout_seconds: Optional[int] = 7200
     session_code: Optional[str] = None
     pull_s3_images: bool = True
@@ -784,6 +785,7 @@ def _decode_filter_dict(payload: Any) -> ImageFilter:
         sdk_run_align=_as_optional_bool(payload.get("sdk_run_align"), default=True),
         sdk_run_normal_model=_as_optional_bool(payload.get("sdk_run_normal_model"), default=True),
         sdk_run_ortho_projection=_as_optional_bool(payload.get("sdk_run_ortho_projection"), default=True),
+        stage_only=_as_optional_bool(payload.get("stage_only"), default=False),
         sdk_task_timeout_seconds=_as_optional_int(payload.get("sdk_task_timeout_seconds")) or 7200,
         session_code=_as_optional_str(payload.get("session_code")),
         pull_s3_images=_as_optional_bool(payload.get("pull_s3_images"), default=True),

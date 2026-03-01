@@ -23,6 +23,7 @@ def test_encode_filter_dict_roundtrip_includes_non_none_and_datetime_iso():
         max_images=12,
         sdk_include_subdirs=True,
         sdk_detector_sensitivity="Medium",
+        stage_only=True,
     )
 
     encoded = _encode_filter_dict(filters)
@@ -36,6 +37,7 @@ def test_encode_filter_dict_roundtrip_includes_non_none_and_datetime_iso():
     assert restored.max_images == 12
     assert restored.sdk_include_subdirs is True
     assert restored.sdk_detector_sensitivity == "Medium"
+    assert restored.stage_only is True
 
 
 def test_decode_filter_dict_defaults_fallback_for_bad_values():
@@ -45,12 +47,14 @@ def test_decode_filter_dict_defaults_fallback_for_bad_values():
         "min_latitude": "abc",
         "sdk_run_align": "",
         "sdk_task_timeout_seconds": "not-an-int",
+        "stage_only": "on",
     })
 
     assert decoded.group_name is None
     assert decoded.start_time is None
     assert decoded.min_latitude is None
     assert decoded.sdk_run_align is True
+    assert decoded.stage_only is True
     assert decoded.sdk_task_timeout_seconds == 7200
 
 

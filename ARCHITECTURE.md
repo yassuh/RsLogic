@@ -130,7 +130,8 @@
     - Send commands through `rslogic:control:commands`, inspect replies from `rslogic:control:results:reply:<command_id>`, and view command history in the same page.
   - Upload workflow uses a multi-page flow: setup page (selection/group), upload page (plan + live progress), and result page (final status)
   - Job workflow is SDK-oriented and mirrors `example.ipynb`: `newScene -> set(...) -> addFolder -> align/calculateNormalModel/calculateOrthoProjection -> save`
-  - Job workflow inputs include `group_name`, optional `drone_type`/`max_images`, plus SDK controls (`sdk_imagery_folder`, detector/accuracy settings, per-stage toggles, timeout)
+  - Job workflow inputs include `group_name`, optional `drone_type`/`max_images`, plus SDK controls (`sdk_imagery_folder`, detector/accuracy settings, per-stage toggles, timeout), and `stage_only` for test/staging runs.
+  - `stage_only=true` performs a metadata-filtered image pull/staging workflow only (`pull_s3_images`, `s3_staging_root`, `s3_prefix`, etc.) and skips SDK scene/align/orthophoto execution.
   - `sdk_imagery_folder` is a path visible to the RealityScan node host (not a local browser path)
   - Local filesystem browsing remains in the client-side TUI; server-side APIs do not control an end-user OS file explorer
   - Job workflow plan panel surfaces current RsTools mode and SDK readiness derived from `config.rstools`

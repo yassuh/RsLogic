@@ -302,6 +302,25 @@ class RsToolsSdkRunner(RsToolsRunner):
         run_normal_model = self._as_bool(filters.get("sdk_run_normal_model"), default=True)
         run_ortho_projection = self._as_bool(filters.get("sdk_run_ortho_projection"), default=True)
         task_timeout_seconds = self._as_int(filters.get("sdk_task_timeout_seconds"), default=7200)
+        stage_only = self._as_bool(filters.get("stage_only"), default=False)
+
+        if stage_only:
+            self._emit_progress(
+                progress_callback,
+                75.0,
+                "stage-only mode enabled: skipping SDK commands",
+                stage="stage_only_complete",
+                payload={"job_id": job_id, "selected_images": len(image_keys)},
+            )
+            return {
+                "status": "staged",
+                "message": "stage_only workflow completed. image staging performed without SDK commands.",
+                "selected_images": len(image_keys),
+                "filters": filters,
+                "job_id": job_id,
+                "working_directory": str(working_directory),
+                "staging": filters.get("_rslogic_staging", {}),
+            }
 
         if not (run_align or run_normal_model or run_ortho_projection):
             raise RuntimeError("At least one SDK processing stage must be enabled (align/normal_model/ortho_projection).")

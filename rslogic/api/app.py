@@ -185,6 +185,7 @@ def create_job(payload: schemas.JobCreateRequest):
         sdk_run_align=payload.sdk_run_align,
         sdk_run_normal_model=payload.sdk_run_normal_model,
         sdk_run_ortho_projection=payload.sdk_run_ortho_projection,
+        stage_only=payload.stage_only,
         sdk_task_timeout_seconds=payload.sdk_task_timeout_seconds,
         session_code=payload.session_code,
         pull_s3_images=payload.pull_s3_images,

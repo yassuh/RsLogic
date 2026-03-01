@@ -1,10 +1,67 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from rslogic.jobs import runners
 from tests.conftest import build_test_app_config
+
+
+def test_sdk_runner_stage_only_skips_rstool_commands(monkeypatch):
+    monkeypatch.setattr(runners, "RealityScanClient", object())
+
+    runner = runners.RsToolsSdkRunner(
+        base_url="http://127.0.0.1:8000",
+        client_id="client-id",
+        app_token="app-token",
+        auth_token="auth-token",
+    )
+
+    observed: list[tuple[float, str, dict]] = []
+
+    def progress(progress: float, message: str, details: dict | None) -> None:
+        observed.append((progress, message, details or {}))
+
+    result = runner.run(
+        working_directory=Path("/tmp/stage-only"),
+        image_keys=["a.jpg", "b.jpg"],
+        filters={"stage_only": True, "sdk_imagery_folder": "Imagery"},
+        progress_callback=progress,
+        job_id="job-stage-only",
+    )
+
+    assert result["status"] == "staged"
+    assert result["job_id"] == "job-stage-only"
+    assert result["selected_images"] == 2
+    assert result["filters"]["stage_only"] is True
+    assert any(payload.get("stage") == "stage_only_complete" for _, __, payload in observed)
+
+
+def test_sdk_runner_rejects_all_disabled_stages_without_stage_only(monkeypatch):
+    monkeypatch.setattr(runners, "RealityScanClient", object())
+
+    runner = runners.RsToolsSdkRunner(
+        base_url="http://127.0.0.1:8000",
+        client_id="client-id",
+        app_token="app-token",
+        auth_token="auth-token",
+    )
+
+    with pytest.raises(RuntimeError, match="At least one SDK processing stage"):
+        runner.run(
+            working_directory=Path("/tmp/no-stages"),
+            image_keys=[],
+            filters={
+                "sdk_run_align": False,
+                "sdk_run_normal_model": False,
+                "sdk_run_ortho_projection": False,
+                "sdk_imagery_folder": "Imagery",
+            },
+            job_id="job-no-stages",
+        )
 
 
 def test_sdk_helpers_coerce_types():

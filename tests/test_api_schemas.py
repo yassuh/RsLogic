@@ -11,6 +11,7 @@ def test_job_create_request_defaults_and_validation():
     payload = schemas.JobCreateRequest()
     assert payload.group_name is None
     assert payload.sdk_include_subdirs is True
+    assert payload.stage_only is False
     assert payload.sdk_task_timeout_seconds == 7200
     with pytest.raises(ValidationError):
         schemas.JobCreateRequest(max_images=0)
