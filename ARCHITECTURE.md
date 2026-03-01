@@ -223,34 +223,23 @@
   - A desktop shortcut can be created with `scripts/create_rslogic_rsnode_client_shortcut.bat` (targeting `start_rslogic_rsnode_client.bat`).
 - `scripts/create_rslogic_rsnode_client_shortcut.bat` creates `RsLogic RSNode Client.lnk` on the current user desktop (default target: `start_rslogic_rsnode_client.bat`).
 - The shortcut launcher opens a persistent console and keeps logs visible while the RSNode orchestrator runs.
-- `scripts/reconstruct_via_redis.py` is an integration runner that sends reconstruction jobs over the RS control bus:
-  - Uses Redis command queue `rslogic:control:commands` and listens on per-run reply queue `rslogic:control:recon:<uuid>`.
-  - Default target environment:
+- `scripts/reconstruct_via_redis.py` is a dispatch-only runner for `processing_job.execute`:
+  - Builds a processing command payload and enqueues it on `rslogic:control:commands`.
+  - Does not execute SDK method sequences locally.
+  - Supports:
+    - `--job-id`, `--working-directory`, `--image-key`
+    - `--set-filter` and `--filter-json` for arbitrary processing filters
+    - S3 pull options (`--pull-s3-images`, `--s3-bucket`, `--s3-prefix`, `--s3-region`, `--s3-endpoint-url`, etc.)
+    - `--wait` / `--no-wait` and optional `--reply-queue`
+    - `--stage-only` (forwarded to `filters.stage_only`, handled by the RS client runner)
+  - Defaults to:
     - Redis: `redis://192.168.193.56:9002/0`
     - RS API: `http://192.168.193.59:8000`
     - `app_token=123`
     - `auth_token=85DBDE55-3FFF-4228-9F06-CBED4003BBB8`
-  - S3 staging options:
-    - `--s3-bucket` and `--s3-prefix` define source objects.
-    - `--s3-region` defaults from `RSLOGIC_S3_REGION` / `S3_REGION` (fallback `us-east-1`).
-    - `--s3-endpoint-url` defaults from `RSLOGIC_S3_ENDPOINT_URL` / `S3_ENDPOINT_URL`.
-    - Credentials are read from common env aliases (`AWS_ACCESS_KEY_ID`/`AWS_ACCESS_KEY`/`S3_ACCESS_KEY`, `AWS_SECRET_*`, `S3_SECRET_KEY`) when set.
-  - Command flow:
-    - `rstool_sdk.discover node` / `rstool_sdk.discover project` (unless `--skip-discover`)
-    - `rstool_sdk.command` for:
-      - `node.connection`
-      - `node.connect_user`
-      - `project.create` (extracts session from result)
-      - `project.new_scene`
-      - `project.command("set", ["param=value"])` tuning commands
-      - `project.add_folder("<imagery-path>")`
-      - `project.command("align")`
-      - `project.command("calculateNormalModel")`
-      - `project.command("calculateOrthoProjection")`
-      - `project.save("test_auto.rspj")`
-  - Imagery can be staged from S3 (`--s3-bucket`, `--s3-prefix`, `--s3-max-files`) into a local folder (`--imagery-dir`, default `./recon_staging/Imagery`), or with `--no-pull-s3` to reuse existing local imagery.
-  - The runner blocks on each command until a final result status (`ok`/`error`) is published, then exits with non-zero status on timeout or missing session.
-  - `--stage-only` short-circuits to only download/stage images and skip SDK command execution.
+  - Result handling:
+    - In wait mode, reads the final result from reply queue and exits non-zero on timeout/error.
+    - In fire-and-forget mode, exits immediately after publishing.
 - `scripts/sync_rslogic_repo.ps1` performs explicit branch synchronization:
   - fetches `origin/main` and prints ahead/behind comparison.
   - resolves behind-only state via fast-forward.
