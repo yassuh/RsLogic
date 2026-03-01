@@ -186,6 +186,15 @@ def create_job(payload: schemas.JobCreateRequest):
         sdk_run_normal_model=payload.sdk_run_normal_model,
         sdk_run_ortho_projection=payload.sdk_run_ortho_projection,
         sdk_task_timeout_seconds=payload.sdk_task_timeout_seconds,
+        session_code=payload.session_code,
+        pull_s3_images=payload.pull_s3_images,
+        s3_bucket=payload.s3_bucket,
+        s3_prefix=payload.s3_prefix,
+        s3_region=payload.s3_region,
+        s3_endpoint_url=payload.s3_endpoint_url,
+        s3_max_files=payload.s3_max_files,
+        s3_extensions=payload.s3_extensions,
+        s3_staging_root=payload.s3_staging_root,
     )
     job_id = _job_service.submit_job(resolved_group_name, filters)
     job = _job_service.get_job(job_id)

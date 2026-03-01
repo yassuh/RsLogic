@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime
+import time
 from pathlib import Path
+from uuid import uuid4
 from typing import Any, Callable, Dict, Iterable, List, Sequence
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+import ast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -22,10 +25,22 @@ from textual.widgets import (
     Input,
     Label,
     ProgressBar,
+    Tree,
     Static,
 )
 
 from config import AppConfig
+from rslogic.jobs.command_channel import (
+    COMMAND_TYPE_RSTOOL_COMMAND,
+    COMMAND_TYPE_RSTOOL_DISCOVER,
+    ProcessingCommand,
+    ProcessingCommandResult,
+    RESULT_STATUS_ACCEPTED,
+    RESULT_STATUS_ERROR,
+    RESULT_STATUS_OK,
+    RESULT_STATUS_PROGRESS,
+    RedisCommandBus,
+)
 
 UploadReporter = Callable[[str], None]
 UploadProgress = Callable[[int, int, int, int], None]
@@ -80,7 +95,10 @@ class UploadWizardApp(App[None]):
     PAGE_START = "page-start"
     PAGE_INGEST = "page-ingest"
     PAGE_JOB = "page-job"
+    PAGE_COMMAND = "page-command"
     LOG_ROW_COUNT = 3
+    SDK_RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "internal_tools" / "rstool-sdk" / "src" / "realityscan_sdk" / "resources"
+    COMMAND_TREE_NODE_ID = "command-tree"
 
     DEFAULT_CSS = """
     Screen {
@@ -188,7 +206,8 @@ class UploadWizardApp(App[None]):
         height: auto;
     }
 
-    #setup-action-row, #upload-action-row, #result-action-row, #start-action-row, #ingest-action-row, #job-action-row {
+    #setup-action-row, #upload-action-row, #result-action-row, #start-action-row, #ingest-action-row, #job-action-row,
+    #command-action-row {
         height: auto;
         margin: 1;
         align: right middle;
@@ -200,6 +219,49 @@ class UploadWizardApp(App[None]):
     }
 
     #start-options {
+        border: round #475569;
+        background: #0f172a;
+        color: #cbd5e1;
+        padding: 0 1;
+        height: 1fr;
+    }
+
+    #command-config-panel,
+    #command-result-panel {
+        margin-top: 1;
+    }
+
+    #command-page-top {
+        height: 1fr;
+    }
+
+    #command-tree-panel {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    #command-config-panel {
+        width: 2fr;
+    }
+
+    #command-tree {
+        border: round #475569;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 0 1;
+        height: 1fr;
+    }
+
+    #command-config,
+    #command-result {
+        border: round #475569;
+        background: #0f172a;
+        color: #cbd5e1;
+        padding: 0 1;
+        height: auto;
+    }
+
+    #command-history {
         border: round #475569;
         background: #0f172a;
         color: #cbd5e1;
@@ -270,6 +332,16 @@ class UploadWizardApp(App[None]):
     #job-sdk-project-input, #job-sdk-detector-input, #job-sdk-acc-xyz-input, #job-sdk-acc-ypr-input,
     #job-sdk-include-subdirs-input, #job-sdk-run-align-input, #job-sdk-run-normal-input,
     #job-sdk-run-ortho-input, #job-sdk-timeout-input, #job-id-input {
+        margin-top: 1;
+        border: round #475569;
+        background: #0f172a;
+        color: #e2e8f0;
+    }
+
+    #command-type-input, #command-target-input, #command-method-input, #command-target-object-input,
+    #command-session-input, #command-project-guid-input, #command-project-name-input,
+    #command-args-input, #command-kwargs-input, #command-timeout-input, #command-id-input,
+    #command-custom-payload-input {
         margin-top: 1;
         border: round #475569;
         background: #0f172a;
@@ -363,7 +435,9 @@ class UploadWizardApp(App[None]):
         self._uploading = False
         self._ingesting = False
         self._job_running = False
+        self._command_running = False
         self._last_job_id: str | None = None
+        self._last_command_id: str | None = None
         self._last_completed = 0
         self._last_total = 0
         self._last_total_bytes = 0
@@ -371,7 +445,10 @@ class UploadWizardApp(App[None]):
         self._last_group_name: str | None = None
         self._override_existing_upload = False
         self._override_existing_ingest = False
+        self._command_bus: RedisCommandBus | None = None
+        self._command_events: List[str] = []
         self._log_lines: List[str] = []
+        self._command_catalog = self._load_command_catalog()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -393,6 +470,9 @@ class UploadWizardApp(App[None]):
                                 "3) Create Processing Job",
                                 "   Run the RealityScan SDK sequence used in example.ipynb:",
                                 "   newScene -> set -> addFolder -> align/model/ortho -> save.",
+                                "",
+                                "4) Command Console",
+                                "   Send Redis control commands directly and view replies.",
                             ]
                         ),
                         id="start-options",
@@ -402,6 +482,7 @@ class UploadWizardApp(App[None]):
                     yield Button("Upload Imagery", variant="primary", id="start-upload-button")
                     yield Button("Ingest Waiting Metadata", variant="success", id="start-ingest-button")
                     yield Button("Create Processing Job", variant="warning", id="start-job-button")
+                    yield Button("Command Console", variant="primary", id="start-command-button")
                     yield Button("Close", variant="error", id="start-close-button")
 
             with Vertical(id=self.PAGE_SETUP, classes="page"):
@@ -588,6 +669,79 @@ class UploadWizardApp(App[None]):
                     yield Button("Cancel Job", variant="warning", id="job-cancel-button")
                     yield Button("Close", variant="error", id="job-close-button")
 
+            with Vertical(id=self.PAGE_COMMAND, classes="page"):
+                with Horizontal(id="command-page-top", classes="command-page-top"):
+                    with Vertical(id="command-tree-panel", classes="panel"):
+                        yield Label("RSTool Commands", classes="panel-title")
+                        yield Tree("RSTool API", id=self.COMMAND_TREE_NODE_ID)
+                    with Vertical(id="command-config-panel", classes="panel"):
+                        yield Label("Redis Command Console", classes="panel-title")
+                        yield Input(
+                            value=COMMAND_TYPE_RSTOOL_DISCOVER,
+                            id="command-type-input",
+                        )
+                        yield Input(
+                            value="node",
+                            placeholder="command target (node/project/client) for rstool commands",
+                            id="command-target-input",
+                        )
+                        yield Input(
+                            placeholder="command target_object (optional, e.g. connect_user)",
+                            id="command-target-object-input",
+                        )
+                        yield Input(
+                            placeholder="method (e.g. connect_user / newScene / add_folder)",
+                            id="command-method-input",
+                        )
+                        yield Input(
+                            placeholder="session/action (optional)",
+                            id="command-session-input",
+                        )
+                        yield Input(
+                            placeholder="project guid (for session_action=open)",
+                            id="command-project-guid-input",
+                        )
+                        yield Input(
+                            placeholder="project name (for session_action=open)",
+                            id="command-project-name-input",
+                        )
+                        yield Input(
+                            value='[]',
+                            placeholder="args (JSON array)",
+                            id="command-args-input",
+                        )
+                        yield Input(
+                            value='{}',
+                            placeholder="kwargs (JSON object)",
+                            id="command-kwargs-input",
+                        )
+                        yield Input(
+                            value=str(self._config.control.request_timeout_seconds),
+                            placeholder="response wait timeout seconds",
+                            id="command-timeout-input",
+                        )
+                        yield Input(
+                            placeholder="command id (optional)",
+                            id="command-id-input",
+                        )
+                        yield Input(
+                            placeholder="Custom raw payload JSON (optional override)",
+                            id="command-custom-payload-input",
+                        )
+                        yield Static("", id="command-config")
+
+                with Vertical(id="command-result-panel", classes="panel"):
+                    yield Label("Latest Command Result", classes="panel-title")
+                    yield Static("No command run yet.", id="command-result")
+                    yield Static("", id="command-history")
+
+                with Horizontal(id="command-action-row"):
+                    yield Button("Back", id="command-back-button")
+                    yield Button("Discover SDK", variant="primary", id="command-discover-button")
+                    yield Button("Send Command", variant="success", id="command-send-button")
+                    yield Button("Clear Response", id="command-clear-response-button")
+                    yield Button("Close", variant="error", id="command-close-button")
+
         yield Static("", id="status")
         yield Static("", id="log-bar")
         yield Footer()
@@ -600,10 +754,130 @@ class UploadWizardApp(App[None]):
         self._refresh_upload_plan()
         self._refresh_ingest_plan()
         self._refresh_job_plan()
+        self._refresh_command_config()
+        self._build_command_tree()
         self._set_progress_state(0, 1, 0, 1)
         self._set_result_summary("No uploads run yet.")
         self._switch_page(self.PAGE_START)
         self._set_status("Choose a workflow to begin.", error=False)
+
+    def _load_command_catalog(self) -> Dict[str, Dict[str, Dict[str, str]]]:
+        catalog: Dict[str, Dict[str, Dict[str, str]]] = {"node": {}, "project": {}}
+        source_map: Dict[str, str] = {
+            "node": str(self.SDK_RESOURCE_ROOT / "node.py"),
+            "project": str(self.SDK_RESOURCE_ROOT / "project.py"),
+        }
+        for target, source_path in source_map.items():
+            catalog[target] = self._load_command_source_catalog(target, source_path)
+            if not catalog[target]:
+                catalog[target] = self._fallback_command_catalog(target)
+        return catalog
+
+    def _load_command_source_catalog(self, target: str, source_path: str) -> Dict[str, Dict[str, str]]:
+        source_file = Path(source_path)
+        if not source_file.exists():
+            return {}
+        try:
+            source_text = source_file.read_text(encoding="utf-8")
+            source_tree = ast.parse(source_text)
+        except Exception as exc:
+            self._append_log(f"WARN unable to parse SDK {target} source: {exc}")
+            return {}
+
+        class_name = "NodeAPI" if target == "node" else "ProjectAPI"
+        methods: Dict[str, Dict[str, str]] = {}
+        for node in source_tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for member in node.body:
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if member.name.startswith("_"):
+                            continue
+                        try:
+                            signature = f"({ast.unparse(member.args)})"
+                        except Exception:
+                            signature = "(...)"
+                        methods[member.name] = {
+                            "signature": signature,
+                            "doc": (ast.get_docstring(member) or "").strip(),
+                        }
+                break
+        return methods
+
+    def _fallback_command_catalog(self, target: str) -> Dict[str, Dict[str, str]]:
+        if target == "node":
+            return {
+                "connect_user": {"signature": "(self)", "doc": "Connect user to the node."},
+                "connection": {"signature": "(self)", "doc": "Get node connection."},
+                "disconnect_user": {"signature": "(self)", "doc": "Disconnect user from the node."},
+                "projects": {"signature": "(self)", "doc": "List known projects."},
+                "status": {"signature": "(self)", "doc": "Get node status."},
+            }
+        if target == "project":
+            return {
+                "create": {"signature": "(self)", "doc": "Create/open a new project session."},
+                "open": {"signature": "(self, guid, name=None)", "doc": "Open an existing project."},
+                "close": {"signature": "(self)", "doc": "Close current project."},
+                "disconnect": {"signature": "(self)", "doc": "Disconnect from current project."},
+                "delete": {"signature": "(self, guid)", "doc": "Delete project by GUID."},
+                "status": {"signature": "(self)", "doc": "Get project status."},
+                "command": {"signature": "(self, name, params=None, ...)", "doc": "Run a low-level command."},
+                "new_scene": {"signature": "(self)", "doc": "Start a new scene."},
+                "add_folder": {"signature": "(self, folder_path)", "doc": "Import folder images."},
+            }
+        return {}
+
+    def _build_command_tree(self) -> None:
+        try:
+            tree = self.query_one(f"#{self.COMMAND_TREE_NODE_ID}", Tree)
+        except Exception:
+            return
+        tree.clear()
+        tree.root.label = "RSTool API"
+        for target in ("node", "project"):
+            methods = self._command_catalog.get(target, {})
+            if not methods:
+                continue
+            target_node = tree.root.add(target.capitalize())
+            grouped: Dict[str, List[str]] = {}
+            for name in methods:
+                category = self._command_group_name(target, name)
+                grouped.setdefault(category, []).append(name)
+            for category in sorted(grouped):
+                category_node = target_node.add(category)
+                for method_name in sorted(grouped[category]):
+                    method_meta = methods[method_name]
+                    label = f"{method_name}{method_meta.get('signature', '')}"
+                    node_data = {
+                        "type": "command",
+                        "target": target,
+                        "method": method_name,
+                        "signature": method_meta.get("signature", "()"),
+                        "doc": method_meta.get("doc", ""),
+                    }
+                    node = category_node.add(label, data=node_data)
+
+    def _command_group_name(self, target: str, method_name: str) -> str:
+        if target == "node":
+            return "Node API"
+        if method_name in {"create", "open", "close", "disconnect", "delete"}:
+            return "Lifecycle"
+        if method_name in {"connection", "status", "projects"}:
+            return "Node Info"
+        if method_name.startswith("test_") or method_name.startswith("clear_") or method_name == "tags":
+            return "Metadata"
+        if method_name.startswith("task") or method_name.startswith("clear_task"):
+            return "Tasks"
+        if method_name.startswith("command") or method_name.startswith("cond_") or method_name.startswith("exec_"):
+            return "Command"
+        if method_name.startswith("import_") or method_name.startswith("add") or method_name.startswith("add_") or method_name.startswith("load") or method_name.startswith("save") or method_name.startswith("new_") or method_name.startswith("align"):
+            return "Project IO"
+        if method_name.startswith("select") or method_name.startswith("deselect") or method_name.startswith("invert"):
+            return "Selection"
+        if method_name.startswith("set_") or method_name.startswith("enable_") or method_name.startswith("lock_") or method_name.startswith("get_status") or method_name.startswith("pause_") or method_name.startswith("unpause_") or method_name.startswith("abort_"):
+            return "Project Settings"
+        if method_name in {"headless", "hide_ui", "show_ui", "start", "quit", "acknowledge_restart"}:
+            return "Project Control"
+        return "Project Commands"
 
     async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         await self._add_path(event.path)
@@ -611,9 +885,33 @@ class UploadWizardApp(App[None]):
     async def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
         await self._add_path(event.path)
 
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        data = getattr(event.node, "data", None)
+        if not isinstance(data, dict):
+            return
+        if data.get("type") != "command":
+            return
+        self._fill_command_fields_from_tree(data)
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "path-input":
             self._add_path_from_input()
+            return
+        if event.input.id in {
+            "command-type-input",
+            "command-target-input",
+            "command-target-object-input",
+            "command-method-input",
+            "command-session-input",
+            "command-project-guid-input",
+            "command-project-name-input",
+            "command-args-input",
+            "command-kwargs-input",
+            "command-timeout-input",
+            "command-id-input",
+            "command-custom-payload-input",
+        }:
+            self._refresh_command_config()
             return
         if event.input.id in {"ingest-group-input", "ingest-prefix-input", "ingest-limit-input", "ingest-concurrency-input"}:
             self._refresh_ingest_plan()
@@ -649,6 +947,10 @@ class UploadWizardApp(App[None]):
         if button_id == "start-job-button":
             self._switch_page(self.PAGE_JOB)
             self._set_status("Job workflow: configure SDK command sequence and create a processing job.", error=False)
+            return
+        if button_id == "start-command-button":
+            self._switch_page(self.PAGE_COMMAND)
+            self._set_status("Command console: build a payload and send to the Redis command queue.", error=False)
             return
         if button_id == "start-close-button":
             self.action_cancel()
@@ -730,6 +1032,26 @@ class UploadWizardApp(App[None]):
         if button_id == "job-close-button":
             self.action_cancel()
             return
+        if button_id == "command-back-button":
+            if self._command_running:
+                self._set_status("Command in progress. Wait for completion before navigating.", error=True)
+                return
+            self._switch_page(self.PAGE_START)
+            self._set_status("Choose a workflow to begin.", error=False)
+            return
+        if button_id == "command-discover-button":
+            self._start_command_discover_workflow()
+            return
+        if button_id == "command-send-button":
+            self._start_command_send_workflow()
+            return
+        if button_id == "command-clear-response-button":
+            self._clear_command_results()
+            self._set_status("Cleared command response history.", error=False)
+            return
+        if button_id == "command-close-button":
+            self.action_cancel()
+            return
 
     def action_cancel(self) -> None:
         if self._uploading:
@@ -741,6 +1063,10 @@ class UploadWizardApp(App[None]):
         if self._job_running:
             self._set_status("Job request in progress. Wait for completion before closing.", error=True)
             return
+        if self._command_running:
+            self._set_status("Command in progress. Wait for completion before closing.", error=True)
+            return
+        self._close_command_bus()
         self.exit(None)
 
     def action_next_page(self) -> None:
@@ -757,7 +1083,7 @@ class UploadWizardApp(App[None]):
             return
 
     def action_previous_page(self) -> None:
-        if self._uploading or self._ingesting or self._job_running:
+        if self._uploading or self._ingesting or self._job_running or self._command_running:
             self._set_status("Cannot navigate while a workflow is running.", error=True)
             return
         current = self._current_page()
@@ -780,6 +1106,10 @@ class UploadWizardApp(App[None]):
         if current == self.PAGE_RESULT:
             self._switch_page(self.PAGE_UPLOAD)
             self._set_status("Review upload results or start another upload.", error=False)
+            return
+        if current == self.PAGE_COMMAND:
+            self._switch_page(self.PAGE_START)
+            self._set_status("Choose a workflow to begin.", error=False)
             return
 
     def action_start_upload(self) -> None:
@@ -836,6 +1166,14 @@ class UploadWizardApp(App[None]):
             self._refresh_job_plan()
             title.update("Create Processing Job")
             self.query_one("#job-create-button", Button).focus()
+            return
+        if page_id == self.PAGE_COMMAND:
+            self._refresh_command_config()
+            self._build_command_tree()
+            self._set_command_controls(disabled=False)
+            title.update("Command Console")
+            self._refresh_command_result()
+            self.query_one("#command-type-input", Input).focus()
 
     def _go_to_upload_page(self) -> None:
         if not self._selected_paths:
@@ -1004,6 +1342,506 @@ class UploadWizardApp(App[None]):
             return
         self._set_status("Ingest failed. Check server/API configuration.", error=True)
         self._set_ingest_result(f"Ingest failed: {error_message or 'unknown error'}")
+
+    def on_unmount(self) -> None:
+        self._close_command_bus()
+
+    def _close_command_bus(self) -> None:
+        if self._command_bus is None:
+            return
+        bus = self._command_bus
+        self._command_bus = None
+        try:
+            bus.close()
+        except Exception:
+            self._append_log("WARN Failed to close command Redis bus cleanly.")
+
+    def _build_command_bus(self) -> RedisCommandBus:
+        if self._command_bus is None:
+            self._command_bus = RedisCommandBus(self._config.queue.redis_url)
+            try:
+                self._command_bus.ping()
+            except Exception as exc:
+                self._close_command_bus()
+                raise RuntimeError(f"Redis unavailable at {self._config.queue.redis_url}: {exc}") from exc
+        return self._command_bus
+
+    def _set_command_controls(self, *, disabled: bool) -> None:
+        self.query_one("#command-back-button", Button).disabled = disabled
+        self.query_one("#command-discover-button", Button).disabled = disabled
+        self.query_one("#command-send-button", Button).disabled = disabled
+        self.query_one("#command-clear-response-button", Button).disabled = disabled
+        self.query_one(f"#{self.COMMAND_TREE_NODE_ID}", Tree).disabled = disabled
+        self.query_one("#command-type-input", Input).disabled = disabled
+        self.query_one("#command-target-input", Input).disabled = disabled
+        self.query_one("#command-target-object-input", Input).disabled = disabled
+        self.query_one("#command-method-input", Input).disabled = disabled
+        self.query_one("#command-session-input", Input).disabled = disabled
+        self.query_one("#command-project-guid-input", Input).disabled = disabled
+        self.query_one("#command-project-name-input", Input).disabled = disabled
+        self.query_one("#command-args-input", Input).disabled = disabled
+        self.query_one("#command-kwargs-input", Input).disabled = disabled
+        self.query_one("#command-timeout-input", Input).disabled = disabled
+        self.query_one("#command-id-input", Input).disabled = disabled
+        self.query_one("#command-custom-payload-input", Input).disabled = disabled
+
+    def _start_command_discover_workflow(self) -> None:
+        if self._command_running:
+            self._set_status("A command is already running.", error=True)
+            return
+        try:
+            self.query_one("#command-type-input", Input).value = COMMAND_TYPE_RSTOOL_DISCOVER
+            payload = self._build_discover_payload()
+            command_id = self._read_command_id()
+            timeout_seconds = self._resolve_command_timeout()
+        except ValueError as exc:
+            self._set_status(str(exc), error=True)
+            return
+
+        self._command_running = True
+        self._last_command_id = command_id
+        self._set_command_controls(disabled=True)
+        self._clear_command_results()
+        self._set_command_result("Sending command discover request...")
+        self._append_command_event(f"command_id={command_id} sending type={COMMAND_TYPE_RSTOOL_DISCOVER}")
+
+        thread = threading.Thread(
+            target=self._run_command_worker,
+            args=(COMMAND_TYPE_RSTOOL_DISCOVER, command_id, payload, timeout_seconds),
+            daemon=True,
+        )
+        thread.start()
+
+    def _start_command_send_workflow(self) -> None:
+        if self._command_running:
+            self._set_status("A command is already running.", error=True)
+            return
+        try:
+            command_type = self._read_command_type()
+            if command_type != COMMAND_TYPE_RSTOOL_COMMAND:
+                raise ValueError(f"command type must be {COMMAND_TYPE_RSTOOL_COMMAND} for send")
+            payload = self._build_send_payload()
+            command_id = self._read_command_id()
+            timeout_seconds = self._resolve_command_timeout()
+        except ValueError as exc:
+            self._set_status(str(exc), error=True)
+            return
+
+        self._command_running = True
+        self._last_command_id = command_id
+        self._set_command_controls(disabled=True)
+        self._clear_command_results()
+        self._set_command_result("Sending rstool command request...")
+        self._append_command_event(f"command_id={command_id} sending type={COMMAND_TYPE_RSTOOL_COMMAND}")
+
+        thread = threading.Thread(
+            target=self._run_command_worker,
+            args=(command_type, command_id, payload, timeout_seconds),
+            daemon=True,
+        )
+        thread.start()
+
+    def _fill_command_fields_from_tree(self, data: Dict[str, Any]) -> None:
+        target = data.get("target", "").strip().lower()
+        method = data.get("method", "").strip()
+        if not target or not method:
+            return
+
+        if self._command_running:
+            self._set_status("Stop current workflow? Command is running; wait for completion before editing.", error=True)
+
+        self.query_one("#command-type-input", Input).value = COMMAND_TYPE_RSTOOL_COMMAND
+        self.query_one("#command-target-input", Input).value = target
+        self.query_one("#command-method-input", Input).value = method
+        self.query_one("#command-target-object-input", Input).value = ""
+        self.query_one("#command-args-input", Input).value = self._default_args_json_from_signature(
+            str(data.get("signature", "()"))
+        )
+        self.query_one("#command-kwargs-input", Input).value = "{}"
+        doc = str(data.get("doc", "")).strip()
+        signature = str(data.get("signature", "()")).strip()
+        parts = [f"Selected: {target}.{method}{signature}"]
+        if doc:
+            parts.append(doc)
+        self._set_command_result("\n".join(parts))
+        self._refresh_command_config()
+        self._append_command_event(f"Prefilled command target={target} method={method}")
+        self._set_status(f"Selected command: {target}.{method}", error=False)
+
+    def _default_args_json_from_signature(self, signature: str) -> str:
+        required_args = self._parse_required_args_from_signature(signature)
+        if not required_args:
+            return "[]"
+        return json.dumps(required_args)
+
+    def _parse_required_args_from_signature(self, signature: str) -> List[str]:
+        if not signature:
+            return []
+        text = signature.strip()
+        if not (text.startswith("(") and text.endswith(")")):
+            return []
+        body = text[1:-1].strip()
+        if not body:
+            return []
+
+        args: List[str] = []
+        depth = 0
+        current = []
+        chunks = []
+        for char in body:
+            if char in {"(", "[", "{", "<"}:
+                depth += 1
+            elif char in {")", "]", "}", ">"}:
+                depth -= 1
+            if char == "," and depth == 0:
+                chunks.append("".join(current).strip())
+                current = []
+                continue
+            current.append(char)
+        if current:
+            chunks.append("".join(current).strip())
+
+        for chunk in chunks:
+            if not chunk or chunk.startswith("*") or chunk.startswith("**") or chunk.startswith("/"):
+                continue
+            if "=" in chunk or chunk == "self":
+                continue
+            if ":" in chunk:
+                name = chunk.split(":", 1)[0].strip()
+            else:
+                name = chunk
+            if name and name != "self":
+                args.append(f"<{name}>")
+        return args
+
+    def _read_command_id(self) -> str:
+        command_id = self.query_one("#command-id-input", Input).value.strip()
+        if command_id:
+            return command_id
+        generated = str(uuid4())
+        self.query_one("#command-id-input", Input).value = generated
+        return generated
+
+    def _read_command_type(self) -> str:
+        command_type = self.query_one("#command-type-input", Input).value.strip()
+        if not command_type:
+            return COMMAND_TYPE_RSTOOL_COMMAND
+        return command_type
+
+    def _read_stripped(self, widget_id: str) -> str:
+        return self.query_one(f"#{widget_id}", Input).value.strip()
+
+    def _resolve_command_timeout(self) -> int:
+        raw = self._read_stripped("command-timeout-input")
+        if not raw:
+            return max(self._config.control.request_timeout_seconds, 1)
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError("command timeout must be an integer in seconds") from exc
+        if value < 1:
+            raise ValueError("command timeout must be at least 1 second")
+        return value
+
+    def _parse_json_object(self, raw: str, *, field: str) -> Dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid {field}: not valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"invalid {field}: must be a JSON object")
+        return parsed
+
+    def _parse_json_array(self, raw: str, *, field: str) -> list[Any]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid {field}: not valid JSON") from exc
+        if not isinstance(parsed, list):
+            raise ValueError(f"invalid {field}: must be a JSON array")
+        return parsed
+
+    def _custom_payload(self) -> Dict[str, Any]:
+        custom_raw = self._read_stripped("command-custom-payload-input")
+        return self._parse_json_object(custom_raw, field="command-custom-payload")
+
+    def _build_discover_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        target = self._read_stripped("command-target-input")
+        if target:
+            payload["target"] = target
+        payload.update(self._custom_payload())
+        return payload
+
+    def _build_send_payload(self) -> Dict[str, Any]:
+        command_type = self._read_stripped("command-type-input")
+        if not command_type:
+            command_type = COMMAND_TYPE_RSTOOL_COMMAND
+        target = self._read_stripped("command-target-input") or "node"
+        method = self._read_stripped("command-method-input")
+        if command_type == COMMAND_TYPE_RSTOOL_COMMAND and not method:
+            raise ValueError("method is required for rstool commands")
+
+        payload: Dict[str, Any] = {
+            "target": target,
+        }
+        if target in {"node", "project", "client"}:
+            pass
+        else:
+            raise ValueError("target must be one of node, project, or client")
+
+        if method:
+            payload["method"] = method
+        args = self._read_stripped("command-args-input")
+        kwargs = self._read_stripped("command-kwargs-input")
+        payload["args"] = self._parse_json_array(args, field="command-args")
+        payload["kwargs"] = self._parse_json_object(kwargs, field="command-kwargs")
+
+        target_object = self._read_stripped("command-target-object-input")
+        if target_object:
+            payload["target_object"] = target_object
+
+        session = self._read_stripped("command-session-input")
+        if session:
+            payload["session"] = session
+
+        project_guid = self._read_stripped("command-project-guid-input")
+        project_name = self._read_stripped("command-project-name-input")
+        if project_guid:
+            payload["project_guid"] = project_guid
+        if project_name:
+            payload["project_name"] = project_name
+        if method == "open" and project_guid:
+            payload["session_action"] = "open"
+        if method:
+            payload["method"] = method
+
+        custom = self._custom_payload()
+        if custom:
+            payload.update(custom)
+        return payload
+
+    def _run_command_worker(
+        self,
+        command_type: str,
+        command_id: str,
+        payload: Dict[str, Any],
+        timeout_seconds: int,
+    ) -> None:
+        reply_to = f"{self._config.control.result_queue_key}:reply:{command_id}"
+        command = ProcessingCommand(
+            command_id=command_id,
+            command_type=command_type,
+            payload=payload,
+            reply_to=reply_to,
+        )
+        try:
+            bus = self._build_command_bus()
+            bus.push(
+                self._config.control.command_queue_key,
+                command.to_payload(),
+                expire_seconds=self._config.control.result_ttl_seconds,
+            )
+        except Exception as exc:
+            self.call_from_thread(
+                self._finish_command_workflow,
+                False,
+                command_id,
+                {"status": "error", "message": "Failed to publish Redis command", "error": str(exc)},
+            )
+            return
+
+        self.call_from_thread(self._append_command_event, f"Published command {command_id} -> queue={self._config.control.command_queue_key}")
+        self.call_from_thread(
+            self._set_status,
+            f"Command sent (id={command_id}); waiting up to {timeout_seconds}s for responses.",
+            error=False,
+        )
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.call_from_thread(
+                    self._finish_command_workflow,
+                    False,
+                    command_id,
+                    {"status": "error", "message": "Timeout waiting for command response"},
+                )
+                return
+            bus = self._build_command_bus()
+            try:
+                raw = bus.pop(reply_to, timeout_seconds=max(1, min(10, int(remaining))))
+            except Exception as exc:  # pragma: no cover - redis runtime edge case
+                self.call_from_thread(
+                    self._append_command_event,
+                    f"ERROR during pop reply queue={reply_to}: {exc}",
+                )
+                continue
+            if raw is None:
+                self.call_from_thread(
+                    self._append_command_event,
+                    f"waiting for response... remaining={remaining:.1f}s",
+                )
+                continue
+            try:
+                event = ProcessingCommandResult.parse(raw)
+            except Exception as exc:
+                self.call_from_thread(
+                    self._append_command_event,
+                    f"Discarding invalid result payload for command_id={command_id}: {exc}",
+                )
+                continue
+            if event.command_id != command_id:
+                continue
+
+            self.call_from_thread(self._append_command_event, self._format_command_event(event))
+            event_payload = json.dumps(event.to_payload(), indent=2)
+            self.call_from_thread(self._set_command_result, event_payload)
+
+            status = (event.status or "").lower()
+            if status in {RESULT_STATUS_ACCEPTED, RESULT_STATUS_PROGRESS}:
+                continue
+            if status == RESULT_STATUS_OK:
+                if command_type == COMMAND_TYPE_RSTOOL_DISCOVER:
+                    self.call_from_thread(self._apply_discovered_command_catalog, event.to_payload())
+                self.call_from_thread(self._finish_command_workflow, True, command_id, event.to_payload())
+                return
+            self.call_from_thread(
+                self._finish_command_workflow,
+                False,
+                command_id,
+                event.to_payload(),
+            )
+            return
+
+    def _format_command_event(self, event: ProcessingCommandResult) -> str:
+        parts = [
+            f"command_id={event.command_id}",
+            f"status={event.status}",
+            f"type={event.command_type}",
+        ]
+        if event.message:
+            parts.append(f"message={event.message}")
+        if event.progress is not None:
+            parts.append(f"progress={event.progress}")
+        if event.error:
+            parts.append(f"error={event.error}")
+        if event.data:
+            parts.append(f"data_keys={','.join(sorted(map(str, event.data.keys())))}")
+        return " | ".join(parts)
+
+    def _finish_command_workflow(
+        self,
+        success: bool,
+        command_id: str,
+        response: Dict[str, Any] | None,
+    ) -> None:
+        self._command_running = False
+        self._set_command_controls(disabled=False)
+        if success:
+            self._set_status(
+                f"Command {command_id} completed.",
+                error=False,
+            )
+            if response is not None:
+                self._set_command_result(json.dumps(response, indent=2))
+            return
+        message = "Command request failed."
+        if response:
+            if response.get("error"):
+                message = str(response["error"])
+            elif response.get("message"):
+                message = str(response["message"])
+            self._set_command_result(json.dumps(response, indent=2))
+        self._set_status(message, error=True)
+
+    def _refresh_command_config(self) -> None:
+        command_type = self._read_stripped("command-type-input") or COMMAND_TYPE_RSTOOL_DISCOVER
+        target = self._read_stripped("command-target-input") or "node"
+        target_object = self._read_stripped("command-target-object-input")
+        method = self._read_stripped("command-method-input")
+        timeout = self._resolve_command_timeout()
+        command_id = self._read_stripped("command-id-input") or "(auto)"
+        args_raw = self._read_stripped("command-args-input") or "[]"
+        kwargs_raw = self._read_stripped("command-kwargs-input") or "{}"
+        custom_raw = self._read_stripped("command-custom-payload-input")
+
+        lines = [
+            f"Command Type: {command_type}",
+            f"Queue: {self._config.control.command_queue_key}",
+            f"Result Queue: {self._config.control.result_queue_key}",
+            f"Reply suffix: :reply:{command_id}",
+            f"Target: {target}",
+            f"Target Object: {target_object or '(none)'}",
+            f"Method: {method or '(none)'}",
+            f"Session: {self._read_stripped('command-session-input') or '(none)'}",
+            f"Project GUID: {self._read_stripped('command-project-guid-input') or '(none)'}",
+            f"Project Name: {self._read_stripped('command-project-name-input') or '(none)'}",
+            f"timeout: {timeout}s",
+            f"args example: {args_raw}",
+            f"kwargs example: {kwargs_raw}",
+            f"custom payload: {custom_raw or '(none)'}",
+        ]
+        self.query_one("#command-config", Static).update("\n".join(lines))
+
+    def _clear_command_results(self) -> None:
+        self._command_events = []
+        self._set_command_history("")
+        self._set_command_result("No command run yet.")
+
+    def _set_command_result(self, text: str) -> None:
+        self.query_one("#command-result", Static).update(text)
+
+    def _refresh_command_result(self) -> None:
+        if self._command_events:
+            self._set_command_history("\n".join(self._command_events[-80:]))
+        else:
+            self._set_command_history("")
+
+    def _set_command_history(self, text: str) -> None:
+        self.query_one("#command-history", Static).update(text)
+
+    def _append_command_event(self, text: str) -> None:
+        self._command_events.append(text)
+        if len(self._command_events) > 120:
+            self._command_events = self._command_events[-120:]
+        self._set_command_history("\n".join(self._command_events))
+
+    def _apply_discovered_command_catalog(self, event_payload: Dict[str, Any]) -> None:
+        data = event_payload.get("data")
+        if not isinstance(data, dict):
+            return
+        available = data.get("available")
+        if not isinstance(available, dict):
+            return
+        updated = False
+        for target in ("node", "project"):
+            methods = available.get(target)
+            if not isinstance(methods, dict):
+                continue
+            catalog: Dict[str, Dict[str, str]] = {}
+            for method_name, method_info in methods.items():
+                if not isinstance(method_name, str):
+                    continue
+                if not isinstance(method_info, dict):
+                    continue
+                signature = str(method_info.get("signature") or "()").strip()
+                doc = str(method_info.get("doc") or "").strip()
+                catalog[method_name] = {"signature": signature, "doc": doc}
+            if catalog:
+                self._command_catalog[target] = catalog
+                updated = True
+        if updated:
+            self.call_from_thread(self._build_command_tree)
+            self.call_from_thread(
+                self._append_command_event,
+                "Updated command tree from discover response.",
+            )
 
     def _set_job_controls(self, *, disabled: bool) -> None:
         self.query_one("#job-back-button", Button).disabled = disabled

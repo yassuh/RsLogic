@@ -10,7 +10,9 @@ import inspect
 import logging
 import json
 import threading
+import re
 import time
+import shutil
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,6 +22,7 @@ import socket
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from config import load_config
+from rslogic.storage.s3 import S3ClientProvider
 from rslogic.jobs import RsToolsSdkRunner
 from rslogic.jobs.command_channel import (
     COMMAND_TYPE_PROCESSING_JOB,
@@ -54,6 +57,36 @@ except Exception as exc:  # pragma: no cover - optional dependency until install
 
 
 logger = logging.getLogger("rslogic.client.rsnode")
+
+_SAFE_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:)?[\\/]")
+
+
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    rendered = str(value).strip().lower()
+    if rendered in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if rendered in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _as_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, default)
+
+
+def _as_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    rendered = str(value).strip()
+    return rendered or None
 
 
 def _to_utc_iso() -> str:
@@ -177,6 +210,227 @@ class RsNodeClient:
         self._presence_key = f"{self._command_queue_key}:presence:{self._worker_id}"
         self._sdk_connection = {}
         self._sdk_target_methods = self._load_sdk_target_methods()
+        self._s3_client = None
+
+    @staticmethod
+    def _normalize_s3_extensions(raw: Any) -> Optional[list[str]]:
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            values = [item.strip() for item in raw.split(",")]
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            values = [str(item).strip() for item in raw]
+        else:
+            return None
+        normalized = []
+        for item in values:
+            if not item:
+                continue
+            normalized.append(item.lstrip(".").lower())
+        return normalized or None
+
+    @staticmethod
+    def _safe_relative_key(raw_key: str) -> str:
+        normalized = str(raw_key or "").strip()
+        if not normalized:
+            return ""
+        normalized = normalized.replace("\\", "/")
+        while normalized.startswith("/"):
+            normalized = normalized[1:]
+        return normalized
+
+    def _resolve_staging_root(self, *, working_directory: Path, payload: Dict[str, Any], filters: Dict[str, Any]) -> Path:
+        raw_root = str(payload.get("s3_staging_root") or filters.get("s3_staging_root") or str(working_directory)).strip()
+        if not raw_root:
+            return working_directory
+        candidate = Path(raw_root)
+        if candidate.is_absolute() or _SAFE_WINDOWS_PATH_RE.match(raw_root):
+            return candidate
+        return (working_directory / candidate).resolve()
+
+    def _resolve_imagery_folder(self, *, working_directory: Path, filters: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Path:
+        imagery_raw = str(
+            (payload or {}).get("imagery_folder")
+            or filters.get("sdk_imagery_folder")
+            or "Imagery"
+        ).strip()
+        if not imagery_raw:
+            imagery_raw = "Imagery"
+
+        candidate = Path(imagery_raw)
+        if candidate.is_absolute():
+            return candidate
+        # if user provides a path starting with leading slash, Path treats it as absolute on POSIX
+        if _SAFE_WINDOWS_PATH_RE.match(imagery_raw):
+            return Path(imagery_raw)
+        return (working_directory / candidate).resolve()
+
+    def _get_s3_client(self, *, region: Optional[str], endpoint_url: Optional[str]) -> Any:
+        if self._s3_client is not None:
+            return self._s3_client
+
+        provider = S3ClientProvider()
+        if region or endpoint_url:
+            # Keep all existing behavior from config while allowing payload overrides.
+            base_config = load_config().s3
+            base_config = base_config.__class__(
+                region=region or base_config.region,
+                bucket_name=base_config.bucket_name,
+                processed_bucket_name=base_config.processed_bucket_name,
+                scratchpad_prefix=base_config.scratchpad_prefix,
+                endpoint_url=endpoint_url,
+                multipart_part_size=base_config.multipart_part_size,
+                multipart_concurrency=base_config.multipart_concurrency,
+                resume_uploads=base_config.resume_uploads,
+                manifest_dir=base_config.manifest_dir,
+            )
+            provider = S3ClientProvider(base_config)
+
+        self._s3_client = provider.get_client()
+        return self._s3_client
+
+    def _download_s3_images(self, *, bucket: str, image_keys: Sequence[str], payload: Dict[str, Any], imagery_folder: Path) -> dict[str, Any]:
+        if not bucket:
+            raise ValueError("s3_bucket is required when pull_s3_images is enabled")
+        if not image_keys:
+            return {
+                "requested": 0,
+                "downloaded": 0,
+                "filtered": 0,
+                "files": [],
+            }
+
+        region = _as_optional_str(payload.get("s3_region") or payload.get("region"))
+        endpoint_url = _as_optional_str(payload.get("s3_endpoint_url") or payload.get("endpoint_url"))
+        s3_prefix = _as_optional_str(payload.get("s3_prefix")) or ""
+        max_files = _as_int(payload.get("s3_max_files") or payload.get("max_files") or 0, default=0)
+        max_files = max(max_files, 0)
+
+        allowed_ext = self._normalize_s3_extensions(payload.get("s3_extensions"))
+        if allowed_ext:
+            allowed = {f".{ext.lstrip('.').lower()}" for ext in allowed_ext}
+        else:
+            allowed = None
+
+        imagery_folder.mkdir(parents=True, exist_ok=True)
+        selected_keys: list[str] = []
+        if image_keys:
+            for raw_key in image_keys:
+                key = self._safe_relative_key(str(raw_key))
+                if not key:
+                    continue
+                if s3_prefix and key.startswith(s3_prefix):
+                    trimmed = key[len(s3_prefix):].lstrip("/")
+                else:
+                    trimmed = key
+                candidate_ext = Path(trimmed).suffix.lower()
+                if allowed is not None and candidate_ext and candidate_ext not in allowed:
+                    continue
+                selected_keys.append(key)
+
+        if max_files > 0:
+            selected_keys = selected_keys[:max_files]
+
+        if not selected_keys:
+            return {
+                "requested": len(image_keys),
+                "downloaded": 0,
+                "filtered": max(0, len(image_keys) - len(selected_keys)),
+                "files": [],
+            }
+
+        client = self._get_s3_client(region=region, endpoint_url=endpoint_url)
+        downloaded: list[str] = []
+        for key in selected_keys:
+            target_path = imagery_folder / self._safe_relative_key(key)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                client.download_file(bucket, key, str(target_path))
+            except Exception as exc:
+                raise RuntimeError(f"failed to download s3 object {key}: {exc}") from exc
+            downloaded.append(str(target_path))
+
+        filtered_count = len(image_keys) - len(downloaded)
+        if max_files > 0:
+            filtered_count = max(filtered_count, 0)
+        return {
+            "requested": len(image_keys),
+            "downloaded": len(downloaded),
+            "filtered": max(filtered_count, 0),
+            "files": downloaded,
+            "s3_prefix": s3_prefix or None,
+            "s3_bucket": bucket,
+            "imagery_folder": str(imagery_folder),
+            "max_files": max_files or None,
+            "extensions": allowed_ext,
+        }
+
+    def _prepare_processing_filters(self, *, working_directory: Path, job_id: str, payload: Dict[str, Any], image_keys: Sequence[str]) -> dict[str, Any]:
+        filters = payload.get("filters")
+        if not isinstance(filters, dict):
+            filters = {}
+        filters = dict(filters)
+
+        pull_s3 = _as_bool(payload.get("pull_s3_images"), default=_as_bool(filters.get("pull_s3_images"), default=True))
+
+        staging_root = self._resolve_staging_root(
+            working_directory=working_directory,
+            payload=payload,
+            filters=filters,
+        )
+        staging_root.mkdir(parents=True, exist_ok=True)
+
+        imagery_folder = self._resolve_imagery_folder(
+            working_directory=staging_root,
+            filters=filters,
+            payload=payload,
+        )
+
+        # Ensure a clean staging folder for deterministic behavior per run.
+        if imagery_folder.exists():
+            shutil.rmtree(imagery_folder)
+        imagery_folder.mkdir(parents=True, exist_ok=True)
+
+        if not pull_s3:
+            filters["sdk_imagery_folder"] = str(imagery_folder)
+            filters["_rslogic_staging"] = {
+                "s3_pull_enabled": False,
+                "imagery_folder": str(imagery_folder),
+                "job_id": job_id,
+            }
+            return filters
+
+        bucket = _as_optional_str(payload.get("s3_bucket") or filters.get("s3_bucket"))
+        if not bucket:
+            bucket = load_config().s3.bucket_name
+            if not bucket:
+                raise ValueError("s3_bucket is required for S3 pull")
+
+        summary = self._download_s3_images(
+            bucket=bucket,
+            image_keys=image_keys,
+            imagery_folder=imagery_folder,
+            payload={
+                **filters,
+                **{
+                    "s3_bucket": bucket,
+                    "s3_prefix": _as_optional_str(payload.get("s3_prefix") or filters.get("s3_prefix")),
+                    "s3_region": _as_optional_str(payload.get("s3_region") or filters.get("s3_region")),
+                    "s3_endpoint_url": _as_optional_str(payload.get("s3_endpoint_url") or filters.get("s3_endpoint_url")),
+                    "s3_max_files": payload.get("s3_max_files") or filters.get("s3_max_files"),
+                    "s3_extensions": payload.get("s3_extensions") or filters.get("s3_extensions"),
+                },
+            },
+        )
+
+        filters["sdk_imagery_folder"] = str(imagery_folder)
+        filters["_rslogic_staging"] = {
+            "s3_pull_enabled": True,
+            "imagery_folder": str(imagery_folder),
+            "job_id": job_id,
+            **summary,
+        }
+        return filters
 
     def _effective_sdk_config(self, *, payload: Optional[Dict[str, Any]] = None) -> Tuple[str, str, str, str]:
         base_url = _first_non_empty(
@@ -654,9 +908,12 @@ class RsNodeClient:
 
         image_keys = payload.get("image_keys") if isinstance(payload.get("image_keys"), list) else []
         image_keys = [str(item) for item in image_keys]
-        filters = payload.get("filters")
-        if not isinstance(filters, dict):
-            filters = {}
+        filters = self._prepare_processing_filters(
+            working_directory=working_directory,
+            job_id=job_id,
+            payload=payload,
+            image_keys=image_keys,
+        )
 
         def progress_cb(progress: float, message: str, details: Optional[Dict[str, Any]]) -> None:
             self._publish(

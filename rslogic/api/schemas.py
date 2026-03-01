@@ -28,6 +28,15 @@ class JobCreateRequest(BaseModel):
     sdk_run_normal_model: bool = True
     sdk_run_ortho_projection: bool = True
     sdk_task_timeout_seconds: Optional[int] = Field(default=7200, gt=0)
+    session_code: Optional[str] = Field(default=None, max_length=128)
+    pull_s3_images: bool = True
+    s3_bucket: Optional[str] = Field(default=None, max_length=255)
+    s3_prefix: Optional[str] = Field(default=None, max_length=512)
+    s3_region: Optional[str] = Field(default=None, max_length=255)
+    s3_endpoint_url: Optional[str] = Field(default=None, max_length=1024)
+    s3_max_files: Optional[int] = Field(default=None, gt=0)
+    s3_extensions: Optional[List[str]] = None
+    s3_staging_root: Optional[str] = Field(default=None, max_length=1024)
 
 
 class IngestRequest(BaseModel):

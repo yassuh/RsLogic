@@ -55,6 +55,15 @@ class ImageFilter:
     sdk_run_normal_model: bool = True
     sdk_run_ortho_projection: bool = True
     sdk_task_timeout_seconds: Optional[int] = 7200
+    session_code: Optional[str] = None
+    pull_s3_images: bool = True
+    s3_bucket: Optional[str] = None
+    s3_prefix: Optional[str] = None
+    s3_region: Optional[str] = None
+    s3_endpoint_url: Optional[str] = None
+    s3_max_files: Optional[int] = None
+    s3_extensions: Optional[list[str]] = None
+    s3_staging_root: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,18 @@ _TERMINAL_JOB_STATES = {
     JobStatus.FAILED.value,
     JobStatus.CANCELLED.value,
 }
+
+
+def _resolve_job_workdir(*, working_root: Path, filters: ImageFilter, job_id: str) -> Path:
+    base_root = Path(working_root).expanduser()
+    if filters.s3_staging_root:
+        staged_root = Path(filters.s3_staging_root).expanduser()
+        if staged_root.is_absolute():
+            return staged_root
+        return (base_root / staged_root).resolve()
+    if filters.session_code:
+        return (base_root / filters.session_code).resolve()
+    return (base_root / job_id).resolve()
 
 
 class JobOrchestrator:
@@ -260,7 +281,11 @@ class JobOrchestrator:
             logger.warning("Processing job failed: no matched images job_id=%s", job_id)
             return job_id
 
-        working_dir = Path(self._config.rstools.working_root) / job_id
+        working_dir = _resolve_job_workdir(
+            working_root=Path(self._config.rstools.working_root),
+            filters=filters,
+            job_id=job_id,
+        )
         working_dir.mkdir(parents=True, exist_ok=True)
         image_keys = [image.object_key for image in images if image.object_key]
         if not image_keys:
@@ -760,6 +785,15 @@ def _decode_filter_dict(payload: Any) -> ImageFilter:
         sdk_run_normal_model=_as_optional_bool(payload.get("sdk_run_normal_model"), default=True),
         sdk_run_ortho_projection=_as_optional_bool(payload.get("sdk_run_ortho_projection"), default=True),
         sdk_task_timeout_seconds=_as_optional_int(payload.get("sdk_task_timeout_seconds")) or 7200,
+        session_code=_as_optional_str(payload.get("session_code")),
+        pull_s3_images=_as_optional_bool(payload.get("pull_s3_images"), default=True),
+        s3_bucket=_as_optional_str(payload.get("s3_bucket")),
+        s3_prefix=_as_optional_str(payload.get("s3_prefix")),
+        s3_region=_as_optional_str(payload.get("s3_region")),
+        s3_endpoint_url=_as_optional_str(payload.get("s3_endpoint_url")),
+        s3_max_files=_as_optional_int(payload.get("s3_max_files")),
+        s3_extensions=(payload.get("s3_extensions") if isinstance(payload.get("s3_extensions"), list) else None),
+        s3_staging_root=_as_optional_str(payload.get("s3_staging_root")),
     )
 
 

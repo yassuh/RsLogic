@@ -126,6 +126,8 @@
   - Workflow 1: upload imagery to the locked waiting bucket (`drone-imagery-waiting`)
   - Workflow 2: run server-side waiting-bucket metadata ingest from TUI
   - Workflow 3: create/inspect/cancel processing jobs via API (`POST /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel`)
+  - Workflow 4: Redis Command Console for direct `rstool_sdk.discover` and `rstool_sdk.command` traffic to connected RSNode workers.
+    - Send commands through `rslogic:control:commands`, inspect replies from `rslogic:control:results:reply:<command_id>`, and view command history in the same page.
   - Upload workflow uses a multi-page flow: setup page (selection/group), upload page (plan + live progress), and result page (final status)
   - Job workflow is SDK-oriented and mirrors `example.ipynb`: `newScene -> set(...) -> addFolder -> align/calculateNormalModel/calculateOrthoProjection -> save`
   - Job workflow inputs include `group_name`, optional `drone_type`/`max_images`, plus SDK controls (`sdk_imagery_folder`, detector/accuracy settings, per-stage toggles, timeout)

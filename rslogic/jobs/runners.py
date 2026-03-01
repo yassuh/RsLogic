@@ -252,6 +252,37 @@ class RsToolsSdkRunner(RsToolsRunner):
         task_result["params"] = list(params or [])
         return task_result
 
+    @staticmethod
+    def _coerce_str(value: Any, *, default: str) -> str:
+        if value is None:
+            return default
+        rendered = str(value).strip()
+        return rendered or default
+
+    @staticmethod
+    def _coerce_int(value: Any, *, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= 0 else default
+
+    @staticmethod
+    def _coerce_int_list(raw: Any, *, default: Sequence[str]) -> Sequence[str]:
+        if raw is None:
+            return default
+        if isinstance(raw, str):
+            parts = [part.strip() for part in raw.split(",") if part.strip()]
+            return [part for part in parts]
+        if isinstance(raw, Sequence):
+            out: list[str] = []
+            for item in raw:
+                text = str(item).strip()
+                if text:
+                    out.append(text)
+            return out
+        return default
+
     def run(
         self,
         working_directory: Path,
