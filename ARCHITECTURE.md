@@ -230,6 +230,11 @@
     - RS API: `http://192.168.193.59:8000`
     - `app_token=123`
     - `auth_token=85DBDE55-3FFF-4228-9F06-CBED4003BBB8`
+  - S3 staging options:
+    - `--s3-bucket` and `--s3-prefix` define source objects.
+    - `--s3-region` defaults from `RSLOGIC_S3_REGION` / `S3_REGION` (fallback `us-east-1`).
+    - `--s3-endpoint-url` defaults from `RSLOGIC_S3_ENDPOINT_URL` / `S3_ENDPOINT_URL`.
+    - Credentials are read from common env aliases (`AWS_ACCESS_KEY_ID`/`AWS_ACCESS_KEY`/`S3_ACCESS_KEY`, `AWS_SECRET_*`, `S3_SECRET_KEY`) when set.
   - Command flow:
     - `rstool_sdk.discover node` / `rstool_sdk.discover project` (unless `--skip-discover`)
     - `rstool_sdk.command` for:
@@ -245,6 +250,7 @@
       - `project.save("test_auto.rspj")`
   - Imagery can be staged from S3 (`--s3-bucket`, `--s3-prefix`, `--s3-max-files`) into a local folder (`--imagery-dir`, default `./recon_staging/Imagery`), or with `--no-pull-s3` to reuse existing local imagery.
   - The runner blocks on each command until a final result status (`ok`/`error`) is published, then exits with non-zero status on timeout or missing session.
+  - `--stage-only` short-circuits to only download/stage images and skip SDK command execution.
 - `scripts/sync_rslogic_repo.ps1` performs explicit branch synchronization:
   - fetches `origin/main` and prints ahead/behind comparison.
   - resolves behind-only state via fast-forward.

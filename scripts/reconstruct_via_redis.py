@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+from dotenv import load_dotenv
 import signal
 import threading
 import time
@@ -26,6 +27,8 @@ from rslogic.jobs.command_channel import (
 )
 
 LOGGER = logging.getLogger("rslogic.reconstruction.redis-runner")
+
+load_dotenv(override=False)
 
 
 def _build_logger(verbose: bool) -> None:
@@ -90,6 +93,16 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Skip S3 image download step and keep local folder as-is.",
     )
     parser.add_argument(
+        "--s3-region",
+        default=(os.getenv("RSLOGIC_S3_REGION") or os.getenv("S3_REGION") or "us-east-1").strip(),
+        help="S3 region used for listing/downloading objects.",
+    )
+    parser.add_argument(
+        "--s3-endpoint-url",
+        default=(os.getenv("RSLOGIC_S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT_URL") or "").strip(),
+        help="S3 endpoint URL for object storage provider.",
+    )
+    parser.add_argument(
         "--imagery-dir",
         default="",
         help="Directory that contains imagery for add_folder. Defaults to <cwd>/recon_staging/Imagery.",
@@ -104,6 +117,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--skip-discover",
         action="store_true",
         help="Skip discover checks and trust command compatibility.",
+    )
+    parser.add_argument(
+        "--stage-only",
+        action="store_true",
+        help="Only stage image files from S3 and then exit without sending SDK commands.",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -121,6 +139,8 @@ class ReconConfig:
     auth_token: str
     s3_bucket: str
     s3_prefix: str
+    s3_region: str
+    s3_endpoint_url: str
     s3_download_dir: str
     s3_max_files: int
     s3_extensions: Sequence[str]
@@ -129,6 +149,7 @@ class ReconConfig:
     imagery_subdir: str
     save_path: str
     skip_discover: bool
+    stage_only: bool
 
 
 class RedisControlClient:
@@ -171,6 +192,9 @@ def _download_images_from_s3(
     download_dir: Path,
     max_files: int,
     allowed_extensions: Sequence[str],
+    *,
+    region: str,
+    endpoint_url: str,
 ) -> List[Path]:
     if not bucket:
         raise RuntimeError("Cannot download from S3: --s3-bucket is required.")
@@ -185,7 +209,26 @@ def _download_images_from_s3(
         max_pool_connections=max(4, os.cpu_count() or 4),
         retries={"max_attempts": 10, "mode": "standard"},
     )
-    s3 = boto3.client("s3", config=conf)
+    kwargs: Dict[str, Any] = {"config": conf}
+    if region:
+        kwargs["region_name"] = region
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    aws_access_key_id = (
+        os.getenv("AWS_ACCESS_KEY_ID")
+        or os.getenv("AWS_ACCESS_KEY")
+        or os.getenv("S3_ACCESS_KEY")
+    )
+    aws_secret_access_key = (
+        os.getenv("AWS_SECRET_ACCESS_KEY")
+        or os.getenv("AWS_SECRET_KEY")
+        or os.getenv("AWS_SECRET_ACCESS_KEY_ID")
+        or os.getenv("S3_SECRET_KEY")
+    )
+    if aws_access_key_id and aws_secret_access_key:
+        kwargs["aws_access_key_id"] = aws_access_key_id
+        kwargs["aws_secret_access_key"] = aws_secret_access_key
+    s3 = boto3.client("s3", **kwargs)
     paginator = s3.get_paginator("list_objects_v2")
 
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -363,6 +406,43 @@ def _emit_reconstruction(cfg: ReconConfig) -> int:
 
     # Keep reply queue unique per run so command completions are deterministic.
     reply_queue = f"rslogic:control:recon:{uuid.uuid4()}"
+
+    if cfg.stage_only:
+        if cfg.pull_s3:
+            LOGGER.info(
+                "Stage-only mode: downloading imagery from s3://%s/%s",
+                cfg.s3_bucket,
+                cfg.s3_prefix,
+            )
+            downloaded = _download_images_from_s3(
+                bucket=cfg.s3_bucket,
+                prefix=cfg.s3_prefix,
+                download_dir=imagery_dir,
+                max_files=cfg.s3_max_files,
+                allowed_extensions=cfg.s3_extensions,
+                region=cfg.s3_region,
+                endpoint_url=cfg.s3_endpoint_url,
+            )
+            if not downloaded:
+                LOGGER.warning("Stage-only: no image files were downloaded from s3://%s/%s", cfg.s3_bucket, cfg.s3_prefix)
+            else:
+                LOGGER.info(
+                    "Stage-only: downloaded %s image files to %s",
+                    len(downloaded),
+                    imagery_dir,
+                )
+        else:
+            LOGGER.info("Stage-only mode: skipping S3 download, using existing imagery dir: %s", imagery_dir)
+
+        if not imagery_dir.exists():
+            if cfg.pull_s3:
+                raise RuntimeError(f"Imagery directory does not exist: {imagery_dir}")
+            imagery_dir.mkdir(parents=True, exist_ok=True)
+            LOGGER.warning("Stage-only mode created imagery directory: %s", imagery_dir)
+
+        LOGGER.info("Stage-only completed. Imagery directory: %s", imagery_dir)
+        return 0
+
     redis_client = RedisControlClient(cfg.redis_url)
 
     try:
@@ -374,6 +454,8 @@ def _emit_reconstruction(cfg: ReconConfig) -> int:
                 download_dir=imagery_dir,
                 max_files=cfg.s3_max_files,
                 allowed_extensions=cfg.s3_extensions,
+                region=cfg.s3_region,
+                endpoint_url=cfg.s3_endpoint_url,
             )
             if not downloaded:
                 LOGGER.warning("No image files were downloaded from s3://%s/%s", cfg.s3_bucket, cfg.s3_prefix)
@@ -523,6 +605,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         auth_token=(args.auth_token or "").strip(),
         s3_bucket=(args.s3_bucket or "").strip(),
         s3_prefix=(args.s3_prefix or "").strip(),
+        s3_region=(args.s3_region or "us-east-1").strip(),
+        s3_endpoint_url=(args.s3_endpoint_url or "").strip(),
         s3_download_dir=(args.s3_download_dir or "").strip(),
         s3_max_files=max(0, int(args.s3_max_files)),
         s3_extensions=_safe_exts(args.s3_extensions),
@@ -531,6 +615,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         imagery_subdir=(args.imagery_subdir or "Imagery").strip(),
         save_path=(args.save_path or "test_auto.rspj").strip(),
         skip_discover=bool(args.skip_discover),
+        stage_only=bool(args.stage_only),
     )
     return _emit_reconstruction(cfg)
 

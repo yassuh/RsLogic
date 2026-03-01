@@ -98,7 +98,14 @@ def test_emit_reconstruction_without_discovery_sends_command_sequence(monkeypatc
             data=data,
         )
 
-    def _fake_download_images_from_s3(bucket, prefix, download_dir, max_files, allowed_extensions):
+    def _fake_download_images_from_s3(
+        bucket,
+        prefix,
+        download_dir,
+        max_files,
+        allowed_extensions,
+        **_kwargs,
+    ):
         del bucket
         del prefix
         del max_files
@@ -124,6 +131,8 @@ def test_emit_reconstruction_without_discovery_sends_command_sequence(monkeypatc
         s3_bucket="bucket",
         s3_prefix="prefix",
         s3_download_dir=str(tmp_path / "download"),
+        s3_region="us-east-1",
+        s3_endpoint_url="",
         s3_max_files=1,
         s3_extensions=("jpg", "png"),
         pull_s3=True,
@@ -131,6 +140,7 @@ def test_emit_reconstruction_without_discovery_sends_command_sequence(monkeypatc
         imagery_subdir="Imagery",
         save_path="test_auto.rspj",
         skip_discover=True,
+        stage_only=False,
     )
 
     result = recon._emit_reconstruction(cfg)
@@ -144,6 +154,69 @@ def test_emit_reconstruction_without_discovery_sends_command_sequence(monkeypatc
     assert "new_scene" in methods
     assert any(payload["method"] == "add_folder" for _, payload in commands)
     assert any(payload["method"] == "save" for _, payload in commands)
+
+
+def test_emit_reconstruction_stage_only_downloads_and_exits(monkeypatch, tmp_path):
+    calls = {"download": 0, "command": 0}
+
+    def _fake_download_images(
+        bucket,
+        prefix,
+        download_dir,
+        max_files,
+        allowed_extensions,
+        **_kwargs,
+    ):
+        del bucket, prefix, max_files, allowed_extensions
+        calls["download"] += 1
+        imagery = download_dir / "image.jpg"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        imagery.write_text("fake-bytes", encoding="utf-8")
+        return [imagery]
+
+    def _fake_send_command(*_args, **_kwargs):
+        calls["command"] += 1
+        return ProcessingCommandResult(
+            command_id="x",
+            command_type=recon.COMMAND_TYPE_RSTOOL_COMMAND,
+            status="ok",
+            data={"result": "session-id"},
+        )
+
+    monkeypatch.setattr(recon, "_download_images_from_s3", _fake_download_images)
+    monkeypatch.setattr(recon, "_send_command", _fake_send_command)
+    monkeypatch.setattr(recon, "RedisControlClient", _FakeRedisControl)
+
+    cfg = recon.ReconConfig(
+        redis_url="redis://localhost:6379/0",
+        command_queue="rslogic:control:commands",
+        timeout=1,
+        request_timeout=2,
+        base_url="http://node-host:8000",
+        client_id="cid",
+        app_token="app",
+        auth_token="auth",
+        s3_bucket="bucket",
+        s3_prefix="prefix",
+        s3_download_dir=str(tmp_path / "download"),
+        s3_region="us-east-1",
+        s3_endpoint_url="",
+        s3_max_files=1,
+        s3_extensions=("jpg",),
+        pull_s3=True,
+        imagery_dir="",
+        imagery_subdir="Imagery",
+        save_path="test_auto.rspj",
+        skip_discover=False,
+        stage_only=True,
+    )
+
+    result = recon._emit_reconstruction(cfg)
+
+    assert result == 0
+    assert calls["download"] == 1
+    assert calls["command"] == 0
+    assert (tmp_path / "download" / "Imagery" / "image.jpg").exists()
 
 
 def test_call_discover_forwards_target(monkeypatch):
@@ -187,6 +260,8 @@ def test_call_discover_forwards_target(monkeypatch):
         s3_bucket="",
         s3_prefix="",
         s3_download_dir="",
+        s3_region="us-east-1",
+        s3_endpoint_url="",
         s3_max_files=0,
         s3_extensions=(),
         pull_s3=False,
@@ -194,6 +269,7 @@ def test_call_discover_forwards_target(monkeypatch):
         imagery_subdir="Imagery",
         save_path="test_auto.rspj",
         skip_discover=False,
+        stage_only=False,
     )
 
     monkeypatch.setattr(recon, "RedisControlClient", lambda _: redis)
@@ -379,6 +455,8 @@ def test_emit_reconstruction_requires_session(monkeypatch, tmp_path):
         s3_bucket="bucket",
         s3_prefix="prefix",
         s3_download_dir=str(tmp_path / "download"),
+        s3_region="us-east-1",
+        s3_endpoint_url="",
         s3_max_files=0,
         s3_extensions=("jpg",),
         pull_s3=False,
@@ -386,6 +464,7 @@ def test_emit_reconstruction_requires_session(monkeypatch, tmp_path):
         imagery_subdir="Imagery",
         save_path="test_auto.rspj",
         skip_discover=True,
+        stage_only=False,
     )
 
     result = recon._emit_reconstruction(cfg)
@@ -431,6 +510,8 @@ def test_emit_reconstruction_skips_discovery(monkeypatch, tmp_path):
         s3_bucket="bucket",
         s3_prefix="prefix",
         s3_download_dir=str(tmp_path / "download"),
+        s3_region="us-east-1",
+        s3_endpoint_url="",
         s3_max_files=0,
         s3_extensions=("jpg",),
         pull_s3=False,
@@ -438,6 +519,7 @@ def test_emit_reconstruction_skips_discovery(monkeypatch, tmp_path):
         imagery_subdir="Imagery",
         save_path="test_auto.rspj",
         skip_discover=True,
+        stage_only=False,
     )
     monkeypatch.setattr(recon, "RedisControlClient", _FakeRedisControl)
     monkeypatch.setattr(recon, "_send_command", _fake_send_command)
@@ -480,7 +562,14 @@ def test_emit_reconstruction_downloads_images_with_stale_cleanup_and_removes_old
             data=data,
         )
 
-    def _fake_download_images(bucket, prefix, download_dir, max_files, allowed_extensions):
+    def _fake_download_images(
+        bucket,
+        prefix,
+        download_dir,
+        max_files,
+        allowed_extensions,
+        **_kwargs,
+    ):
         del bucket
         del prefix
         del max_files
@@ -501,6 +590,8 @@ def test_emit_reconstruction_downloads_images_with_stale_cleanup_and_removes_old
         s3_bucket="bucket",
         s3_prefix="prefix",
         s3_download_dir=str(tmp_path / "stage"),
+        s3_region="us-east-1",
+        s3_endpoint_url="",
         s3_max_files=0,
         s3_extensions=("jpg",),
         pull_s3=True,
@@ -508,6 +599,7 @@ def test_emit_reconstruction_downloads_images_with_stale_cleanup_and_removes_old
         imagery_subdir="Imagery",
         save_path="test_auto.rspj",
         skip_discover=True,
+        stage_only=False,
     )
     monkeypatch.setattr(recon, "RedisControlClient", _FakeRedisControl)
     monkeypatch.setattr(recon, "_send_command", _fake_send_command)
@@ -541,7 +633,7 @@ def test_download_images_from_s3_respects_extensions_and_limit(monkeypatch, tmp_
 
     fake_boto3 = types.ModuleType("boto3")
 
-    def _client(service, config=None):
+    def _client(service, config=None, **_kwargs):
         del service
         del config
         return _FakeS3()
@@ -569,6 +661,8 @@ def test_download_images_from_s3_respects_extensions_and_limit(monkeypatch, tmp_
         download_dir=tmp_path,
         max_files=1,
         allowed_extensions=("jpg", "tif", "png"),
+        region="us-east-1",
+        endpoint_url="",
     )
 
     assert len(result) == 1
