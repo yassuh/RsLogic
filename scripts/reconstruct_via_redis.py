@@ -73,7 +73,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     parser.add_argument("--s3-bucket", default="")
     parser.add_argument("--s3-prefix", default="")
-    parser.add_argument("--s3-download-dir", default="")
+    parser.add_argument(
+        "--s3-download-dir",
+        default="",
+        help="Base directory used for S3 image staging when pulling. Defaults to <imagery-dir> or <cwd>/recon_staging.",
+    )
     parser.add_argument("--s3-max-files", type=int, default=0)
     parser.add_argument(
         "--s3-extensions",
@@ -338,8 +342,24 @@ def _emit_reconstruction(cfg: ReconConfig) -> int:
     signal.signal(signal.SIGINT, _handle_sigterm)
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
-    imagery_root = Path(cfg.imagery_dir) if cfg.imagery_dir else Path.cwd() / "recon_staging"
+    if cfg.imagery_dir:
+        imagery_root = Path(cfg.imagery_dir)
+    elif cfg.s3_download_dir:
+        imagery_root = Path(cfg.s3_download_dir)
+    else:
+        imagery_root = Path.cwd() / "recon_staging"
     imagery_dir = imagery_root / cfg.imagery_subdir
+    imagery_dir.mkdir(parents=True, exist_ok=True)
+
+    if cfg.pull_s3 and cfg.s3_download_dir:
+        # Keep S3 staging deterministic by re-using an explicit staging root only for this run.
+        for item in imagery_dir.iterdir():
+            if item.is_dir():
+                continue
+            try:
+                item.unlink()
+            except OSError:
+                LOGGER.warning("Could not remove stale staged file before download: %s", item)
 
     # Keep reply queue unique per run so command completions are deterministic.
     reply_queue = f"rslogic:control:recon:{uuid.uuid4()}"
