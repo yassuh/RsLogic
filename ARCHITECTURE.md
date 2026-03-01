@@ -196,6 +196,7 @@
   - Performs `git fetch/checkout` and explicit ahead/behind reconciliation against `main` during startup and periodic checks.
   - Default reconciliation policy is `hard-reset` (`--git-sync-strategy` supports `rebase` and `ff-only` as alternatives).
   - Creates or reuses `.venv`, installs `rslogic` in editable mode, and writes `.env.rsnode-worker`.
+  - Enforces single-instance behavior with an OS file lock and proactively cleans orphaned `RSNode.exe` + `rslogic.client.rsnode_client` processes from prior runs before starting tracked services.
   - Before launching the client, probes the virtual environment for a minimum runtime module set (`dotenv`, `sqlalchemy`, `redis`, `requests`, `httpx`, etc.) to avoid stale/partial installs, then reinstall/re-writes the head marker when modules are missing.
   - If existing checkout is missing or invalid, it is backed up (or replaced when bootstrap is needed) and then re-cloned automatically.
   - On startup, dependency install is skipped when the current git commit was already installed and no dependency refresh is needed.

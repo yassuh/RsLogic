@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shlex
@@ -100,6 +101,133 @@ REQUIRED_CLIENT_MODULES = (
     "geoalchemy2",
     "alembic",
 )
+
+
+def _normalize_command_line(value: Optional[Any]) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value).strip()
+
+
+def _iter_process_snapshots() -> List[Tuple[int, str, str]]:
+    """Best-effort process snapshot for process cleanup."""
+    snapshots: List[Tuple[int, str, str]] = []
+    if os.name != "nt":
+        return snapshots
+
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId, Name, CommandLine | "
+        "ConvertTo-Csv -NoTypeInformation",
+    ]
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception:
+        return snapshots
+
+    if proc.returncode != 0:
+        return snapshots
+
+    output = proc.stdout or ""
+    if not output.strip():
+        return snapshots
+
+    try:
+        reader = csv.DictReader(output.splitlines())
+        for row in reader:
+            raw_pid = _normalize_command_line(row.get("ProcessId"))
+            raw_name = _normalize_command_line(row.get("Name"))
+            raw_cmd = _normalize_command_line(row.get("CommandLine"))
+            try:
+                pid = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            snapshots.append((pid, raw_name.lower(), raw_cmd.lower()))
+    except Exception:
+        return []
+
+    return snapshots
+
+
+def _find_matching_orphan_processes(
+    node_executable: Path,
+    current_pid: int,
+) -> Tuple[List[int], List[int]]:
+    node_pids: List[int] = []
+    client_pids: List[int] = []
+    node_path_haystack = str(node_executable).lower()
+    client_module_snippet = "rslogic.client.rsnode_client"
+
+    for pid, name, cmd in _iter_process_snapshots():
+        if pid == current_pid:
+            continue
+        if not name:
+            continue
+        if pid == 0:
+            continue
+        if "python" in name and (client_module_snippet in cmd or cmd.endswith(" rslogic.client.rsnode_client")):
+            client_pids.append(pid)
+            continue
+        if name in {"python.exe", "pythonw.exe", "py.exe", "pyw.exe"} and (
+            "rslogic/client/rsnode_client.py" in cmd or "rslogic.client.rsnode_client" in cmd
+        ):
+            client_pids.append(pid)
+            continue
+        if name == "rsnode.exe" and node_path_haystack and node_path_haystack in cmd:
+            node_pids.append(pid)
+            continue
+        if name == "rsnode.exe" and "-authtoken" in cmd:
+            node_pids.append(pid)
+            continue
+
+    # Keep only pids that still exist as a basic defensive dedupe pass.
+    node_pids = sorted({pid for pid in node_pids if pid > 0 and pid != current_pid})
+    client_pids = sorted({pid for pid in client_pids if pid > 0 and pid != current_pid})
+    return node_pids, client_pids
+
+
+def _terminate_windows_processes(pids: Sequence[int], reason: str, logger: logging.Logger) -> None:
+    if not pids:
+        return
+
+    for pid in dict.fromkeys(int(pid) for pid in pids):
+        if pid <= 0 or pid == os.getpid():
+            continue
+        logger.warning("Terminating stale %s process pid=%s", reason, pid)
+        proc = subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if proc.returncode != 0:
+            logger.debug("taskkill failed for pid=%s reason=%s code=%s stderr=%s", pid, reason, proc.returncode, (proc.stderr or "").strip())
+
+
+def cleanup_stale_processes(cfg: RunConfig, logger: logging.Logger) -> None:
+    node_pids, client_pids = _find_matching_orphan_processes(cfg.node_executable, os.getpid())
+    if node_pids:
+        logger.warning("Found existing RSNode.exe process(es) before startup: %s", node_pids)
+        _terminate_windows_processes(node_pids, "RSNode.exe", logger)
+        time.sleep(1.0)
+    if client_pids:
+        logger.warning("Found existing rslogic client process(es) before startup: %s", client_pids)
+        _terminate_windows_processes(client_pids, "rslogic client", logger)
+        time.sleep(1.0)
 
 
 def _safe_parse_iso_timestamp(value: str) -> Optional[datetime]:
@@ -1525,6 +1653,7 @@ def main() -> int:
 
             logger.info("RsLogic RSNode client orchestrator bootstrapping")
             logger.info("Repo path: %s", cfg.repo_root)
+            cleanup_stale_processes(cfg, logger)
             logger.info("Repository HEAD before bootstrap/update: %s", git_head(cfg.repo_root))
             redis_connection = build_redis_url(cfg.redis_url, cfg.redis_host, cfg.redis_port, cfg.redis_db, cfg.redis_password)
             redis_preflight_ok = _check_redis_connectivity(redis_connection, logger)
@@ -1633,6 +1762,7 @@ def main() -> int:
                 if node_proc is None or node_proc.proc.poll() is not None:
                     if node_proc is not None and node_proc.proc.poll() is not None:
                         node_stop_reason = f"exit-code={node_proc.proc.returncode}"
+                    cleanup_stale_processes(cfg, logger)
                     node_proc, node_stop_reason = run_rsnode(cfg, logger, log_dir)
                     if node_proc:
                         node_stop_reason = "running"
@@ -1654,6 +1784,7 @@ def main() -> int:
                             client_bootstrap_state["bootstrap_error"] = f"exit-tail:{exit_tail}"
                     client_bootstrap_started_at = None
                     if node_proc and node_proc.proc.poll() is None:
+                        cleanup_stale_processes(cfg, logger)
                         client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
                         client_bootstrap_state["redis"] = "booting"
