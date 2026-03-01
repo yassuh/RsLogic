@@ -164,14 +164,26 @@ def _iter_process_snapshots() -> List[Tuple[int, str, str]]:
 def _find_matching_orphan_processes(
     node_executable: Path,
     current_pid: int,
+    protected_pids: Optional[Sequence[int]] = None,
 ) -> Tuple[List[int], List[int]]:
     node_pids: List[int] = []
     client_pids: List[int] = []
     node_path_haystack = str(node_executable).lower()
     client_module_snippet = "rslogic.client.rsnode_client"
+    protected = {int(current_pid)}
+    if protected_pids:
+        for pid in protected_pids:
+            try:
+                protected_pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if protected_pid > 0:
+                protected.add(protected_pid)
 
     for pid, name, cmd in _iter_process_snapshots():
         if pid == current_pid:
+            continue
+        if pid in protected:
             continue
         if not name:
             continue
@@ -218,8 +230,16 @@ def _terminate_windows_processes(pids: Sequence[int], reason: str, logger: loggi
             logger.debug("taskkill failed for pid=%s reason=%s code=%s stderr=%s", pid, reason, proc.returncode, (proc.stderr or "").strip())
 
 
-def cleanup_stale_processes(cfg: RunConfig, logger: logging.Logger) -> None:
-    node_pids, client_pids = _find_matching_orphan_processes(cfg.node_executable, os.getpid())
+def cleanup_stale_processes(
+    cfg: RunConfig,
+    logger: logging.Logger,
+    protected_pids: Optional[Sequence[int]] = None,
+) -> None:
+    node_pids, client_pids = _find_matching_orphan_processes(
+        cfg.node_executable,
+        os.getpid(),
+        protected_pids=protected_pids,
+    )
     if node_pids:
         logger.warning("Found existing RSNode.exe process(es) before startup: %s", node_pids)
         _terminate_windows_processes(node_pids, "RSNode.exe", logger)
@@ -1603,6 +1623,14 @@ def main() -> int:
         str(client_stderr_log): _log_file_position(client_stderr_log),
     }
 
+    def _protected_pids() -> List[int]:
+        protected: List[int] = [os.getpid()]
+        if node_proc and node_proc.proc and node_proc.proc.poll() is None:
+            protected.append(node_proc.proc.pid)
+        if client_proc and client_proc.proc and client_proc.proc.poll() is None:
+            protected.append(client_proc.proc.pid)
+        return protected
+
     def _poll_client_bootstrap_state() -> None:
         nonlocal client_presence_key, client_reported_redis_url
         for path_key, offset in list(client_log_offsets.items()):
@@ -1653,7 +1681,7 @@ def main() -> int:
 
             logger.info("RsLogic RSNode client orchestrator bootstrapping")
             logger.info("Repo path: %s", cfg.repo_root)
-            cleanup_stale_processes(cfg, logger)
+            cleanup_stale_processes(cfg, logger, protected_pids=_protected_pids())
             logger.info("Repository HEAD before bootstrap/update: %s", git_head(cfg.repo_root))
             redis_connection = build_redis_url(cfg.redis_url, cfg.redis_host, cfg.redis_port, cfg.redis_db, cfg.redis_password)
             redis_preflight_ok = _check_redis_connectivity(redis_connection, logger)
@@ -1762,10 +1790,10 @@ def main() -> int:
                 if node_proc is None or node_proc.proc.poll() is not None:
                     if node_proc is not None and node_proc.proc.poll() is not None:
                         node_stop_reason = f"exit-code={node_proc.proc.returncode}"
-                    cleanup_stale_processes(cfg, logger)
+                    cleanup_stale_processes(cfg, logger, protected_pids=_protected_pids())
                     node_proc, node_stop_reason = run_rsnode(cfg, logger, log_dir)
                     if node_proc:
-                        node_stop_reason = "running"
+                        node_stop_reason = "not-started"
                         if not wait_for_node_health(cfg, logger):
                             logger.warning("RSNode failed health check after startup; restarting.")
                             node_stop_reason = "health-check-failed"
@@ -1784,7 +1812,7 @@ def main() -> int:
                             client_bootstrap_state["bootstrap_error"] = f"exit-tail:{exit_tail}"
                     client_bootstrap_started_at = None
                     if node_proc and node_proc.proc.poll() is None:
-                        cleanup_stale_processes(cfg, logger)
+                        cleanup_stale_processes(cfg, logger, protected_pids=_protected_pids())
                         client_log_offsets[str(client_stdout_log)] = _log_file_position(client_stdout_log)
                         client_log_offsets[str(client_stderr_log)] = _log_file_position(client_stderr_log)
                         client_bootstrap_state["redis"] = "booting"
@@ -1795,6 +1823,8 @@ def main() -> int:
                         client_reported_redis_url = None
                         client_bootstrap_started_at = time.time()
                         client_proc, client_stop_reason = run_rslogic_client(cfg, env_values, logger, log_dir)
+                        if client_proc:
+                            client_stop_reason = "not-started"
                         _poll_client_bootstrap_state()
                         if not client_proc and "exit-code" in client_stop_reason:
                             logger.warning("rslogic-client failed: %s", client_stop_reason)
@@ -1903,7 +1933,13 @@ def main() -> int:
                         client_bootstrap_state["heartbeat"] = "stopped"
                         client_bootstrap_state["redis"] = "disconnected"
                     current_head = git_head(cfg.repo_root)
-                    node_up = str(node_proc.proc.pid) if node_proc and node_proc.proc.poll() is None else f"stopped/{node_stop_reason}"
+                    if node_proc and node_proc.proc.poll() is None:
+                        node_up = str(node_proc.proc.pid)
+                    else:
+                        node_stop_reason_display = node_stop_reason
+                        if node_stop_reason_display == "running":
+                            node_stop_reason_display = "not-started"
+                        node_up = f"stopped/{node_stop_reason_display}"
                     client_up = (
                         str(client_proc.proc.pid)
                         if client_proc and client_proc.proc.poll() is None
