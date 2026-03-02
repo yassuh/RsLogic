@@ -17,7 +17,8 @@ RsLogic execution architecture
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from `RSLOGIC_ROOT`/cwd and inserts it into `PYTHONPATH` before importing package modules.
-  - keeps startup resilient when editable import resolution is fragile on Windows.
+  - keeps startup resilient when editable import resolution is fragile on Windows by falling back to executing `rslogic/client/control_tui.py` from source when package imports fail.
+- bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`config` and optionally `textual`) rather than requiring `import rslogic`, so the TUI can start even when package resolution is partially broken in a local environment.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.

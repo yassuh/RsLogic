@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import runpy
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -55,19 +56,28 @@ def _ensure_import_path() -> Path:
     return selected
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def _run_control_tui_from_source(argv: Sequence[str] | None = None) -> None:
     repo_root = _ensure_import_path()
+    control_tui = repo_root / "rslogic" / "client" / "control_tui.py"
+    if not control_tui.exists():
+        raise RuntimeError("could not locate rslogic/client/control_tui.py")
+
+    sys.argv = [str(control_tui), *(argv or sys.argv[1:])]
+    runpy.run_path(str(control_tui), run_name="__main__")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    _ensure_import_path()
     try:
         from rslogic.client import control_tui
     except ModuleNotFoundError:
-        control_tui = Path(__file__).resolve().parent / "rslogic" / "client" / "control_tui.py"
-        if not control_tui.exists():
-            control_tui = repo_root / "rslogic" / "client" / "control_tui.py"
-        if not control_tui.exists():
-            raise
-        import runpy
-
-        runpy.run_path(str(control_tui), run_name="__main__")
+        _run_control_tui_from_source(argv)
+        return
+    except Exception:
+        # If importing the packaged module fails for any environment-specific reason
+        # (editable install path, packaging metadata, transient import errors), execute
+        # from source as a resilient fallback.
+        _run_control_tui_from_source(argv)
         return
 
     if argv is None:

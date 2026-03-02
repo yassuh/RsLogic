@@ -57,7 +57,7 @@ def _with_project_pythonpath(env: dict[str, str] | None = None) -> dict[str, str
 
 
 def _python_can_import(py: Path, *, require_textual: bool) -> bool:
-    module_expr = "import rslogic, config"
+    module_expr = "import config"
     if require_textual:
         module_expr += "; import textual"
     command = [str(py), "-c", module_expr]
