@@ -705,7 +705,7 @@ class ClientProcessManager:
 class ClientControlTUI(App):
     """Small supervisory TUI for rslogic client + rsnode + heartbeat."""
 
-        CSS = """
+    CSS = """
     Screen {
         layout: vertical;
     }
