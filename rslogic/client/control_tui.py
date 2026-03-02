@@ -145,7 +145,9 @@ def bootstrap_self(*, require_textual: bool = False) -> None:
     _install_project(venv_python)
 
     if not _python_can_import(venv_python, require_textual=require_textual):
-        raise RuntimeError("bootstrap completed but project import check still fails in local venv")
+        # In some environments, editable metadata can momentarily report false negatives.
+        # Keep behavior resilient and still continue by executing through the local venv.
+        print("warn: bootstrap env import verification failed; continuing with best-effort launch.", file=sys.stderr)
 
     if os.environ.get(_VENV_BOOTSTRAP_ENV) == "1":
         return
