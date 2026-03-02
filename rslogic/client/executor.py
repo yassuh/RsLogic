@@ -165,7 +165,7 @@ class StepExecutor:
             if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working"}:
                 staging = self._staging_dir
                 if staging is None:
-                    staging = self.file_executor.staging_root / str(job_id)
+                    staging = self.file_executor.staging_root
                 if not staging.exists():
                     raise RuntimeError(f"staging directory does not exist: {staging}")
                 working_dir = params.get("working_dir")
@@ -178,7 +178,7 @@ class StepExecutor:
             if action in {"file_move_to_session_imagery", "file_move_staging_to_session_imagery", "file_move_to_session_folder"}:
                 staging = self._staging_dir
                 if staging is None:
-                    staging = self.file_executor.staging_root / str(job_id)
+                    staging = self.file_executor.staging_root
                 if not staging.exists():
                     raise RuntimeError(f"staging directory does not exist: {staging}")
 
