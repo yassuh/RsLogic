@@ -22,7 +22,7 @@ dependencies = [
   "textual>=0.89,<1.0",
   "Pillow>=10.3",
   "typer>=0.12",
-  "uvicorn[standard]>=0.30",
+  "uvicorn>=0.30",
   "httpx>=0.27",
   "requests>=2.32",
   "ftputil>=5.1",
@@ -35,6 +35,7 @@ rslogic-api = "rslogic.api.server:main"
 rslogic-migrate = "rslogic.db.migrate:main"
 rslogic-worker = "rslogic.jobs.worker:main"
 rslogic-client = "rslogic.client.rsnode_client:main"
+rslogic-clientctl = "rslogic.client.control_tui:main"
 rslogic-tui = "rslogic.tui.app:main"
 rslogic-ingest = "rslogic.ingest:main"
 

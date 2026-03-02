@@ -8,12 +8,16 @@ RsLogic execution architecture
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
   - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
+- `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
+  - start/stop/restart/status management for `rslogic.client.rsnode_client`.
+  - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
+  - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
+  - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
+  - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
-- `installer.bat` boots a local uv + python3.14t virtual environment, installs this repo in editable mode, and lays down `client.env` from `client.env.template` plus a `start-rslogic-client.bat` launcher.
-- `start-rslogic-client.bat` is now a simple interpreter launcher that runs `rslogic.client.rsnode_client` via `%VENV%\Scripts\python.exe` with explicit `PYTHONPATH`/logging env, so it does not rely on missing `activate` scripts.
-- `stop-rslogic-client.bat` was added to cleanly terminate client/rSNode processes. `start-rslogic-client.bat` now checks for an already-running `rslogic.client.rsnode_client` process and refuses to start a duplicate instance.
+- `installer.bat` now boots a local uv + python3.14t virtual environment, installs this repo in editable mode, and points operators to `rslogic-clientctl` for process control.
 - Job contract artifacts:
   - `job-contract.schema.json` documents the JSON payload expected by `POST /jobs` for `auto_assign`, routing, group fields, and step objects.
   - `job-action-map.json` documents executable file and sdk actions and how `rslogic.client.executor.StepExecutor` dispatches them.
@@ -119,6 +123,7 @@ Auto-assignment:
   - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
 - Label-db models are loaded from `rslogic/internal_tools/label-db/studio-db/models.py` by default.
 - Heartbeats are written to redis key `rslogic:clients:{client_id}:heartbeat`.
+- `rslogic-clientctl` is the preferred control entrypoint on remote clients and replaces direct `start-rslogic-client.bat`/`stop-rslogic-client.bat` usage.
 - Client shutdown path:
   - signal handlers in `ClientRuntime`,
   - best-effort stop for tracked rsnode process,
