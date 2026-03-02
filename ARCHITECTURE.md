@@ -132,14 +132,11 @@ Auto-assignment:
 
 ## Operational notes
 
-  - `config.py` labels:
-    - waiting bucket: `LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"`
-    - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
-  - label DB path resolution is deterministic:
-    - validates explicit `RSLOGIC_LABEL_DB_ROOT` when provided as a hint,
-    - otherwise resolves from in-package repo layout (`rslogic/internal_tools/label-db/studio-db`) and parent layouts,
-    - fails fast with a clear error if the model path is not found.
-- Label-db models are loaded from `rslogic/internal_tools/label-db/studio-db/models.py` by default.
+- `config.py` labels:
+  - waiting bucket: `LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"`
+  - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
+  - label DB path is resolved from the installed `studio_db` package and points at that package root.
+- `studio-db` is consumed as an installed dependency (`studio-db>=0.1.0`), so DB models are imported via the `studio_db` module instead of repository file-path probing.
 - Heartbeats are written to redis key `rslogic:clients:{client_id}:heartbeat`.
 - `rslogic-clientctl` is the preferred control entrypoint on remote clients and replaces direct `start-rslogic-client.bat`/`stop-rslogic-client.bat` usage.
 - Client shutdown path:

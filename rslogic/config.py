@@ -116,66 +116,22 @@ def _derive_redis_url() -> str:
 
 
 def _resolve_label_db_root() -> str:
-    def _normalize_root(raw: str) -> Path:
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            candidate = Path(__file__).resolve().parent / candidate
-        return candidate.resolve()
+    try:
+        import studio_db  # noqa: PLC0415
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not import studio_db package. This project expects studio-db to be installed "
+            "via pyproject.toml [tool.uv.sources] and editable installation."
+        ) from exc
 
-    def _resolve_expected_models_dir(base: Path) -> str | None:
-        for rel in [
-            Path("internal_tools") / "label-db" / "studio-db",
-            Path("rslogic") / "internal_tools" / "label-db" / "studio-db",
-        ]:
-            candidate = (base / rel).resolve()
-            if (candidate / "models.py").is_file():
-                return str(candidate)
-        return None
-
-    explicit = _env("RSLOGIC_LABEL_DB_ROOT", "")
-    if explicit:
-        root = _normalize_root(explicit)
-        explicit_dir = root
-        if (explicit_dir / "models.py").is_file():
-            return str(explicit_dir)
-        if explicit_dir.is_dir():
-            resolved = _resolve_expected_models_dir(explicit_dir)
-            if resolved:
-                return resolved
-        # Keep explicit variable as a best-effort hint and continue discovery with repository layout fallbacks.
-
-    package_root = Path(__file__).resolve().parent
-    repo_root = package_root.parent
-    cwd = Path.cwd().resolve()
-    roots: list[Path] = [
-        package_root,
-        repo_root,
-        cwd,
-        cwd.parent,
-    ]
-
-    # Handle nested layouts such as ``<repo>/RsLogic/rslogic``.
-    for base in (cwd, repo_root):
-        for candidate in (base / "rslogic", base.parent / "rslogic"):
-            if candidate.is_dir():
-                roots.append(candidate)
-
-    for base in list(roots):
-        for ancestor in base.parents:
-            if ancestor not in roots and ancestor.exists():
-                roots.append(ancestor)
-
-    for base in roots:
-        if not base.is_dir():
-            continue
-        resolved = _resolve_expected_models_dir(base)
-        if resolved:
-            return resolved
-
-    raise RuntimeError(
-        "Could not locate studio-db models at rslogic/internal_tools/label-db/studio-db/models.py. "
-        f"Set RSLOGIC_LABEL_DB_ROOT to C:\\\\path\\\\to\\\\studio-db or verify the repository layout."
-    )
+    module_file = getattr(studio_db, "__file__", "")
+    module_path = Path(module_file).resolve() if module_file else Path.cwd()
+    root = module_path.parent
+    if not (root / "alembic.ini").is_file() or not (root / "models.py").is_file():
+        raise RuntimeError(
+            "Imported studio_db module is incomplete: expected models.py and alembic.ini in package root."
+        )
+    return str(root)
 
 
 @dataclass(frozen=True)

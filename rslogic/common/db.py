@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,14 +12,21 @@ from sqlalchemy.orm import sessionmaker
 from geoalchemy2.elements import WKTElement
 
 
-def _load_models(models_path: Path):
-    spec = importlib.util.spec_from_file_location("studio_db_models", models_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load label-db models from {models_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault("studio_db_models", module)
-    spec.loader.exec_module(module)
-    return module
+def _load_models():
+    try:
+        import studio_db  # noqa: PLC0415
+    except Exception as exc:
+        raise RuntimeError(
+            "studio-db dependency is not available. Install it with rslogic's "
+            "editable dependency path before starting services."
+        ) from exc
+
+    required = ("RsLogicImageAsset", "ImageGroup", "ImageGroupItem", "RsLogicProcessingJob")
+    missing = [name for name in required if not hasattr(studio_db, name)]
+    if missing:
+        raise RuntimeError(f"studio_db package missing required models: {', '.join(missing)}")
+
+    return studio_db
 
 
 @dataclass
@@ -30,14 +35,10 @@ class LabelDbStore:
     migration_root: str
 
     def __post_init__(self) -> None:
-        migration_root = Path(self.migration_root).resolve()
-        models_path = migration_root / "models.py"
-        if not models_path.is_file():
-            raise RuntimeError(
-                "Label db models.py not found at {path}".format(path=models_path)
-            )
-        self.migration_root = str(models_path.parent)
-        self.models = _load_models(models_path)
+        self.models = _load_models()
+        module_path = getattr(self.models, "__file__", None)
+        if module_path:
+            self.migration_root = str(Path(module_path).resolve().parent)
         self.engine = create_engine(self.database_url, future=True)
         self.session_factory = sessionmaker(bind=self.engine, future=True, expire_on_commit=False)
         self.RsLogicImageAsset = self.models.RsLogicImageAsset
