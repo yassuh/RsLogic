@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 import uvicorn
 
-from config import CONFIG
+from rslogic.config import CONFIG
 
 from rslogic.common.db import LabelDbStore
 from rslogic.common.redis_bus import RedisBus

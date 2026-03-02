@@ -5,10 +5,9 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from config import CONFIG
+from rslogic.config import CONFIG
 
 
 def main() -> None:
     cfg = CONFIG.label_db.alembic_ini
     subprocess.run([sys.executable, "-m", "alembic", "-c", cfg, "upgrade", "head"], check=False)
-

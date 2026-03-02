@@ -30,9 +30,13 @@ class LabelDbStore:
     migration_root: str
 
     def __post_init__(self) -> None:
-        models_path = Path(self.migration_root).resolve() / "models.py"
-        if not models_path.exists():
-            raise RuntimeError(f"Label db models.py not found at {models_path}")
+        migration_root = Path(self.migration_root).resolve()
+        models_path = migration_root / "models.py"
+        if not models_path.is_file():
+            raise RuntimeError(
+                "Label db models.py not found at {path}".format(path=models_path)
+            )
+        self.migration_root = str(models_path.parent)
         self.models = _load_models(models_path)
         self.engine = create_engine(self.database_url, future=True)
         self.session_factory = sessionmaker(bind=self.engine, future=True, expire_on_commit=False)

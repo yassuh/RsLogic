@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Rule, Static, Tree
 
-from config import CONFIG
+from rslogic.config import CONFIG
 from rslogic.ingest import IngestService
 from rslogic.upload_service import FolderUploader
 

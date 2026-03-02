@@ -13,9 +13,6 @@ def _looks_like_repo_root(path: Path) -> bool:
 
 def _ensure_repo_root_on_syspath() -> Path:
     candidates: list[Path] = [Path(__file__).resolve()]
-    env_root = os.getenv("RSLOGIC_ROOT")
-    if env_root:
-        candidates.append(Path(env_root))
     candidates.append(Path.cwd())
     if Path.cwd().parent != Path.cwd():
         candidates.append(Path.cwd().parent)

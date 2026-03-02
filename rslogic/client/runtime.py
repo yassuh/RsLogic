@@ -38,7 +38,7 @@ def _load_client_env() -> None:
 
 _load_client_env()
 
-from config import CONFIG
+from rslogic.config import CONFIG
 from rslogic.common.db import LabelDbStore
 from rslogic.common.redis_bus import RedisBus
 from rslogic.common.schemas import Step

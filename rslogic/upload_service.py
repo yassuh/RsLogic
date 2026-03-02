@@ -13,7 +13,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .common.s3 import make_client
-from config import CONFIG
+from rslogic.config import CONFIG
 from .sidecar_parser import parse_exif
 
 

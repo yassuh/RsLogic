@@ -31,16 +31,10 @@ def _discover_repo_root() -> Path:
     candidates: list[Path] = []
     cwd = Path.cwd()
     module_root = Path(__file__).resolve().parents[2]
-    env_root = os.getenv("RSLOGIC_ROOT")
 
     for root in (cwd, cwd.parent, module_root, module_root.parent, Path(__file__).resolve().parent):
         if root:
             candidates.append(root)
-
-    if env_root:
-        candidates.append(Path(env_root))
-        candidates.append(Path(env_root).resolve())
-        candidates.append(Path(env_root).expanduser())
 
     visited: set[Path] = set()
     for root in list(candidates):
@@ -66,7 +60,7 @@ def _discover_repo_root() -> Path:
             if child.is_dir() and _looks_like_repo_root(child):
                 return child
 
-    raise RuntimeError("Could not auto-detect rslogic repo root. Set RSLOGIC_ROOT to the real repo folder.")
+    raise RuntimeError("Could not auto-detect rslogic repo root from the current path.")
 
 
 ROOT_DIR = _discover_repo_root()
@@ -78,7 +72,7 @@ for _extra in (
     if str(_extra) not in sys.path:
         sys.path.insert(0, str(_extra))
 
-from config import CONFIG
+from rslogic.config import CONFIG
 
 
 def _repo_root() -> Path:
@@ -105,7 +99,7 @@ def _with_project_pythonpath(env: dict[str, str] | None = None) -> dict[str, str
 
 
 def _python_can_import(py: Path, *, require_textual: bool) -> bool:
-    module_expr = "import config"
+    module_expr = "from rslogic.config import CONFIG"
     if require_textual:
         module_expr += "; import textual"
     command = [str(py), "-c", module_expr]

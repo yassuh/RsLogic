@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from config import CONFIG
+from rslogic.config import CONFIG
 
 from .common.db import LabelDbStore
 from .common.s3 import make_client, s3_object_keys, move_object

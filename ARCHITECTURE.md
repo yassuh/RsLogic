@@ -22,10 +22,11 @@ RsLogic execution architecture
   - auto-discovers the real repo root even in nested installs (for example `C:\\ProgramData\\RsLogic\\RsLogic`) and always starts runtime from the discovered `<root>\\rslogic\\client\\rsnode_client.py`.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
-  - resolves repo root from `RSLOGIC_ROOT`/cwd and inserts it into `PYTHONPATH` before importing package modules.
+  - resolves repo root from local layout (cwd + script package markers) and inserts it into `PYTHONPATH` before importing package modules.
   - auto-discovers nested `RsLogic`/repo layouts and can continue by running `rslogic/client/control_tui.py` from source if package import fails.
   - imports `rslogic.client.control_tui` by fully-qualified module name and no longer depends on `from rslogic.client import control_tui` to avoid `ImportError` on nested installs.
-- bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`config` and optionally `textual`) rather than requiring `import rslogic`, so the TUI can start even when package resolution is partially broken in a local environment.
+- Added canonical config ownership in `rslogic/config.py` (full config logic now lives in-package) and a tiny compatibility top-level `config.py` shim so legacy imports still work.
+- bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`rslogic.config` and optionally `textual`) and can run without `RSLOGIC_ROOT`.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
@@ -134,11 +135,10 @@ Auto-assignment:
   - `config.py` labels:
     - waiting bucket: `LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"`
     - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
-  - label DB path resolution is now resilient to nested repo layouts (for example `C:\\ProgramData\\RsLogic\\RsLogic` vs `C:\\ProgramData\\RsLogic`) and:
-    - accepts explicit `RSLOGIC_LABEL_DB_ROOT` even when pointed at the wrong level,
-    - probes `internal_tools/label-db/studio-db` fallbacks relative to that root,
-    - falls back to recursive discovery for `models.py` before failing startup.
-  - `_resolve_label_db_root()` now checks explicit `RSLOGIC_ROOT` and nested `RsLogic/rslogic/internal_tools/...` patterns before aborting startup when model path is missing.
+  - label DB path resolution is deterministic:
+    - validates explicit `RSLOGIC_LABEL_DB_ROOT` when provided as a hint,
+    - otherwise resolves from in-package repo layout (`rslogic/internal_tools/label-db/studio-db`) and parent layouts,
+    - fails fast with a clear error if the model path is not found.
 - Label-db models are loaded from `rslogic/internal_tools/label-db/studio-db/models.py` by default.
 - Heartbeats are written to redis key `rslogic:clients:{client_id}:heartbeat`.
 - `rslogic-clientctl` is the preferred control entrypoint on remote clients and replaces direct `start-rslogic-client.bat`/`stop-rslogic-client.bat` usage.

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rslogic.common.db import LabelDbStore
 from rslogic.common.s3 import make_client
-from config import CONFIG
+from rslogic.config import CONFIG
 
 
 class FileExecutor:

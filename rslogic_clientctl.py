@@ -12,23 +12,23 @@ from os import path as os_path
 
 
 def _candidate_project_roots() -> list[Path]:
-    roots: list[Path] = []
-    env_root = os.getenv("RSLOGIC_ROOT")
-    if env_root:
-        roots.append(Path(env_root).resolve())
-    roots.append(Path.cwd().resolve())
-    roots.append(Path(__file__).resolve().parent)
+    script_dir = Path(__file__).resolve().parent
+    roots: list[Path] = [
+        script_dir.resolve(),
+        script_dir.parent.resolve(),
+        Path.cwd().resolve(),
+        Path.cwd().parent.resolve(),
+    ]
 
-    # Common layout in remote deployments nests the repo under an extra folder.
-    # Include one level of nested candidate directories to avoid hardcoding a path.
+    # Include common nesting patterns (e.g. C:\\ProgramData\\RsLogic\\RsLogic)
     nested_candidates: list[Path] = []
     for base in list(roots):
-        for child in [base / "RsLogic", base / "rslogic", base / "RsLogic".lower()]:
+        for child in (base / "RsLogic", base / "rslogic", base / "RsLogic".lower(), base.parent / "RsLogic"):
             if child.is_dir():
                 nested_candidates.append(child)
     roots.extend(nested_candidates)
 
-    # Include immediate child directories that look like a repo root.
+    # Include immediate child directories that look like repository roots.
     for base in list(roots):
         if not base.is_dir():
             continue
@@ -107,7 +107,7 @@ def _ensure_import_path() -> Path:
 
     if selected is None:
         raise RuntimeError(
-            "Could not auto-detect rslogic repo root. Set RSLOGIC_ROOT to C:\\ProgramData\\RsLogic (or your repo path) before running."
+            "Could not auto-detect rslogic repo root from the current path."
         )
 
     path = str(selected)
@@ -117,7 +117,6 @@ def _ensure_import_path() -> Path:
     if path not in py_path.split(os.pathsep):
         os.environ["PYTHONPATH"] = f"{path}{os.pathsep}{py_path}" if py_path else path
 
-    os.environ.setdefault("RSLOGIC_ROOT", path)
     return selected
 
 
