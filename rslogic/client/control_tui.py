@@ -49,7 +49,7 @@ _REQUIRED_CLIENT_ENV_KEYS = {
 
 
 def _resolve_repo_root() -> Path:
-    candidate = Path(__file__).resolve().parent
+    candidate = Path(__file__).resolve().parents[2]
     if not (candidate / "config.py").exists() or not (candidate / "pyproject.toml").exists():
         raise RuntimeError(
             f"Expected repo root at {candidate}, but config.py/pyproject.toml were not found"
