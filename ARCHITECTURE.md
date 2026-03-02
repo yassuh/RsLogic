@@ -11,8 +11,10 @@ RsLogic execution architecture
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
   - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
   - Runtime now tracks SDK task IDs returned by `TaskHandle` and performs periodic `project.tasks` polling while a step heartbeat is active.
-  - Runtime now waits for step task sets to reach terminal states and only returns completion when both task statuses are terminal and the current project status indicates the active process has finished.
+  - Runtime now waits for the requested task IDs to become terminal (instead of requiring the poll payload length to match exactly), so polling responses that include unrelated tasks no longer block completion.
+  - SDK task completion checks now tolerate mixed payload shapes (`taskID` or `task_id`) and only fail when any requested task reports terminal error/errorCode.
   - Progress/task visibility (`running_tasks`) is scoped to tasks whose task state is `started`, so the progress bar is tied to currently-running work rather than completed/failed snapshots.
+  - Scene creation commands (`sdk_new_scene`, `sdk_project_new_scene`) and `sdk_project_command` align are treated as long-running and are not bounded by the default 600s wait.
   - Task snapshots and project status are attached to progress messages (`task_state`, `running_tasks`, `completed_tasks`, `project_status`) so TUI/operators can observe long-running reconstruction progress before a step finishes.
   - Runtime heartbeat payload now also mirrors active job/task/project progress (`active_job_id`, `task_state`, `project_status`) every heartbeat interval so client supervision can read progress without consuming result queue traffic.
   - `_report_progress` publishes explicit task/project payloads (`task_state`, `project_status`) in addition to `result_summary` to make progress consumers (including DB orchestration) resilient to schema changes.

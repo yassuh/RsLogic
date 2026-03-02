@@ -218,8 +218,6 @@ class ClientRuntime:
         def add(candidate: Any) -> None:
             if candidate is None:
                 return
-            if isinstance(candidate, str):
-                return
             task_id = candidate
             if isinstance(candidate, dict):
                 task_id = candidate.get("taskID") or candidate.get("taskId") or candidate.get("id")
@@ -228,8 +226,12 @@ class ClientRuntime:
                     task_id = getattr(candidate, "taskID")
                 elif hasattr(candidate, "taskId"):
                     task_id = getattr(candidate, "taskId")
-            if task_id is None:
-                return
+                if task_id is None:
+                    return
+            if isinstance(task_id, str):
+                task_id = task_id.strip()
+            else:
+                task_id = str(task_id).strip()
             task_id = str(task_id).strip()
             if task_id and task_id not in task_ids:
                 task_ids.append(task_id)
@@ -263,6 +265,23 @@ class ClientRuntime:
     @staticmethod
     def _is_task_started(state: Any) -> bool:
         return ClientRuntime._normalize_task_state(state) == "started"
+
+    @staticmethod
+    def _task_ids_terminal(task_updates: list[dict[str, Any]], wanted_task_ids: list[str]) -> bool:
+        if not wanted_task_ids:
+            return False
+        by_id = {}
+        for task in task_updates:
+            task_id = str(task.get("taskID", "")).strip() or str(task.get("task_id", "")).strip()
+            if task_id:
+                by_id[task_id] = task
+        for task_id in wanted_task_ids:
+            task_state = by_id.get(task_id)
+            if task_state is None:
+                return False
+            if not ClientRuntime._is_task_terminal(task_state.get("state")):
+                return False
+        return True
 
     @staticmethod
     def _project_is_running(project_status: dict[str, Any] | None) -> bool:
@@ -315,6 +334,7 @@ class ClientRuntime:
             for task_id in task_ids:
                 tasks[task_id] = {
                     "task_id": task_id,
+                    "taskID": task_id,
                     "session": session,
                     "step_index": step_index,
                     "step_action": step_action,
@@ -460,11 +480,9 @@ class ClientRuntime:
         failed: list[Exception] = []
 
         def _is_finished(task_updates: list[dict[str, Any]]) -> bool:
-            return (
-                len(task_updates) == len(wanted)
-                and task_updates
-                and all(self._is_task_terminal(task_update.get("state")) for task_update in task_updates)
-            )
+            if not task_updates:
+                return False
+            return self._task_ids_terminal(task_updates, wanted)
 
         def monitor_loop() -> None:
             while not monitor_stop.is_set():
@@ -634,6 +652,8 @@ class ClientRuntime:
 
     @staticmethod
     def _is_unlimited_step_timeout(step: Step) -> bool:
+        if step.action in {"sdk_new_scene", "sdk_project_new_scene"}:
+            return True
         if step.action == "sdk_project_command":
             command = str(step.params.get("name", "")).strip().lower()
             return command == "align"
