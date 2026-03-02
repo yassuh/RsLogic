@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import json
 import shutil
 from pathlib import Path
@@ -10,6 +11,7 @@ from rslogic.common.db import LabelDbStore
 from rslogic.common.s3 import make_client
 from rslogic.config import CONFIG
 
+_LOGGER = logging.getLogger("rslogic.client.file_ops")
 
 class FileExecutor:
     def __init__(self, db: LabelDbStore, working_root: Path) -> None:
@@ -38,25 +40,44 @@ class FileExecutor:
         return "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", ".", " "))
 
     def stage_group(self, group_id: str, job_id: str) -> Path:
+        _LOGGER.info("stage_group start group_id=%s job_id=%s", group_id, job_id)
         group_dir = self.staging_root
         group_dir.mkdir(parents=True, exist_ok=True)
+        removed = 0
         for stale in sorted(group_dir.iterdir()):
             if stale.is_file():
                 stale.unlink()
+                removed += 1
             elif stale.is_dir():
                 shutil.rmtree(stale)
+                removed += 1
+        if removed:
+            _LOGGER.debug("stage_group cleared %s entries from %s", removed, group_dir)
         assets = self.db.image_assets_for_group(group_id)
+        assets_list = list(assets)
+        _LOGGER.debug("stage_group total assets=%s for group_id=%s", len(assets_list), group_id)
         manifests = []
-        for asset in assets:
+        for idx, asset in enumerate(assets_list, start=1):
             if not (asset.object_key or asset.uri):
+                _LOGGER.warning("asset %s missing object locator, skipping", getattr(asset, "id", "<unknown>"))
                 continue
             bucket = asset.bucket_name or CONFIG.s3.processed_bucket_name
             image_key = asset.object_key or asset.uri or ""
             if not image_key:
+                _LOGGER.warning("asset %s has empty image key, skipping", getattr(asset, "id", "<unknown>"))
                 continue
             bucket, image_key = self._coerce_storage_location(bucket, image_key, CONFIG.s3.processed_bucket_name)
             image_name = self._safe_name(asset.id + "_" + (asset.filename or Path(image_key).name))
             local_path = group_dir / image_name
+            _LOGGER.info(
+                "downloading [%s/%s] asset=%s bucket=%s key=%s -> %s",
+                idx,
+                len(assets_list),
+                asset.id,
+                bucket,
+                image_key,
+                local_path,
+            )
             self.s3.download_file(bucket, image_key, str(local_path))
 
             manifests.append(
@@ -70,6 +91,7 @@ class FileExecutor:
                     },
                 }
             )
+        _LOGGER.info("stage_group done group_id=%s manifest_count=%s", group_id, len(manifests))
 
         manifest_path = group_dir / "stage-map.json"
         manifest_path.write_text(
@@ -86,6 +108,7 @@ class FileExecutor:
         return group_dir
 
     def write_manifest(self, job_id: str, staging_dir: Path, group_id: str) -> Path:
+        _LOGGER.info("write_manifest start job_id=%s group_id=%s staging_dir=%s", job_id, group_id, staging_dir)
         manifest_path = staging_dir / f"{job_id}-manifest.json"
         payload = {
             "job_id": job_id,
@@ -94,6 +117,7 @@ class FileExecutor:
             "group_mapping": sorted(str(p) for p in staging_dir.rglob("stage-map.json")),
         }
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _LOGGER.debug("write_manifest wrote %s", manifest_path)
         return manifest_path
 
     def move_staging_to_working(self, job_id: str, staging_dir: Path | None = None, working_dir: Path | None = None) -> Path:
@@ -102,14 +126,18 @@ class FileExecutor:
         if working_dir is None:
             working_dir = self.working_projects_root / str(job_id)
         working_dir.mkdir(parents=True, exist_ok=True)
+        _LOGGER.info("move_staging_to_working start job_id=%s staging_dir=%s working_dir=%s", job_id, staging_dir, working_dir)
+        moved = 0
 
         for source in sorted(staging_dir.rglob("*")):
             if source.is_dir():
                 continue
+            moved += 1
             rel = source.relative_to(staging_dir)
             target = working_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 target.unlink()
             shutil.move(str(source), str(target))
+        _LOGGER.info("move_staging_to_working done job_id=%s moved=%s target=%s", job_id, moved, working_dir)
         return working_dir

@@ -23,47 +23,12 @@ from textual.widgets import Button, Footer, Header, RichLog, Static
 _VENV_BOOTSTRAP_ENV = "RSLOGIC_CLIENTCTL_BOOTSTRAPPED"
 
 
-def _looks_like_repo_root(path: Path) -> bool:
-    return (path / "config.py").exists() and (path / "pyproject.toml").exists() and (path / "rslogic").is_dir()
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if not (ROOT_DIR / "config.py").exists() or not (ROOT_DIR / "pyproject.toml").exists():
+    raise RuntimeError(f"Expected repo root at {ROOT_DIR}, but config.py/pyproject.toml were not found")
 
-
-def _discover_repo_root() -> Path:
-    candidates: list[Path] = []
-    cwd = Path.cwd()
-    module_root = Path(__file__).resolve().parents[2]
-
-    for root in (cwd, cwd.parent, module_root, module_root.parent, Path(__file__).resolve().parent):
-        if root:
-            candidates.append(root)
-
-    visited: set[Path] = set()
-    for root in list(candidates):
-        try:
-            current = root.resolve()
-        except Exception:
-            current = root
-        for p in (current, *current.parents):
-            if p in visited or not p.exists():
-                continue
-            visited.add(p)
-            if _looks_like_repo_root(p):
-                return p
-            child_names = {"RsLogic", "rslogic", "repo", "work"}
-            try:
-                for child in p.iterdir():
-                    if child.name in child_names and _looks_like_repo_root(child):
-                        return child
-            except Exception:
-                pass
-        # scan one explicit nested child if names didn't match directly
-        for child in getattr(root, "iterdir", lambda: [])():
-            if child.is_dir() and _looks_like_repo_root(child):
-                return child
-
-    raise RuntimeError("Could not auto-detect rslogic repo root from the current path.")
-
-
-ROOT_DIR = _discover_repo_root()
+if not (ROOT_DIR / "rslogic" / "client" / "control_tui.py").exists():
+    raise RuntimeError(f"Invalid repo root; control_tui.py not found in {ROOT_DIR}")
 
 for _extra in (
     ROOT_DIR,
@@ -249,13 +214,14 @@ class _LogTailer:
 
 
 class ClientProcessManager:
-    def __init__(self) -> None:
+    def __init__(self, log_level: str | None = None) -> None:
         self.root = _repo_root()
         self.logs_root = self.root / "logs" / "client"
         self.logs_root.mkdir(parents=True, exist_ok=True)
         self.log_stdout = self.logs_root / "rslogic-client-stdout.log"
         self.log_stderr = self.logs_root / "rslogic-client-stderr.log"
         self.pid_path = self.logs_root / "rslogic-client.pid"
+        self.log_level = (log_level or "").strip().upper() or None
         self.client_id = _client_id()
         self._proc: subprocess.Popen[bytes] | None = None
         self._stdout_handle = None
@@ -325,6 +291,8 @@ class ClientProcessManager:
     def _build_child_env(self) -> dict[str, str]:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        if self.log_level:
+            env["RSLOGIC_CLIENT_LOG_LEVEL"] = self.log_level
 
         if not env.get("RSLOGIC_CLIENT_ENV_FILE"):
             client_env = self.root / "client.env"
@@ -708,8 +676,8 @@ class ClientControlTUI(App):
         self.query_one("#event_log", expect_type=RichLog).write(message)
 
 
-def run_command(mode: str, *, foreground: bool = False) -> None:
-    manager = ClientProcessManager()
+def run_command(mode: str, *, foreground: bool = False, log_level: str | None = None) -> None:
+    manager = ClientProcessManager(log_level=log_level)
     detach = mode in {"start", "restart"} and not foreground
 
     if mode == "status":
@@ -746,6 +714,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run client in foreground for this command so exceptions and logs print to console.",
     )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Set client runtime log level (INFO, DEBUG, WARNING, ERROR).",
+    )
     args = parser.parse_args(argv)
     try:
         bootstrap_self(require_textual=(args.mode == "tui"))
@@ -756,7 +729,7 @@ def main(argv: list[str] | None = None) -> None:
         app = ClientControlTUI()
         app.run()
         return
-    run_command(args.mode, foreground=args.foreground)
+    run_command(args.mode, foreground=args.foreground, log_level=args.log_level)
 
 
 if __name__ == "__main__":

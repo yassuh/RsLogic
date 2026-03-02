@@ -80,7 +80,7 @@ class ClientRuntime:
     def _configure_logging() -> None:
         level_name = os.getenv("RSLOGIC_CLIENT_LOG_LEVEL", "INFO").upper()
         level = getattr(logging, level_name, logging.INFO)
-        logger = logging.getLogger("rslogic.client.runtime")
+        logger = logging.getLogger("rslogic")
         logger.setLevel(level)
         if not logger.handlers:
             handler = logging.StreamHandler()
@@ -89,8 +89,20 @@ class ClientRuntime:
                     "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
                 )
             )
+            handler.setLevel(level)
             logger.addHandler(handler)
         logger.propagate = False
+        for child in (
+            "rslogic.client.runtime",
+            "rslogic.client.executor",
+            "rslogic.client.file_ops",
+            "rslogic.client.process_guard",
+            "rslogic.common.redis_bus",
+        ):
+            child_logger = logging.getLogger(child)
+            child_logger.setLevel(level)
+            child_logger.propagate = True
+        logging.captureWarnings(True)
 
     def _sdk_client(self) -> object:
         if not _SDK_AVAILABLE:
@@ -137,18 +149,23 @@ class ClientRuntime:
         return group.id
 
     def run(self) -> None:
+        self._log.info("client runtime starting client_id=%s sdk_client_id=%s data_root=%s", self.client_id, self.sdk_client_id, self.data_root)
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
         heartbeat = threading.Thread(target=self._heartbeat_loop, daemon=True)
         heartbeat.start()
 
         while not self.stop_event.is_set():
+            self._log.debug("polling queue: client_id=%s", self.client_id)
             with contextlib.suppress(Exception):
                 self.node_guard.ensure_running()
             payload = self.redis_bus.pop_command(self.client_id, CONFIG.queue.poll_interval_seconds)
             if not payload:
+                self._log.debug("no command received in this poll window")
                 continue
+            self._log.info("received command payload: job_id=%s type=%s", payload.get("job_id"), payload.get("type"))
             if payload.get("type") != "job":
+                self._log.debug("ignoring non-job payload=%s", self._safe_preview(payload, max_len=300))
                 continue
             if not self._job_lock.acquire(blocking=False):
                 job_id = str(payload.get("job_id"))
@@ -164,11 +181,14 @@ class ClientRuntime:
                     progress=0.0,
                     message="client is already busy",
                 )
+                self._log.warning("client busy; rejected job_id=%s group_id=%s", job_id, group_id)
                 continue
+            self._log.debug("acquired lock for job_id=%s", payload.get("job_id"))
             self._run_job(payload)
 
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
+            self._log.debug("publishing heartbeat for client_id=%s", self.client_id)
             self.redis_bus.heartbeat(self.client_id, {"status": "alive", "service": "rslogic-client"})
             with contextlib.suppress(Exception):
                 self.node_guard.ensure_running()
@@ -241,13 +261,17 @@ class ClientRuntime:
         job_id = str(payload.get("job_id"))
         group_id = self._ensure_group_id(payload.get("group_id"))
         steps = payload.get("steps", [])
+        self._log.info("job_start job_id=%s group_id=%s step_count=%s", job_id, group_id, len(steps))
         step_objects = [Step.model_validate(raw_step) for raw_step in steps]
         sdk_needed = any(step.kind == "sdk" for step in step_objects)
         sdk_client = self._sdk_client() if sdk_needed else None
+        if sdk_client is not None:
+            self._log.debug("sdk client instantiated for job_id=%s", job_id)
         executor = StepExecutor(sdk_client=sdk_client, file_executor=self.file_executor)
         try:
             executor.begin_job(job_id, group_id=group_id)
             self.node_guard.start()
+            self._log.debug("node guard started for job_id=%s", job_id)
             self.db.upsert_processing_job(
                 job_id=job_id,
                 image_group_id=group_id,
@@ -280,6 +304,14 @@ class ClientRuntime:
                 heartbeat_started = None
                 step_error = None
                 try:
+                    self._log.info(
+                        "job=%s step_start step=%s/%s action=%s kind=%s",
+                        job_id,
+                        idx,
+                        len(steps),
+                        step.action,
+                        step.kind,
+                    )
                     heartbeat_stop, heartbeat_thread, heartbeat_started = self._start_step_heartbeat(
                         job_id=job_id,
                         group_id=group_id,
@@ -306,6 +338,15 @@ class ClientRuntime:
                     step_time = round(time.monotonic() - step_started, 3)
                 except Exception as exc:
                     step_error = exc
+                    self._log.exception(
+                        "job=%s step_fail step=%s/%s action=%s kind=%s error=%s",
+                        job_id,
+                        idx,
+                        len(steps),
+                        step.action,
+                        step.kind,
+                        exc,
+                    )
                     raise
                 finally:
                     if heartbeat_stop is not None:
@@ -376,6 +417,7 @@ class ClientRuntime:
             )
             self._report_progress(job_id=job_id, group_id=group_id, progress=0, message=str(exc))
             self.redis_bus.publish_result(self.client_id, {"job_id": job_id, "status": "failed", "progress": 0, "message": str(exc)})
+            self._log.exception("job_failed job_id=%s group_id=%s", job_id, group_id)
         finally:
             executor.end_job(job_id)
             if sdk_client is not None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -11,6 +12,8 @@ if TYPE_CHECKING:
 
 from rslogic.client.file_ops import FileExecutor
 from rslogic.common.schemas import Step
+
+_LOGGER = logging.getLogger("rslogic.client.executor")
 
 
 def _candidates_for_method(method_name: str) -> list[str]:
@@ -138,6 +141,7 @@ class StepExecutor:
         action = step.action
         kind = step.kind
         params = self._render(dict(step.params or {}))
+        _LOGGER.debug("execute_step kind=%s action=%s job_id=%s group_id=%s params=%s", kind, action, job_id, group_id, params)
         if group_id:
             self._context["group_id"] = group_id
 
@@ -149,6 +153,7 @@ class StepExecutor:
                 if not group_id:
                     raise RuntimeError("group_id required for file_stage action")
                 stage_dir = self.file_executor.stage_group(group_id, job_id)
+                _LOGGER.info("file_stage complete job_id=%s group_id=%s staging_dir=%s", job_id, group_id, stage_dir)
                 self._staging_dir = stage_dir
                 self._context["staging_dir"] = str(stage_dir)
                 return str(stage_dir)
@@ -161,6 +166,7 @@ class StepExecutor:
                     staging = self.file_executor.stage_group(group_id, job_id)
                     self._staging_dir = staging
                 manifest = self.file_executor.write_manifest(job_id, staging, group_id)
+                _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
                 return str(manifest)
 
             if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working"}:
@@ -174,7 +180,14 @@ class StepExecutor:
                     working_dir = self.file_executor.working_projects_root / str(job_id)
                 else:
                     working_dir = Path(str(working_dir))
-                return str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                result = str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                _LOGGER.info(
+                    "file_move_staging_to_working complete job_id=%s staging=%s destination=%s",
+                    job_id,
+                    staging,
+                    working_dir,
+                )
+                return result
 
             if action in {"file_move_to_session_imagery", "file_move_staging_to_session_imagery", "file_move_to_session_folder"}:
                 staging = self._staging_dir
@@ -195,7 +208,15 @@ class StepExecutor:
                     working_dir = Path(base_dir) / "Imagery"
                 else:
                     working_dir = Path(str(working_dir))
-                return str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                result = str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                _LOGGER.info(
+                    "file_move_to_session_imagery complete job_id=%s group_id=%s session=%s destination=%s",
+                    job_id,
+                    group_id,
+                    session,
+                    working_dir,
+                )
+                return result
 
             raise RuntimeError(f"unsupported file action {action}")
 
@@ -212,8 +233,10 @@ class StepExecutor:
         if method is None:
             raise RuntimeError(f"unsupported action {action}")
         params = self._normalize_sdk_params(method, params)
+        _LOGGER.debug("sdk call action=%s method=%s params=%s", action, getattr(method, "__name__", str(method)), params)
         try:
             result = method(**params)
+            _LOGGER.info("sdk call complete action=%s result=%s", action, result)
             if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):
                 self._set_context_session(result)
             if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
@@ -222,5 +245,6 @@ class StepExecutor:
             return str(result)
         except TypeError:
             if params:
+                _LOGGER.exception("sdk call type error action=%s params=%s", action, params)
                 raise
             return str(method())

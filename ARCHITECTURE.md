@@ -15,15 +15,15 @@ RsLogic execution architecture
   - start/stop/restart/status management for `rslogic.client.rsnode_client`.
   - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
   - `start` now verifies the spawned runtime remains alive after launch; if it exits immediately, the command returns a clear failure with captured startup stderr/stdout tail.
-  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches with deterministic root detection.
+  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches from a deterministic root (`Path(__file__).resolve().parents[2]`) with explicit marker checks.
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
-  - auto-discovers the real repo root even in nested installs (for example `C:\\ProgramData\\RsLogic\\RsLogic`) and always starts runtime from the discovered `<root>\\rslogic\\client\\rsnode_client.py`.
+  - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
-  - resolves repo root from local layout (cwd + script package markers) and inserts it into `PYTHONPATH` before importing package modules.
-  - auto-discovers nested `RsLogic`/repo layouts and can continue by running `rslogic/client/control_tui.py` from source if package import fails.
+  - resolves repo root from local script location (`Path(__file__).resolve().parent`) and inserts it into `PYTHONPATH` before importing package modules.
+  - fails fast with explicit errors when markers are missing instead of trying alternate source-layout fallbacks.
   - imports `rslogic.client.control_tui` by fully-qualified module name and no longer depends on `from rslogic.client import control_tui` to avoid `ImportError` on nested installs.
 - Added canonical config ownership in `rslogic/config.py` (full config logic now lives in-package) and a tiny compatibility top-level `config.py` shim so legacy imports still work.
 - bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`rslogic.config` and optionally `textual`) and can run without `RSLOGIC_ROOT`.

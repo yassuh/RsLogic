@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import shutil
 import threading
 import subprocess
 import sys
+
+_LOGGER = logging.getLogger("rslogic.client.process_guard")
 
 
 class RsNodeProcess:
@@ -30,8 +33,10 @@ class RsNodeProcess:
         if self.executable_path and not shutil.which(self.executable_path) and not os.path.exists(self.executable_path):
             raise FileNotFoundError(f"rsnode executable missing: {self.executable_path}")
         if self.is_alive():
+            _LOGGER.debug("rsnode already running pid=%s", self._proc.pid if self._proc else "unknown")
             return
         if not self.executable_path:
+            _LOGGER.warning("rsnode executable path not configured; skipping start")
             return
         exe = self.executable_path
         if not os.path.isabs(exe):
@@ -39,6 +44,7 @@ class RsNodeProcess:
         cmd = [exe]
         if self.executable_args:
             cmd.extend(shlex.split(self.executable_args))
+        _LOGGER.info("starting rsnode cmd=%s", cmd)
         if sys.platform.startswith("win"):
             CREATE_NO_WINDOW = 0x08000000
             self._proc = subprocess.Popen(
@@ -51,9 +57,12 @@ class RsNodeProcess:
             )
         else:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=None)
+        if self._proc is not None:
+            _LOGGER.info("rsnode started pid=%s", self._proc.pid)
 
     def stop(self) -> None:
         if self._proc and self._proc.poll() is None:
+            _LOGGER.info("stopping rsnode pid=%s", self._proc.pid)
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=2)
