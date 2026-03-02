@@ -1,0 +1,41 @@
+{
+  "auto_assign": true,
+  "group_name": "sample-drone-flight",
+  "metadata": {
+    "source": "tui-operator-submit"
+  },
+  "steps": [
+    {
+      "kind": "file",
+      "action": "stage",
+      "params": {}
+    },
+    {
+      "kind": "file",
+      "action": "file_write_manifest",
+      "params": {}
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_node_connect_user",
+      "params": {}
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_create",
+      "params": {}
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_new_scene",
+      "params": {}
+    },
+    {
+      "kind": "file",
+      "action": "file_move_staging_to_working",
+      "params": {
+        "working_dir": "<absolute-working-dir>"
+      }
+    }
+  ]
+}

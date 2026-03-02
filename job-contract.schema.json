@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rslogic.local/schemas/job-contract.schema.json",
+  "title": "RsLogic job contract",
+  "type": "object",
+  "required": [
+    "steps"
+  ],
+  "properties": {
+    "client_id": {
+      "type": "string"
+    },
+    "target_client": {
+      "type": "string"
+    },
+    "auto_assign": {
+      "type": "boolean",
+      "default": false
+    },
+    "group_id": {
+      "type": ["string", "null"]
+    },
+    "group_name": {
+      "type": ["string", "null"]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Step"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "Job must either target a client or set auto_assign=true.",
+      "oneOf": [
+        {
+          "required": ["target_client"]
+        },
+        {
+          "required": ["client_id"]
+        },
+        {
+          "properties": {
+            "auto_assign": {
+              "const": true
+            }
+          },
+          "required": ["auto_assign"]
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "Step": {
+      "type": "object",
+      "required": [
+        "kind",
+        "action"
+      ],
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "file",
+            "sdk"
+          ]
+        },
+        "action": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 600
+        },
+        "display_name": {
+          "type": ["string", "null"]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "file"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "stage",
+                "file_stage",
+                "file_stage_group",
+                "file_write_manifest",
+                "file_move_staging_to_working",
+                "file_move_to_working",
+                "file_import_to_working"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "file_move_staging_to_working"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "type": "object",
+                    "properties": {
+                      "working_dir": {
+                        "type": "string",
+                        "description": "Optional absolute path for final working directory"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "sdk"
+            },
+            "action": {
+              "type": "string",
+              "anyOf": [
+                {
+                  "enum": [
+                    "sdk_node_connect_user",
+                    "sdk_node_disconnect_user",
+                    "sdk_project_create",
+                    "sdk_project_open",
+                    "sdk_project_close",
+                    "sdk_project_disconnect",
+                    "sdk_project_save",
+                    "sdk_project_command",
+                    "sdk_project_commandgroup",
+                    "sdk_project_new_scene",
+                    "sdk_new_scene",
+                    "sdk_project_status"
+                  ]
+                },
+                {
+                  "pattern": "^sdk_(project|node)_[a-z0-9_]+$"
+                },
+                {
+                  "pattern": "^sdk_[a-z0-9_]+$"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+

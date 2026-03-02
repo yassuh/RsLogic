@@ -150,6 +150,7 @@ class RsToolsConfig:
     """Adapter configuration for the RsTools command-line integration."""
 
     executable_path: Optional[str]
+    executable_args: Optional[str]
     working_root: str
     mode: str
     sdk_base_url: Optional[str]
@@ -242,6 +243,7 @@ def load_config() -> AppConfig:
 
     rstools = RsToolsConfig(
         executable_path=os.getenv("RSLOGIC_RSTOOLS_EXECUTABLE"),
+        executable_args=_env("RSLOGIC_RSTOOLS_EXECUTABLE_ARGS", None),
         working_root=_env("RSLOGIC_RSTOOLS_WORKING_ROOT", "/tmp/rslogic-jobs"),
         mode=_env("RSLOGIC_RSTOOLS_MODE", "stub").lower(),
         sdk_base_url=os.getenv("RSLOGIC_RSTOOLS_SDK_BASE_URL"),
@@ -250,7 +252,17 @@ def load_config() -> AppConfig:
         sdk_auth_token=os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
     )
 
-    label_db_root = _env("RSLOGIC_LABEL_DB_ROOT", "internal_tools/label-db/studio-db")
+    label_db_root = _env("RSLOGIC_LABEL_DB_ROOT", "rslogic/internal_tools/label-db/studio-db")
+    if not Path(label_db_root).exists():
+        base_root = Path(__file__).resolve().parent
+        fallback_candidates = [
+            base_root / "internal_tools" / "label-db" / "studio-db",
+            base_root / "rslogic" / "internal_tools" / "label-db" / "studio-db",
+        ]
+        for candidate in fallback_candidates:
+            if candidate.exists():
+                label_db_root = str(candidate)
+                break
     label_db_root_path = Path(label_db_root)
     if not label_db_root_path.is_absolute():
         label_db_root_path = Path(__file__).resolve().parent / label_db_root_path

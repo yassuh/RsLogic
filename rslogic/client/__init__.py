@@ -1,3 +1,2 @@
-"""Standalone rsnode client package."""
+"""Client runtime package."""
 
-__all__ = ["main"]

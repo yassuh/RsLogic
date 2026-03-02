@@ -1,0 +1,157 @@
+{
+  "file_steps": {
+    "stage": {
+      "kind": "file",
+      "description": "Downloads all assets for group into <data_root>/staging/<job_id>",
+      "required_params": [],
+      "optional_params": [],
+      "updates_state": {
+        "executor_state": "staging_dir"
+      }
+    },
+    "file_stage": {
+      "kind": "file",
+      "description": "Alias for stage.",
+      "required_params": [],
+      "optional_params": []
+    },
+    "file_stage_group": {
+      "kind": "file",
+      "description": "Alias for stage.",
+      "required_params": [],
+      "optional_params": []
+    },
+    "file_write_manifest": {
+      "kind": "file",
+      "description": "Writes `<staging>/<job_id>-manifest.json` listing resolved files.",
+      "required_params": [],
+      "optional_params": []
+    },
+    "file_move_staging_to_working": {
+      "kind": "file",
+      "description": "Moves staging directory files into working directory for session.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ],
+      "updates_state": {
+        "executor_state": "returns_working_dir"
+      }
+    },
+    "file_move_to_working": {
+      "kind": "file",
+      "description": "Alias for file_move_staging_to_working.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_import_to_working": {
+      "kind": "file",
+      "description": "Alias for file_move_staging_to_working.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    }
+  },
+  "sdk_steps": {
+    "sdk_node_connect_user": {
+      "kind": "sdk",
+      "method": "client.node.connect_user()",
+      "requires_params": [],
+      "example_result": "node connection object"
+    },
+    "sdk_node_disconnect_user": {
+      "kind": "sdk",
+      "method": "client.node.disconnect_user()",
+      "requires_params": []
+    },
+    "sdk_project_create": {
+      "kind": "sdk",
+      "method": "client.project.create()",
+      "requires_params": []
+    },
+    "sdk_project_open": {
+      "kind": "sdk",
+      "method": "client.project.open(guid, name=None)",
+      "params": {
+        "guid": "string (required)",
+        "name": "string (optional)"
+      }
+    },
+    "sdk_project_close": {
+      "kind": "sdk",
+      "method": "client.project.close()",
+      "requires_params": []
+    },
+    "sdk_project_disconnect": {
+      "kind": "sdk",
+      "method": "client.project.disconnect()",
+      "requires_params": []
+    },
+    "sdk_project_save": {
+      "kind": "sdk",
+      "method": "client.project.save(path)",
+      "params": {
+        "path": "string"
+      }
+    },
+    "sdk_project_command": {
+      "kind": "sdk",
+      "method": "client.project.command(name, params=None, conditional_tag=None, use_post=False, encoded=None, post_body=None)",
+      "params": {
+        "name": "string",
+        "params": "dict",
+        "conditional_tag": "string",
+        "use_post": "bool",
+        "encoded": "string",
+        "post_body": "dict"
+      }
+    },
+    "sdk_project_commandgroup": {
+      "kind": "sdk",
+      "method": "client.project.command_group(command_calls)",
+      "params": {
+        "command_calls": "dict"
+      }
+    },
+    "sdk_project_new_scene": {
+      "kind": "sdk",
+      "method": "client.project.new_scene()",
+      "requires_params": []
+    },
+    "sdk_new_scene": {
+      "kind": "sdk",
+      "method": "client.project.new_scene()",
+      "requires_params": []
+    },
+    "sdk_project_status": {
+      "kind": "sdk",
+      "method": "client.project.status()",
+      "requires_params": []
+    }
+  },
+  "dynamic_rules": [
+    {
+      "action_regex": "^sdk_node_[a-z_]+$",
+      "description": "Any action starting with sdk_node_ is resolved to client.node.<method> using underscore and camelCase fallbacks."
+    },
+    {
+      "action_regex": "^sdk_project_[a-z_]+$",
+      "description": "Any action starting with sdk_project_ is resolved to client.project.<method> using underscore and camelCase fallbacks."
+    },
+    {
+      "action_regex": "^sdk_[a-z_]+$",
+      "description": "Generic sdk_* actions are also accepted and resolved against available client sdk methods."
+    }
+  ],
+  "dispatcher": {
+    "location": "rslogic.client.executor",
+    "class": "StepExecutor.execute",
+    "mapping_file": "rslogic/client/executor.py",
+    "file_step_prefix": "if kind == \"file\"",
+    "sdk_fallback": "if action not in explicit mapping and action starts with sdk_"
+  }
+}
+
