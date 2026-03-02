@@ -4,3 +4,6 @@ from __future__ import annotations
 
 from rslogic.client.runtime import main
 
+
+if __name__ == "__main__":
+    main()

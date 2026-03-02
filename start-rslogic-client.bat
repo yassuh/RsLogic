@@ -5,7 +5,6 @@ if "%ROOT%"=="" set "ROOT=%CD%\"
 set "VENV=%ROOT%.venv"
 set "LOG_DIR=%ROOT%logs\client"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-set PYTHON_GIL=0
 set PYTHONUNBUFFERED=1
 set "RSLOGIC_ROOT=%ROOT%"
 set "PYTHONPATH=%RSLOGIC_ROOT%;%RSLOGIC_ROOT%rslogic\internal_tools\rstool-sdk\src"

@@ -65,7 +65,6 @@ echo [*] Writing start-rslogic-client.bat
 >> "%ROOT%\start-rslogic-client.bat" echo set "VENV=%ROOT%.venv"
 >> "%ROOT%\start-rslogic-client.bat" echo set "LOG_DIR=%ROOT%logs\client"
 >> "%ROOT%\start-rslogic-client.bat" echo if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
->> "%ROOT%\start-rslogic-client.bat" echo set PYTHON_GIL=0
 >> "%ROOT%\start-rslogic-client.bat" echo set PYTHONUNBUFFERED=1
 >> "%ROOT%\start-rslogic-client.bat" echo set "RSLOGIC_ROOT=%ROOT%"
 >> "%ROOT%\start-rslogic-client.bat" echo set "PYTHONPATH=%RSLOGIC_ROOT%;%RSLOGIC_ROOT%rslogic\internal_tools\rstool-sdk\src"
