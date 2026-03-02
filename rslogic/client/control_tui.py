@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import venv as _stdlib_venv
+from dotenv import dotenv_values
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -23,7 +24,6 @@ _VENV_BOOTSTRAP_ENV = "RSLOGIC_CLIENTCTL_BOOTSTRAPPED"
 _REQUIRED_CLIENT_ENV_KEYS = {
     "RSLOGIC_CLIENT_ID",
     "RSLOGIC_CLIENT_LOG_LEVEL",
-    "RSLOGIC_CLIENT_ENV_FILE",
     "RSLOGIC_REDIS_HOST",
     "RSLOGIC_REDIS_PORT",
     "RSLOGIC_CONTROL_COMMAND_QUEUE",
@@ -63,33 +63,24 @@ from rslogic.config import CONFIG
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except Exception:
-        return values
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+    values = dotenv_values(path)
+    normalized: dict[str, str] = {}
+    for key, value in values.items():
+        normalized_key = str(key).strip().lstrip("\ufeff")
+        if not normalized_key:
             continue
-        if stripped.lower().startswith("export "):
-            stripped = stripped[7:].lstrip()
-        if "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        values[key] = value.strip().strip().strip("'\"")
-    return values
+        normalized[normalized_key] = str(value).strip() if isinstance(value, str) else ""
+    return normalized
 
 
 def _client_env_file() -> Path:
     explicit = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
-    candidate = Path(explicit) if explicit else (ROOT_DIR / "client.env")
+    candidate = Path(explicit).expanduser() if explicit else (ROOT_DIR / "client.env")
+    if not candidate.is_absolute():
+        candidate = (ROOT_DIR / candidate).resolve()
     if not candidate.is_file():
         raise RuntimeError(f"Client env file not found: {candidate}")
-    os.environ.setdefault("RSLOGIC_CLIENT_ENV_FILE", str(candidate))
+    os.environ["RSLOGIC_CLIENT_ENV_FILE"] = str(candidate)
     return candidate
 
 

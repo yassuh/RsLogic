@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 try:
     from realityscan_sdk.client import RealityScanClient
@@ -24,7 +24,6 @@ except ModuleNotFoundError as exc:
 _REQUIRED_CLIENT_ENV_KEYS = {
     "RSLOGIC_CLIENT_ID",
     "RSLOGIC_CLIENT_LOG_LEVEL",
-    "RSLOGIC_CLIENT_ENV_FILE",
     "RSLOGIC_REDIS_HOST",
     "RSLOGIC_REDIS_PORT",
     "RSLOGIC_CONTROL_COMMAND_QUEUE",
@@ -55,12 +54,23 @@ def _validate_client_env_contract() -> None:
 def _load_client_env() -> None:
     env_file = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
     if not env_file:
-        env_file = str(Path(__file__).resolve().parents[2] / "client.env")
-        os.environ["RSLOGIC_CLIENT_ENV_FILE"] = env_file
+        env_file = str((Path(__file__).resolve().parents[2] / "client.env"))
     path = Path(env_file).expanduser()
+    if not path.is_absolute():
+        path = (Path(__file__).resolve().parents[2] / path).resolve()
+    os.environ["RSLOGIC_CLIENT_ENV_FILE"] = str(path)
     if not path.is_file():
         raise RuntimeError(f"Client env file not found: {path}")
-    load_dotenv(path, override=False)
+
+    loaded = dotenv_values(path)
+    for key, value in loaded.items():
+        if value is None:
+            continue
+        normalized_key = str(key).strip().lstrip("\ufeff")
+        if not normalized_key:
+            continue
+        if os.getenv(normalized_key) in (None, ""):
+            os.environ[normalized_key] = str(value)
     _validate_client_env_contract()
 
 
