@@ -14,13 +14,35 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import venv as _stdlib_venv
-import os.path
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, RichLog, Static
 
 _VENV_BOOTSTRAP_ENV = "RSLOGIC_CLIENTCTL_BOOTSTRAPPED"
+_REQUIRED_CLIENT_ENV_KEYS = {
+    "RSLOGIC_CLIENT_ID",
+    "RSLOGIC_CLIENT_LOG_LEVEL",
+    "RSLOGIC_CLIENT_ENV_FILE",
+    "RSLOGIC_REDIS_HOST",
+    "RSLOGIC_REDIS_PORT",
+    "RSLOGIC_CONTROL_COMMAND_QUEUE",
+    "RSLOGIC_CONTROL_RESULT_QUEUE",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "RSLOGIC_DATA_ROOT",
+    "RSLOGIC_RSTOOLS_WORKING_ROOT",
+    "RSLOGIC_RSTOOLS_EXECUTABLE",
+    "RSLOGIC_RSTOOLS_EXECUTABLE_ARGS",
+    "RSLOGIC_RSTOOLS_MODE",
+    "RSLOGIC_RSTOOLS_SDK_BASE_URL",
+    "RSLOGIC_RSTOOLS_SDK_CLIENT_ID",
+    "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN",
+    "RSLOGIC_RSTOOLS_SDK_APP_TOKEN",
+}
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -38,6 +60,64 @@ for _extra in (
         sys.path.insert(0, str(_extra))
 
 from rslogic.config import CONFIG
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return values
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.lower().startswith("export "):
+            stripped = stripped[7:].lstrip()
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip().strip("'\"")
+    return values
+
+
+def _client_env_file() -> Path:
+    explicit = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
+    if not explicit:
+        raise RuntimeError("RSLOGIC_CLIENT_ENV_FILE is required in process environment")
+    candidate = Path(explicit)
+    if not candidate.is_file():
+        raise RuntimeError(f"Client env file not found: {candidate}")
+    return candidate
+
+
+def _derive_client_id() -> str:
+    env_values = _read_env_file(_client_env_file())
+    direct = os.getenv("RSLOGIC_CLIENT_ID", "").strip()
+    if direct:
+        return direct
+    resolved = env_values.get("RSLOGIC_CLIENT_ID", "").strip()
+    if resolved:
+        return resolved
+    raise RuntimeError("Missing RSLOGIC_CLIENT_ID in env file.")
+
+
+def _validate_client_env_contract(path: Path | None = None) -> None:
+    if path is None:
+        path = _client_env_file()
+    if not path.is_file():
+        raise RuntimeError(f"Client env file does not exist: {path}")
+    values: dict[str, str] = _read_env_file(path)
+    values.update({k: os.getenv(k, "") for k in _REQUIRED_CLIENT_ENV_KEYS})
+    missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not values.get(name)]
+    if missing:
+        raise RuntimeError(
+            "Invalid client env format. Missing required keys in environment or "
+            f"{path}: {', '.join(missing)}"
+        )
 
 
 def _repo_root() -> Path:
@@ -171,7 +251,7 @@ def bootstrap_self(*, require_textual: bool = False) -> None:
 
 
 def _client_id() -> str:
-    return os.getenv("RSLOGIC_CLIENT_ID", os.getenv("CLIENT_ID", "default-client"))
+    return _derive_client_id()
 
 
 def _now() -> str:
@@ -294,10 +374,9 @@ class ClientProcessManager:
         if self.log_level:
             env["RSLOGIC_CLIENT_LOG_LEVEL"] = self.log_level
 
-        if not env.get("RSLOGIC_CLIENT_ENV_FILE"):
-            client_env = self.root / "client.env"
-            if client_env.exists():
-                env["RSLOGIC_CLIENT_ENV_FILE"] = str(client_env)
+        client_env = _client_env_file()
+        env["RSLOGIC_CLIENT_ENV_FILE"] = str(client_env)
+        env.update(_read_env_file(client_env))
 
         existing_python_path = env.get("PYTHONPATH", "")
         sdk_path = self.root / "rslogic" / "internal_tools" / "rstool-sdk" / "src"
@@ -351,58 +430,32 @@ class ClientProcessManager:
         return round(time.time() - float(ts), 2)
 
     def _rsnode_pids(self) -> list[int]:
-        executable = (CONFIG.rstools.executable_path or "").strip()
-        candidates = {
-            "rsnode.exe",
-            "RSNode.exe",
-            "realityscan.exe",
-            "RealityScan.exe",
-        }
-        if executable:
-            candidates.add(Path(executable).name)
-        if not candidates:
+        if os.name != "nt":
             return []
 
-        pids: list[int] = []
         try:
-            for candidate in sorted(set(candidates)):
-                if os.name == "nt":
-                    cp = subprocess.run(
-                        ["tasklist", "/FI", f"imagename eq {candidate}", "/NH", "/FO", "CSV"],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
-                    if cp.returncode != 0 or not cp.stdout:
-                        continue
-                    for line in cp.stdout.splitlines():
-                        parts = [p.strip('"') for p in line.split(",")]
-                        if len(parts) < 2:
-                            continue
-                        if parts[0].strip().lower() != candidate.lower():
-                            continue
-                        try:
-                            pids.append(int(parts[1]))
-                        except ValueError:
-                            continue
-                else:
-                    cp = subprocess.run(
-                        ["pgrep", "-f", candidate],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
-                    if cp.returncode != 0 or not cp.stdout:
-                        continue
-                    for raw_pid in cp.stdout.splitlines():
-                        try:
-                            pids.append(int(raw_pid))
-                        except ValueError:
-                            continue
+            cp = subprocess.run(
+                ["tasklist", "/FI", "imagename eq RSNode.exe", "/NH", "/FO", "CSV"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if cp.returncode != 0 or not cp.stdout:
+                return []
+            pids: list[int] = []
+            for line in cp.stdout.splitlines():
+                parts = [p.strip('"') for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                if parts[0].strip().lower() != "rsnode.exe":
+                    continue
+                try:
+                    pids.append(int(parts[1]))
+                except ValueError:
+                    continue
+            return pids
         except Exception:
             return []
-
-        return sorted(set(pids))
 
     def start(self, detach: bool = False) -> str:
         running, _ = self._current_client_process()
@@ -611,11 +664,11 @@ class ClientControlTUI(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         match event.button.id:
             case "action_start":
-                self._run_action("start", self._manager.start)
+                self._run_action("start", self._manager.start, {"detach": True})
             case "action_stop":
                 self._run_action("stop", self._manager.stop)
             case "action_restart":
-                self._run_action("restart", self._manager.restart)
+                self._run_action("restart", self._manager.restart, {"detach": True})
             case "action_refresh":
                 self._refresh_all()
             case "action_clear":
@@ -623,10 +676,10 @@ class ClientControlTUI(App):
             case "action_quit":
                 self.action_quit()
 
-    def _run_action(self, name: str, func: Any) -> None:
+    def _run_action(self, name: str, func: Any, kwargs: dict[str, Any] | None = None) -> None:
         def runner() -> None:
             try:
-                result = func()
+                result = func(**(kwargs or {}))
                 self.call_from_thread(self._log, f"{_now()} [green]{name}[/] {result}")
             except Exception as exc:
                 self.call_from_thread(self._log, f"{_now()} [red]{name} failed:[/] {type(exc).__name__}: {exc}")
@@ -721,6 +774,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     try:
+        env_file = _client_env_file()
+        _validate_client_env_contract(env_file)
         bootstrap_self(require_textual=(args.mode == "tui"))
     except Exception as exc:
         print(f"bootstrap failed: {exc}", file=sys.stderr)

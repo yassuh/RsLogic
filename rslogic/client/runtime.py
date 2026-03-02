@@ -19,21 +19,48 @@ try:
 except ModuleNotFoundError as exc:
     RealityScanClient = None  # type: ignore[assignment]
     _SDK_AVAILABLE = False
-    _SDK_IMPORT_ERROR = str(exc)
+
+
+_REQUIRED_CLIENT_ENV_KEYS = {
+    "RSLOGIC_CLIENT_ID",
+    "RSLOGIC_CLIENT_LOG_LEVEL",
+    "RSLOGIC_CLIENT_ENV_FILE",
+    "RSLOGIC_REDIS_HOST",
+    "RSLOGIC_REDIS_PORT",
+    "RSLOGIC_CONTROL_COMMAND_QUEUE",
+    "RSLOGIC_CONTROL_RESULT_QUEUE",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "RSLOGIC_DATA_ROOT",
+    "RSLOGIC_RSTOOLS_WORKING_ROOT",
+    "RSLOGIC_RSTOOLS_EXECUTABLE",
+    "RSLOGIC_RSTOOLS_EXECUTABLE_ARGS",
+    "RSLOGIC_RSTOOLS_MODE",
+    "RSLOGIC_RSTOOLS_SDK_BASE_URL",
+    "RSLOGIC_RSTOOLS_SDK_CLIENT_ID",
+    "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN",
+    "RSLOGIC_RSTOOLS_SDK_APP_TOKEN",
+}
+
+
+def _validate_client_env_contract() -> None:
+    missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(f"Client runtime missing required env values: {', '.join(missing)}")
+
 
 def _load_client_env() -> None:
-    env_candidates = [
-        os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip(),
-        str(Path(__file__).resolve().parent.parent / "client.env"),
-        str(Path(__file__).resolve().parent.parent.parent / "client.env"),
-    ]
-    for env_file in env_candidates:
-        if not env_file:
-            continue
-        path = Path(env_file)
-        if path.is_file():
-            load_dotenv(path, override=False)
-            break
+    env_file = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
+    if not env_file:
+        raise RuntimeError("RSLOGIC_CLIENT_ENV_FILE is required")
+    path = Path(env_file).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f"Client env file not found: {path}")
+    load_dotenv(path, override=False)
+    _validate_client_env_contract()
 
 
 _load_client_env()
@@ -52,7 +79,9 @@ class ClientRuntime:
         self._configure_logging()
         self._log = logging.getLogger("rslogic.client.runtime")
         self.stop_event = threading.Event()
-        self.client_id = os.getenv("RSLOGIC_CLIENT_ID", os.getenv("CLIENT_ID", "default-client"))
+        self.client_id = os.getenv("RSLOGIC_CLIENT_ID", "").strip()
+        if not self.client_id:
+            raise RuntimeError("RSLOGIC_CLIENT_ID is required")
         self.sdk_client_id = self._normalize_sdk_client_id(
             os.getenv("RSLOGIC_RSTOOLS_SDK_CLIENT_ID", CONFIG.rstools.sdk_client_id or None),
             fallback=self.client_id,
@@ -64,10 +93,10 @@ class ClientRuntime:
         )
         self.db = LabelDbStore(CONFIG.label_db.database_url, CONFIG.label_db.migration_root)
         self.node_guard = RsNodeProcess(
-            os.getenv("RSLOGIC_RSTOOLS_EXECUTABLE", CONFIG.rstools.executable_path or ""),
-            os.getenv("RSLOGIC_RSTOOLS_EXECUTABLE_ARGS", CONFIG.rstools.executable_args),
+            os.environ["RSLOGIC_RSTOOLS_EXECUTABLE"],
+            os.environ["RSLOGIC_RSTOOLS_EXECUTABLE_ARGS"],
         )
-        self.data_root = Path(os.getenv("RSLOGIC_DATA_ROOT", os.getenv("RSLOGIC_RSTOOLS_WORKING_ROOT", CONFIG.rstools.working_root)))
+        self.data_root = Path(os.environ["RSLOGIC_DATA_ROOT"])
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.file_executor = FileExecutor(self.db, self.data_root)
         self._job_lock = threading.Lock()
@@ -110,10 +139,10 @@ class ClientRuntime:
                 "realityscan_sdk is not installed. Install it in this environment to run sdk commands."
             )
         return RealityScanClient(
-            base_url=os.getenv("RSLOGIC_RSTOOLS_SDK_BASE_URL", CONFIG.rstools.sdk_base_url or "http://127.0.0.1:8000"),
+            base_url=os.environ["RSLOGIC_RSTOOLS_SDK_BASE_URL"],
             client_id=self.sdk_client_id,
-            auth_token=os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN", CONFIG.rstools.sdk_auth_token or ""),
-            app_token=os.getenv("RSLOGIC_RSTOOLS_SDK_APP_TOKEN", CONFIG.rstools.sdk_app_token or "123"),
+            auth_token=os.environ["RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"],
+            app_token=os.environ["RSLOGIC_RSTOOLS_SDK_APP_TOKEN"],
             verify_tls=False,
         )
 
