@@ -69,8 +69,7 @@ def _load_client_env() -> None:
         normalized_key = str(key).strip().lstrip("\ufeff")
         if not normalized_key:
             continue
-        if os.getenv(normalized_key) in (None, ""):
-            os.environ[normalized_key] = str(value)
+        os.environ[normalized_key] = str(value)
     _validate_client_env_contract()
 
 

@@ -22,6 +22,7 @@ RsLogic execution architecture
   - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
   - client env contract is loaded with `python-dotenv`; `client.env` at repo root is used by default and can be overridden by `RSLOGIC_CLIENT_ENV_FILE`.
   - `RSLOGIC_CLIENT_ENV_FILE` is not required in process environment; it is set automatically when resolved from `client.env`.
+  - status now reports active heartbeat clients discovered from Redis (`heartbeat_clients`) to make mismatched client-id/runtime combinations obvious.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from local script location (`Path(__file__).resolve().parent`) and inserts it into `PYTHONPATH` before importing package modules.

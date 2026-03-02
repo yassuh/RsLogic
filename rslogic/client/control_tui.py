@@ -86,9 +86,6 @@ def _client_env_file() -> Path:
 
 def _derive_client_id() -> str:
     env_values = _read_env_file(_client_env_file())
-    direct = os.getenv("RSLOGIC_CLIENT_ID", "").strip()
-    if direct:
-        return direct
     resolved = env_values.get("RSLOGIC_CLIENT_ID", "").strip()
     if resolved:
         return resolved
@@ -102,9 +99,8 @@ def _validate_client_env_contract(path: Path | None = None) -> None:
         raise RuntimeError(f"Client env file does not exist: {path}")
     values: dict[str, str] = _read_env_file(path)
     for key in _REQUIRED_CLIENT_ENV_KEYS:
-        env_value = os.getenv(key, "").strip()
-        if env_value:
-            values[key] = env_value
+        if not values.get(key):
+            values[key] = os.getenv(key, "").strip()
     missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not values.get(name)]
     if missing:
         raise RuntimeError(
@@ -414,6 +410,26 @@ class ClientProcessManager:
         except Exception:
             return None
 
+    def _active_heartbeat_clients(self) -> list[str]:
+        import redis
+
+        try:
+            with redis.Redis.from_url(CONFIG.queue.redis_url, decode_responses=True) as rc:
+                keys = rc.keys("rslogic:clients:*:heartbeat")
+            if not keys:
+                return []
+            clients: list[str] = []
+            for raw in keys:
+                if not isinstance(raw, str):
+                    continue
+                parts = raw.split(":")
+                if len(parts) < 3:
+                    continue
+                clients.append(parts[2])
+            return sorted(set(clients))
+        except Exception:
+            return []
+
     def _heartbeat_age(self, heartbeat: dict[str, Any] | None) -> float | None:
         if not heartbeat:
             return None
@@ -562,6 +578,7 @@ class ClientProcessManager:
             "client_pid": pid,
             "heartbeat": heartbeat,
             "heartbeat_age": age,
+            "heartbeat_clients": self._active_heartbeat_clients(),
             "queued_commands": self._command_queue_depth(),
             "rsnode_running": len(rsnode) > 0,
             "rsnode_pids": rsnode,
