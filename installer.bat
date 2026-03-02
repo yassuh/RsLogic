@@ -79,4 +79,5 @@ echo [*] Writing start-rslogic-client.bat
 echo [*] Install complete.
 echo [*] Edit %ROOT%\client.env, then run:
 echo     %ROOT%\start-rslogic-client.bat
+echo [*] Use %ROOT%\stop-rslogic-client.bat to stop the client cleanly.
 exit /b 0
