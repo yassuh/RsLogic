@@ -310,18 +310,32 @@ class ClientRuntime:
             return []
         job_state = self._task_state.get(job_id)
         if not job_state:
-            return []
+            job_state = {"session": None, "tasks": {}}
+            self._task_state[job_id] = job_state
         tasks = job_state.get("tasks")
-        if not isinstance(tasks, dict) or not tasks:
-            return []
-        task_ids = list(tasks.keys())
-        if not task_ids:
-            return []
-        try:
-            statuses = sdk_client.project.tasks(task_ids=task_ids)  # type: ignore[attr-defined]
-        except Exception as exc:
-            self._log.debug("job=%s task status poll failed: %s", job_id, exc)
-            return []
+        if not isinstance(tasks, dict):
+            tasks = None
+        if not tasks:
+            try:
+                statuses = sdk_client.project.tasks()  # type: ignore[attr-defined]
+            except Exception as exc:
+                self._log.debug("job=%s task status poll failed (all session): %s", job_id, exc)
+                return []
+        else:
+            task_ids = list(tasks.keys())
+            if not task_ids:
+                return []
+            try:
+                statuses = sdk_client.project.tasks(task_ids=task_ids)  # type: ignore[attr-defined]
+            except Exception as exc:
+                self._log.debug(
+                    "job=%s project.tasks returned non-sequence response for ids=%s error=%s",
+                    job_id,
+                    task_ids,
+                    exc,
+                )
+                return []
+
         if not isinstance(statuses, (list, tuple)):
             self._log.debug(
                 "job=%s project.tasks returned non-sequence response=%s",
@@ -329,6 +343,10 @@ class ClientRuntime:
                 self._safe_preview(statuses),
             )
             return []
+        if not tasks:
+            tasks = {}
+            self._task_state[job_id] = {"session": job_state.get("session"), "tasks": tasks}
+
         now = time.time()
         for raw_status in statuses:
             payload = self._to_jsonable_dict(raw_status)
@@ -339,7 +357,17 @@ class ClientRuntime:
                 continue
             task = tasks.get(task_id)
             if task is None:
-                continue
+                task = {
+                    "taskID": task_id,
+                    "created_at": now,
+                    "state": "",
+                    "status": "",
+                    "errorCode": 0,
+                    "errorMessage": "",
+                    "timeStart": None,
+                    "timeEnd": None,
+                }
+                tasks[task_id] = task
             task.update(
                 {
                     "state": payload.get("state", ""),
@@ -351,6 +379,10 @@ class ClientRuntime:
                     "updated_at": now,
                 }
             )
+
+            if "created_at" not in task:
+                task["created_at"] = now
+
         result = []
         for task in tasks.values():
             task_state = dict(task)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 import uuid
@@ -24,15 +25,66 @@ _db = LabelDbStore(CONFIG.label_db.database_url, CONFIG.label_db.migration_root)
 _result_threads: dict[str, threading.Thread] = {}
 
 
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            return float(value)
+    return None
+
+
+def _coerce_task_id(task: dict[str, Any]) -> str | None:
+    task_id = task.get("taskID") or task.get("taskId") or task.get("id")
+    if task_id is None:
+        return None
+    text = str(task_id).strip()
+    return text or None
+
+
+def _coerce_task_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        if isinstance(value.get("tasks"), list):
+            value = value["tasks"]
+        elif _coerce_task_id(value) is not None:
+            value = [value]
+        else:
+            return []
+    if not isinstance(value, list):
+        return []
+
+    tasks: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if _coerce_task_id(item) is None:
+            continue
+        tasks.append(item)
+    return tasks
+
+
 def _extract_task_status(result_summary: dict[str, object] | None) -> dict[str, object] | None:
     if not result_summary:
         return None
+    by_id = result_summary.get("_task_state_by_id")
+    if isinstance(by_id, dict) and by_id:
+        tasks = [task for task in by_id.values() if isinstance(task, dict)]
+        tasks.sort(key=lambda item: str(item.get("taskID", "")))
+        return {
+            "source": "merged_by_id",
+            "task_count": len(tasks),
+            "tasks": tasks,
+        }
+
     for key in ("task_state", "final_task_state", "task_status"):
+        tasks = _coerce_task_items(result_summary.get(key))
+        if tasks:
+            return {"source": key, "task_count": len(tasks), "tasks": tasks}
+    for key in ("task_state", "task_status"):
         value = result_summary.get(key)
         if isinstance(value, dict) and isinstance(value.get("tasks"), list):
             return {"source": key, "tasks": value.get("tasks")}
-        if isinstance(value, list):
-            return {"source": key, "tasks": value}
+
     running = result_summary.get("running_tasks")
     completed = result_summary.get("completed_tasks")
     if isinstance(running, list) or isinstance(completed, list):
@@ -53,6 +105,97 @@ def _extract_project_status(result_summary: dict[str, object] | None) -> dict[st
         if isinstance(value, dict):
             return value
     return None
+
+
+def _merge_task_states(
+    existing: dict[str, Any],
+    incoming: list[dict[str, Any]],
+    *, now: float | None,
+) -> dict[str, Any]:
+    by_id = {}
+    raw_by_id = existing.get("_task_state_by_id")
+    if isinstance(raw_by_id, dict):
+        for task_id, task_value in raw_by_id.items():
+            if not isinstance(task_value, dict):
+                continue
+            by_id[str(task_id)] = dict(task_value)
+
+    if not by_id:
+        for key in ("task_state", "final_task_state", "task_status"):
+            for task in _coerce_task_items(existing.get(key)):
+                task_id = _coerce_task_id(task)
+                if task_id is None:
+                    continue
+                task = dict(task)
+                task.setdefault("task_last_seen", now)
+                by_id[task_id] = task
+
+    now_ts = now or _as_float(time.time())
+    for task in incoming:
+        task_id = _coerce_task_id(task)
+        if task_id is None:
+            continue
+        task_seen = _as_float(task.get("task_last_seen"))
+        if task_seen is None:
+            task_seen = now_ts
+        task = dict(task)
+        task["task_last_seen"] = task_seen
+        task.setdefault("created_at", task_seen)
+        task["updated_at"] = task_seen
+
+        previous = by_id.get(task_id)
+        if previous:
+            prev_seen = _as_float(previous.get("task_last_seen"))
+            if prev_seen is not None and prev_seen > task_seen:
+                continue
+            merged = dict(previous)
+            merged.update(task)
+            by_id[task_id] = merged
+        else:
+            by_id[task_id] = task
+
+    tasks = list(by_id.values())
+    tasks.sort(key=lambda item: str(item.get("taskID", "")))
+    merged = dict(existing)
+    merged["_task_state_by_id"] = by_id
+    merged["task_state"] = {"tasks": tasks}
+    merged["task_state_last_seen"] = now_ts
+    return merged
+
+
+def _merge_project_status(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *, now: float | None,
+) -> dict[str, Any]:
+    now_ts = now or _as_float(time.time())
+    merged = dict(existing)
+    incoming = dict(incoming)
+    existing_seen = _as_float(existing.get("project_status_last_seen"))
+    incoming_seen = _as_float(incoming.get("project_last_seen")) or now_ts
+    if existing_seen is not None and existing_seen > incoming_seen:
+        return existing
+    payload_status = merged.get("project_status")
+    if isinstance(payload_status, dict):
+        payload_status = dict(payload_status)
+        payload_status.update(incoming)
+        payload_status.setdefault("project_last_seen", incoming_seen)
+        merged["project_status"] = payload_status
+    else:
+        incoming.setdefault("project_last_seen", incoming_seen)
+        merged["project_status"] = incoming
+    merged["project_status_last_seen"] = incoming_seen
+    return merged
+
+
+def _read_existing_result_summary(job_id: str) -> dict[str, Any] | None:
+    with _db.session() as session:
+        job = session.get(_db.ProcessingJob, job_id)
+        if job is None:
+            return None
+        if isinstance(job.result_summary, dict):
+            return dict(job.result_summary)
+        return None
 
 
 def _resolve_client(request: JobRequest) -> str:
@@ -180,21 +323,60 @@ def _consume_results() -> None:
             result_summary = payload.get("result")
         if not isinstance(result_summary, dict):
             result_summary = None
-        if isinstance(payload.get("task_state"), dict):
-            if result_summary is None:
-                result_summary = {}
-            result_summary["task_state"] = payload["task_state"]
-        if isinstance(payload.get("project_status"), dict):
-            if result_summary is None:
-                result_summary = {}
-            result_summary["project_status"] = payload["project_status"]
+        merged_result_summary = result_summary
+        timestamp = _as_float(payload.get("timestamp"))
+        incoming_task_state = payload.get("task_state")
+        incoming_project_status = payload.get("project_status")
+
+        if merged_result_summary is not None and not isinstance(merged_result_summary, dict):
+            merged_result_summary = None
+        if merged_result_summary is None:
+            merged_result_summary = {}
+
+        if isinstance(result_summary, dict):
+            merged_result_summary.update(result_summary)
+
+        existing = _read_existing_result_summary(job_id)
+        if existing:
+            merged_result_summary = dict(existing | merged_result_summary)
+
+        if isinstance(incoming_task_state, dict):
+            tasks = _coerce_task_items(incoming_task_state)
+            merged_result_summary = _merge_task_states(
+                merged_result_summary,
+                tasks,
+                now=timestamp,
+            )
+        elif isinstance(result_summary, dict):
+            tasks = _coerce_task_items(result_summary.get("task_state"))
+            if tasks:
+                merged_result_summary = _merge_task_states(
+                    merged_result_summary,
+                    tasks,
+                    now=timestamp,
+                )
+
+        if isinstance(incoming_project_status, dict):
+            merged_result_summary = _merge_project_status(
+                merged_result_summary,
+                dict(incoming_project_status),
+                now=timestamp,
+            )
+        elif isinstance(result_summary, dict):
+            old_project_status = result_summary.get("project_status")
+            if isinstance(old_project_status, dict):
+                merged_result_summary = _merge_project_status(
+                    merged_result_summary,
+                    dict(old_project_status),
+                    now=timestamp,
+                )
         _db.upsert_processing_job(
             job_id=job_id,
             image_group_id=payload.get("group_id"),
             status=status,
             progress=progress,
             message=message,
-            result_summary=result_summary,
+            result_summary=merged_result_summary,
             filters=None,
         )
 

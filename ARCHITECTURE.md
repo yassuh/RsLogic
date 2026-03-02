@@ -3,7 +3,7 @@ RsLogic execution architecture
 ## Top-level packages
 
 - `rslogic/api/server.py` is the orchestrator control plane entrypoint (`rslogic-api`).
-  - Results consumer now normalizes `task_state` / `project_status` fields from client payloads and persists them in `result_summary` so `/jobs` and `/jobs/{job_id}` expose stable task/project snapshots during execution.
+  - Results consumer now normalizes and merges `task_state` / `project_status` fields from client payloads into `result_summary` by message timestamp, so `/jobs` and `/jobs/{job_id}` expose cumulative task snapshots and latest project state.
 - `rslogic/cli/upload.py` is the CLI upload entrypoint (`rslogic-upload`).
 - `rslogic/ingest.py` ingests objects from `drone-imagery-waiting` into `drone-imagery` and writes rows into `studio-db` (`rslogic-ingest`).
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
@@ -11,6 +11,7 @@ RsLogic execution architecture
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
   - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
   - Runtime now tracks SDK task IDs returned by `TaskHandle` and performs periodic `project.tasks` polling while a step heartbeat is active.
+  - If a job-specific task registry is empty, runtime now falls back to polling `project.tasks()` for all tasks in the active session so task snapshots are still populated from session-wide status.
   - Task snapshots and project status are attached to progress messages (`task_state`, `running_tasks`, `completed_tasks`, `project_status`) so TUI/operators can observe long-running reconstruction progress before a step finishes.
   - Runtime heartbeat payload now also mirrors active job/task/project progress (`active_job_id`, `task_state`, `project_status`) every heartbeat interval so client supervision can read progress without consuming result queue traffic.
   - `_report_progress` publishes explicit task/project payloads (`task_state`, `project_status`) in addition to `result_summary` to make progress consumers (including DB orchestration) resilient to schema changes.
