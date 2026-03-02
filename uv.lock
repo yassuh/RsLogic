@@ -626,7 +626,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "textual" },
     { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -655,7 +655,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "textual", specifier = ">=0.89,<1.0" },
     { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["dev"]
 
