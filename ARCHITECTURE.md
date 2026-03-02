@@ -135,6 +135,7 @@ Auto-assignment:
   - waiting bucket: `LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"`
   - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
   - label DB path resolution is now resilient to nested repo layouts (for example `C:\\ProgramData\\RsLogic\\RsLogic` vs `C:\\ProgramData\\RsLogic`) and probes `internal_tools/label-db/studio-db` in the project tree before failing.
+  - `_resolve_label_db_root()` now checks explicit `RSLOGIC_ROOT` and nested `RsLogic/rslogic/internal_tools/...` patterns before aborting startup when model path is missing.
 - Label-db models are loaded from `rslogic/internal_tools/label-db/studio-db/models.py` by default.
 - Heartbeats are written to redis key `rslogic:clients:{client_id}:heartbeat`.
 - `rslogic-clientctl` is the preferred control entrypoint on remote clients and replaces direct `start-rslogic-client.bat`/`stop-rslogic-client.bat` usage.

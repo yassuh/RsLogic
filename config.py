@@ -115,19 +115,31 @@ def _resolve_label_db_root() -> str:
         if candidate.exists():
             return str(candidate.resolve())
 
-    base = Path(__file__).resolve().parent
-    candidates: list[Path] = []
-    for parent in (base, *base.parents):
-        for head in ("", "rslogic", "RsLogic"):
-            candidate = parent / head / "internal_tools" / "label-db" / "studio-db" if head else parent / "internal_tools" / "label-db" / "studio-db"
-            candidates.append(candidate)
-            if head == "":
-                candidates.append(parent / "rslogic" / "internal_tools" / "label-db" / "studio-db")
-                candidates.append(parent / "RsLogic" / "internal_tools" / "label-db" / "studio-db")
+    roots: list[Path] = [Path(__file__).resolve().parent, Path.cwd()]
+    root_env = os.getenv("RSLOGIC_ROOT")
+    if root_env:
+        roots.append(Path(root_env))
+    # include a few ancestor directories so nested repo layouts are still discoverable
+    roots.extend(Path(__file__).resolve().parents[:6])
 
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_dir():
-            return str(candidate.resolve())
+    rels = [
+        Path("internal_tools") / "label-db" / "studio-db",
+        Path("rslogic") / "internal_tools" / "label-db" / "studio-db",
+        Path("RsLogic") / "internal_tools" / "label-db" / "studio-db",
+        Path("RsLogic") / "rslogic" / "internal_tools" / "label-db" / "studio-db",
+        Path("rslogic") / "RsLogic" / "internal_tools" / "label-db" / "studio-db",
+    ]
+
+    seen: set[str] = set()
+    for base in roots:
+        for rel in rels:
+            candidate = (base / rel).resolve()
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists() and candidate.is_dir() and (candidate / "models.py").exists():
+                return key
     raise RuntimeError("could not locate rslogic/internal_tools/label-db/studio-db")
 
 
