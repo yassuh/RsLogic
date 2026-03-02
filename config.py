@@ -112,8 +112,23 @@ def _resolve_label_db_root() -> str:
         candidate = Path(env_root)
         if not candidate.is_absolute():
             candidate = Path(__file__).resolve().parent / candidate
+        candidate = candidate.expanduser().resolve()
         if candidate.exists():
             return str(candidate.resolve())
+        # If an explicit root was provided but points at a parent directory, probe likely child locations.
+        for suffix in [
+            Path("internal_tools") / "label-db" / "studio-db",
+            Path("rslogic") / "internal_tools" / "label-db" / "studio-db",
+            Path("RsLogic") / "internal_tools" / "label-db" / "studio-db",
+        ]:
+            alt = (candidate / suffix).resolve()
+            if alt.exists() and alt.is_dir():
+                if (alt / "models.py").exists():
+                    return str(alt)
+
+        if candidate.is_dir():
+            for found in candidate.rglob("internal_tools/label-db/studio-db/models.py"):
+                return str(found.parent)
 
     roots: list[Path] = [Path(__file__).resolve().parent, Path.cwd()]
     root_env = os.getenv("RSLOGIC_ROOT")
@@ -140,6 +155,14 @@ def _resolve_label_db_root() -> str:
             seen.add(key)
             if candidate.exists() and candidate.is_dir() and (candidate / "models.py").exists():
                 return key
+    # Last-ditch discovery for unusual repo layouts / symlink trees.
+    for base in roots:
+        if not isinstance(base, Path):
+            continue
+        if not base.exists():
+            continue
+        for found in base.rglob("internal_tools/label-db/studio-db/models.py"):
+            return str(found.parent.resolve())
     raise RuntimeError("could not locate rslogic/internal_tools/label-db/studio-db")
 
 

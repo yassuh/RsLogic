@@ -28,6 +28,7 @@ dependencies = [
   "ftputil>=5.1",
   "redis>=5.2",
   "realityscan-sdk>=0.1.0",
+  "studio-db>=0.1.0",
 ]
 
 [project.scripts]
@@ -62,3 +63,4 @@ index-strategy = "unsafe-best-match"
 
 [tool.uv.sources]
 realityscan-sdk = { path = "rslogic/internal_tools/rstool-sdk", editable = true }
+"studio-db" = { path = "rslogic/internal_tools/label-db/studio-db", editable = true }
