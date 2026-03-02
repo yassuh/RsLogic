@@ -342,8 +342,26 @@ class ClientProcessManager:
 
     @staticmethod
     def _is_windows_pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
         try:
-            return os.kill(pid, 0) == 0
+            cp = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if cp.returncode != 0 or not cp.stdout:
+                return False
+            for line in cp.stdout.splitlines():
+                parts = [p.strip('"') for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    return int(parts[1]) == pid
+                except ValueError:
+                    continue
+            return False
         except Exception:
             return False
 
@@ -382,15 +400,7 @@ class ClientProcessManager:
         if self.pid_path.exists():
             self.pid_path.unlink(missing_ok=True)
 
-    def _cleanup_dead_process(self) -> None:
-        pid = self._load_pid()
-        if pid is None:
-            return
-        if not self._is_windows_pid_alive(pid):
-            self._clear_pid()
-
     def _current_client_process(self) -> tuple[bool, int | None]:
-        self._cleanup_dead_process()
         pid = self._load_pid()
         if pid is None:
             return False, None
@@ -398,6 +408,57 @@ class ClientProcessManager:
             return True, pid
         self._clear_pid()
         return False, None
+
+    def _cleanup_orphaned_pid(self) -> int | None:
+        pid = self._load_pid()
+        if pid is None:
+            return None
+        if self._is_windows_pid_alive(pid):
+            return None
+        self._clear_pid()
+        return pid
+
+    def _start_detached(self) -> int:
+        if self._stdout_handle is not None and not self._stdout_handle.closed:
+            self._stdout_handle.close()
+        if self._stderr_handle is not None and not self._stderr_handle.closed:
+            self._stderr_handle.close()
+
+        cmd = self._resolve_client_command()
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+        self.logs_root.mkdir(parents=True, exist_ok=True)
+        self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
+        self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
+        self._stderr_handle.write(f"[clientctl] starting runtime command: {' '.join(cmd)}\n")
+        self._stderr_handle.flush()
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(self.root),
+            stdout=self._stdout_handle,
+            stderr=self._stderr_handle,
+            env=self._build_child_env(),
+            creationflags=creationflags,
+        )
+
+        self._write_pid(proc.pid)
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            self._clear_pid()
+            self._stdout_handle.flush() if self._stdout_handle else None
+            self._stderr_handle.flush() if self._stderr_handle else None
+            self._stdout_tail._offset = 0
+            self._stderr_tail._offset = 0
+            stdout_tail = self._stdout_tail.read(max_lines=20)
+            stderr_tail = self._stderr_tail.read(max_lines=40)
+            raise RuntimeError(
+                "client process exited early before becoming healthy: "
+                f"pid={proc.pid} rc={proc.returncode}; "
+                f"tail stdout={stdout_tail[-3:] if stdout_tail else []}; "
+                f"tail stderr={stderr_tail[-3:] if stderr_tail else []}"
+            )
+        return proc.pid
 
     def _build_child_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -512,58 +573,21 @@ class ClientProcessManager:
         if running:
             raise RuntimeError("client is already running")
 
-        cmd = self._resolve_client_command()
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NO_WINDOW
-
-        if detach:
-            self.logs_root.mkdir(parents=True, exist_ok=True)
-            self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
-            self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
-            if self._stderr_handle is not None:
-                self._stderr_handle.write(f"[clientctl] starting runtime command: {' '.join(cmd)}\n")
-                self._stderr_handle.flush()
-            stdout = self._stdout_handle
-            stderr = self._stderr_handle
-        else:
-            stdout = None
-            stderr = None
-
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(self.root),
-            stdout=stdout,
-            stderr=stderr,
-            env=self._build_child_env(),
-            creationflags=creationflags,
-        )
-
         if not detach:
+            cmd = self._resolve_client_command()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self.root),
+                env=self._build_child_env(),
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
             returncode = proc.wait()
             if returncode != 0:
                 raise RuntimeError(f"client exited quickly with status={returncode}")
             return "client exited with code 0"
 
-        self._write_pid(proc.pid)
-        time.sleep(0.5)
-        if proc.poll() is not None:
-            self._clear_pid()
-            self._stdout_handle.flush() if self._stdout_handle else None
-            self._stderr_handle.flush() if self._stderr_handle else None
-            self._stdout_tail._offset = 0
-            self._stderr_tail._offset = 0
-            stdout_tail = self._stdout_tail.read(max_lines=20)
-            stderr_tail = self._stderr_tail.read(max_lines=40)
-            raise RuntimeError(
-                "client process exited early before becoming healthy: "
-                f"pid={proc.pid} rc={proc.returncode}; "
-                f"tail stdout={stdout_tail[-3:] if stdout_tail else []}; "
-                f"tail stderr={stderr_tail[-3:] if stderr_tail else []}"
-            )
-        if not detach:
-            self._proc = proc
-        return f"started (pid={proc.pid})"
+        pid = self._start_detached()
+        return f"started (pid={pid})"
 
     def stop(self) -> str:
         pid = self._load_pid()
@@ -610,7 +634,20 @@ class ClientProcessManager:
         return self.start(detach=detach)
 
     def status(self) -> dict[str, Any]:
+        stale_pid = self._cleanup_orphaned_pid()
+        started = False
+        new_pid: int | None = None
+        if stale_pid is not None:
+            try:
+                new_pid = self._start_detached()
+                started = True
+            except Exception:
+                new_pid = None
+                self._clear_pid()
         running, pid = self._current_client_process()
+        if not running and new_pid is not None:
+            running, pid = True, new_pid
+            self._write_pid(pid)
         heartbeat = self._heartbeat()
         age = self._heartbeat_age(heartbeat)
         heartbeat_pid = _parse_pid(heartbeat.get("pid") if isinstance(heartbeat, dict) else None)
@@ -633,6 +670,9 @@ class ClientProcessManager:
         return {
             "running": running,
             "client_pid": pid,
+            "orphaned_pid_recovered": bool(stale_pid is not None),
+            "orphaned_pid": stale_pid,
+            "auto_restarted": started,
             "heartbeat": heartbeat,
             "heartbeat_age": age,
             "heartbeat_host": heartbeat_host,

@@ -24,6 +24,8 @@ RsLogic execution architecture
   - `client.env` is the source of truth for all client settings: values are hydrated into `os.environ` before any client config import to ensure runtime/control paths are consistent.
   - `RSLOGIC_CLIENT_ENV_FILE` is not used by the client runtime path anymore; the root `client.env` file is the single source of truth.
   - runtime heartbeat includes `pid` and `host`, and control status now uses that heartbeat payload to recover and display the runtime PID when the local pid file is absent.
+  - status now clears a stale `logs/client/rslogic-client.pid` when the process does not exist and immediately relaunches a fresh client process, replacing the stale PID in the pid file.
+  - status output now includes `orphaned_pid_recovered`, `orphaned_pid`, and `auto_restarted` for visibility into this pid self-heal path.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from local script location (`Path(__file__).resolve().parent`) and inserts it into `PYTHONPATH` before importing package modules.
