@@ -15,6 +15,7 @@ RsLogic execution architecture
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
+  - starts `rslogic.client.rsnode_client` with a source-script fallback (`rslogic/client/rsnode_client.py`) so launch works even if `-m rslogic...` module resolution is broken in a specific venv.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from `RSLOGIC_ROOT`/cwd and inserts it into `PYTHONPATH` before importing package modules.
   - keeps startup resilient when editable import resolution is fragile on Windows by falling back to executing `rslogic/client/control_tui.py` from source when package imports fail.

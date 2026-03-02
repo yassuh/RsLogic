@@ -396,7 +396,10 @@ class ClientProcessManager:
         self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
         self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
 
-        cmd = [self._python_exec, "-m", "rslogic.client.rsnode_client"]
+        client_script = self.root / "rslogic" / "client" / "rsnode_client.py"
+        cmd = [self._python_exec, str(client_script)]
+        if not client_script.exists():
+            cmd = [self._python_exec, "-m", "rslogic.client.rsnode_client"]
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
