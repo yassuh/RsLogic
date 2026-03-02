@@ -23,6 +23,7 @@ RsLogic execution architecture
   - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
   - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
   - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
+  - Client `file_stage` is image-only; it stages only image assets referenced in DB rows and does not download/pull sidecar objects to the local client.
   - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
   - File move steps (`file_move_staging_to_working`, `file_move_to_working`, `file_import_to_working`, and session imagery variants) default to `staging_root` when `working_dir` is not explicitly provided, and never to `staging_root/<job_id>`.
 - `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
@@ -46,6 +47,7 @@ Auto-assignment:
   - image keys are `hash.extension`, where hash is the SHA-256 of image bytes.
   - sidecar keys are the same base hash as its paired image, with the sidecar extension.
   - if no matching sidecar file is found, the uploader generates a synthetic `*.json` sidecar from parsed image metadata so ingest still receives sidecar-style payloads.
+  - there is a single upload record per image so image and its sidecars are always uploaded together; duplicates were removed to avoid malformed payloads that dropped the whole upload batch.
 - No folder-like keys (no `/` path segments) are written to S3; organization happens in Postgres (`image_groups`, links, metadata).
 - Behavior:
   - multi-threaded upload with configurable workers (defaults to `os.cpu_count()`),

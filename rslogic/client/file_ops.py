@@ -59,16 +59,17 @@ class FileExecutor:
             local_path = group_dir / image_name
             self.s3.download_file(bucket, image_key, str(local_path))
 
-            manifests.append({
-                "asset_id": asset.id,
-                "image": {
-                    "bucket": bucket,
-                    "key": image_key,
-                    "local_path": str(local_path),
-                    "filename": asset.filename,
-                },
-                "sidecars": list((asset.extra or {}).get("sidecar_keys", []) or []),
-            })
+            manifests.append(
+                {
+                    "asset_id": asset.id,
+                    "image": {
+                        "bucket": bucket,
+                        "key": image_key,
+                        "local_path": str(local_path),
+                        "filename": asset.filename,
+                    },
+                }
+            )
 
         manifest_path = group_dir / "stage-map.json"
         manifest_path.write_text(

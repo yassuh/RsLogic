@@ -141,8 +141,15 @@ class FolderUploader:
                     sidecar_specs.append(({"embedded": True, "image": image.name, "payload": exif_payload}, sidecar_key))
                 else:
                     sidecar_keys = [f"{flat_prefix}{file_hash}{sp.suffix.lower()}" for sp in sidecar_paths]
-                records.append(UploadRecord(image=image, sidecars=sidecar_specs, image_key=image_key, sidecar_keys=sidecar_keys, bucket=self.bucket))
-                records.append(UploadRecord(image=image, sidecars=sidecar_paths, image_key=image_key, sidecar_keys=sidecar_keys, bucket=self.bucket))
+                records.append(
+                    UploadRecord(
+                        image=image,
+                        sidecars=sidecar_specs,
+                        image_key=image_key,
+                        sidecar_keys=sidecar_keys,
+                        bucket=self.bucket,
+                    )
+                )
 
         manifest = []
         total = 0
