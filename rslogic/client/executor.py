@@ -170,7 +170,7 @@ class StepExecutor:
         self._context = {"job_id": job_id}
         self._sync_session_context()
 
-    def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> str:
+    def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> Any:
         action = step.action
         kind = step.kind
         params = self._render(dict(step.params or {}))
@@ -282,9 +282,15 @@ class StepExecutor:
                 self._set_context_session(result)
             if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
                 self._set_context_session(None)
-            return str(result)
+            return result
         except TypeError:
             if params:
                 _LOGGER.exception("sdk call type error action=%s params=%s", action, params)
                 raise
-            return str(method())
+            return method()
+
+    def current_session(self) -> str | None:
+        return self._session
+
+    def context(self) -> dict[str, str]:
+        return dict(self._context)

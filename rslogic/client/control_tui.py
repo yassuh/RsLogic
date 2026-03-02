@@ -750,6 +750,15 @@ class ClientControlTUI(App):
             with Vertical(classes="panel"):
                 yield Static("Queue / client", id="queue_status")
                 yield Static("-", id="queue_depth")
+            with Vertical(classes="panel"):
+                yield Static("Task state", id="task_status")
+                yield Static("-", id="task_state")
+            with Vertical(classes="panel"):
+                yield Static("Project state", id="project_status")
+                yield Static("-", id="project_status_value")
+            with Vertical(classes="panel"):
+                yield Static("Active job", id="active_job")
+                yield Static("-", id="active_job_id")
         with Horizontal(id="controls"):
             yield Button("Start", id="action_start", variant="primary")
             yield Button("Stop", id="action_stop", variant="error")
@@ -803,6 +812,49 @@ class ClientControlTUI(App):
 
         threading.Thread(target=runner, daemon=True).start()
 
+    @staticmethod
+    def _render_task_state(task_state: Any) -> str:
+        if not isinstance(task_state, dict):
+            return "no task state"
+        tasks = task_state.get("tasks")
+        if not isinstance(tasks, list):
+            return "no task handles yet"
+        running = [
+            t
+            for t in tasks
+            if str(t.get("state", "")).strip().lower() not in {
+                "finished",
+                "done",
+                "canceled",
+                "cancelled",
+                "failed",
+                "error",
+                "aborted",
+            }
+        ]
+        completed = [t for t in tasks if t not in running]
+        latest = "-"
+        if tasks:
+            latest_task = tasks[0]
+            if isinstance(latest_task, dict):
+                latest = str(latest_task.get("taskID", latest_task.get("taskId", "-")))
+        return (
+            f"total={len(tasks)} running={len(running)} completed={len(completed)} "
+            f"latest={latest}"
+        )
+
+    @staticmethod
+    def _render_project_status(project_status: Any) -> str:
+        if not isinstance(project_status, dict):
+            return "no project status"
+        progress = project_status.get("progress")
+        if progress is None:
+            return "no project progress"
+        return (
+            f"progress={progress} elapsed={project_status.get('timeTotal', '-')}"
+            f" est={project_status.get('timeEstimation', '-')}"
+        )
+
     def _refresh_all(self) -> None:
         status = self._manager.status()
         if status.get("running"):
@@ -826,9 +878,23 @@ class ClientControlTUI(App):
             age = status.get("heartbeat_age")
             age_text = f"{age}s ago" if isinstance(age, (float, int)) else "n/a"
             self.query_one("#heartbeat_age", expect_type=Static).update(f"Last seen: {age_text}")
+
+            task_state = heartbeat.get("task_state")
+            project_status = heartbeat.get("project_status")
+            active_job = heartbeat.get("active_job_id")
+            self.query_one("#task_status", expect_type=Static).update(f"Task state: [blue]{self._render_task_state(task_state)}[/]")
+            self.query_one("#project_status_value", expect_type=Static).update(
+                f"Project: [blue]{self._render_project_status(project_status)}[/]"
+            )
+            self.query_one("#active_job", expect_type=Static).update(f"Active job")
+            self.query_one("#active_job_id", expect_type=Static).update(f"Job: {active_job or '-'}")
         else:
             self.query_one("#heartbeat_status", expect_type=Static).update("[yellow]Heartbeat: no data[/]")
             self.query_one("#heartbeat_age", expect_type=Static).update("Last seen: n/a")
+            self.query_one("#task_status", expect_type=Static).update("Task: no data")
+            self.query_one("#project_status_value", expect_type=Static).update("Project: no data")
+            self.query_one("#active_job", expect_type=Static).update("Active job")
+            self.query_one("#active_job_id", expect_type=Static).update("Job: -")
 
         qlen = status.get("queued_commands")
         self.query_one("#queue_status", expect_type=Static).update("[blue]Queue[/] for this client")

@@ -24,6 +24,37 @@ _db = LabelDbStore(CONFIG.label_db.database_url, CONFIG.label_db.migration_root)
 _result_threads: dict[str, threading.Thread] = {}
 
 
+def _extract_task_status(result_summary: dict[str, object] | None) -> dict[str, object] | None:
+    if not result_summary:
+        return None
+    for key in ("task_state", "final_task_state", "task_status"):
+        value = result_summary.get(key)
+        if isinstance(value, dict) and isinstance(value.get("tasks"), list):
+            return {"source": key, "tasks": value.get("tasks")}
+        if isinstance(value, list):
+            return {"source": key, "tasks": value}
+    running = result_summary.get("running_tasks")
+    completed = result_summary.get("completed_tasks")
+    if isinstance(running, list) or isinstance(completed, list):
+        return {
+            "source": "step_heartbeat",
+            "task_count": result_summary.get("task_count"),
+            "running_tasks": running,
+            "completed_tasks": completed,
+        }
+    return None
+
+
+def _extract_project_status(result_summary: dict[str, object] | None) -> dict[str, object] | None:
+    if not result_summary:
+        return None
+    for key in ("project_status", "final_project_status"):
+        value = result_summary.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def _resolve_client(request: JobRequest) -> str:
     if request.requested_client:
         active = _bus.list_active_clients()
@@ -94,6 +125,7 @@ def job_status(job_id: str) -> dict[str, Any]:
         job = session.get(_db.ProcessingJob, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+        result_summary = job.result_summary if isinstance(job.result_summary, dict) else None
         return {
             "job_id": job.id,
             "status": job.status,
@@ -101,6 +133,8 @@ def job_status(job_id: str) -> dict[str, Any]:
             "message": job.message,
             "filters": job.filters,
             "result_summary": job.result_summary,
+            "task_status": _extract_task_status(result_summary),
+            "project_status": _extract_project_status(result_summary),
         }
 
 
@@ -115,6 +149,12 @@ def list_jobs() -> list[dict[str, Any]]:
                 "progress": job.progress,
                 "message": job.message,
                 "updated_at": str(job.updated_at),
+                "task_status": _extract_task_status(
+                    job.result_summary if isinstance(job.result_summary, dict) else None
+                ),
+                "project_status": _extract_project_status(
+                    job.result_summary if isinstance(job.result_summary, dict) else None
+                ),
             }
             for job in jobs
         ]
@@ -129,13 +169,25 @@ def _consume_results() -> None:
         if not job_id:
             continue
         status = str(payload.get("status", "unknown"))
-        progress = float(payload.get("progress", 0.0))
+        progress_raw = payload.get("progress", 0.0)
+        try:
+            progress = float(progress_raw)
+        except Exception:
+            progress = 0.0
         message = str(payload.get("message", ""))
         result_summary = payload.get("result_summary")
         if not isinstance(result_summary, dict):
             result_summary = payload.get("result")
         if not isinstance(result_summary, dict):
             result_summary = None
+        if isinstance(payload.get("task_state"), dict):
+            if result_summary is None:
+                result_summary = {}
+            result_summary["task_state"] = payload["task_state"]
+        if isinstance(payload.get("project_status"), dict):
+            if result_summary is None:
+                result_summary = {}
+            result_summary["project_status"] = payload["project_status"]
         _db.upsert_processing_job(
             job_id=job_id,
             image_group_id=payload.get("group_id"),

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import asdict
 import json
 import logging
-import uuid
 import os
+import uuid
 import signal
 import threading
 import time
@@ -100,6 +101,9 @@ class ClientRuntime:
         self._configure_logging()
         self._log = logging.getLogger("rslogic.client.runtime")
         self.stop_event = threading.Event()
+        self._task_state: dict[str, dict[str, Any]] = {}
+        self._active_job_id: str | None = None
+        self._active_sdk_client: object | None = None
         self.client_id = os.getenv("RSLOGIC_CLIENT_ID", "").strip()
         if not self.client_id:
             raise RuntimeError("RSLOGIC_CLIENT_ID is required")
@@ -123,8 +127,8 @@ class ClientRuntime:
         self._session_state_file = self.data_root / _SESSION_STATE_FILE
         self._active_session: str | None = self._load_active_session()
         self._job_lock = threading.Lock()
-        self._step_heartbeat_seconds = max(
-            int(os.getenv("RSLOGIC_CLIENT_STEP_HEARTBEAT_SECONDS", "3")),
+        self._task_heartbeat_seconds = max(
+            int(os.getenv("RSLOGIC_CLIENT_TASK_POLL_SECONDS", "3")),
             1,
         )
 
@@ -178,6 +182,192 @@ class ClientRuntime:
         payload = {"session": session}
         with self._session_state_file.open("w", encoding="utf-8") as fp:
             json.dump(payload, fp)
+
+    @staticmethod
+    def _to_jsonable_dict(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            return {"value": value}
+        if hasattr(value, "__dataclass_fields__"):
+            try:
+                return asdict(value)
+            except Exception:
+                pass
+        task_id = getattr(value, "taskID", None)
+        if task_id is None:
+            task_id = getattr(value, "taskId", None)
+        if task_id is None:
+            return None
+        return {
+            "taskID": str(task_id),
+            "state": str(getattr(value, "state", "")),
+            "errorCode": getattr(value, "errorCode", 0),
+            "errorMessage": str(getattr(value, "errorMessage", "")),
+            "timeStart": getattr(value, "timeStart", None),
+            "timeEnd": getattr(value, "timeEnd", None),
+        }
+
+    @staticmethod
+    def _extract_task_ids(result: Any) -> list[str]:
+        task_ids: list[str] = []
+
+        def add(candidate: Any) -> None:
+            if candidate is None:
+                return
+            if isinstance(candidate, str):
+                return
+            task_id = candidate
+            if isinstance(candidate, dict):
+                task_id = candidate.get("taskID") or candidate.get("taskId") or candidate.get("id")
+            else:
+                if hasattr(candidate, "taskID"):
+                    task_id = getattr(candidate, "taskID")
+                elif hasattr(candidate, "taskId"):
+                    task_id = getattr(candidate, "taskId")
+            if task_id is None:
+                return
+            task_id = str(task_id).strip()
+            if task_id and task_id not in task_ids:
+                task_ids.append(task_id)
+
+        if isinstance(result, (list, tuple, set)):
+            for item in result:
+                add(item)
+            return task_ids
+        if isinstance(result, dict):
+            add(result)
+            return task_ids
+        add(result)
+        return task_ids
+
+    @staticmethod
+    def _normalize_task_state(value: Any) -> str:
+        return "" if value is None else str(value).strip().lower()
+
+    @staticmethod
+    def _is_task_terminal(state: Any) -> bool:
+        return ClientRuntime._normalize_task_state(state) in {
+            "finished",
+            "done",
+            "canceled",
+            "cancelled",
+            "failed",
+            "error",
+            "aborted",
+        }
+
+    def _init_job_task_state(self, job_id: str, session: str | None) -> None:
+        self._task_state[job_id] = {
+            "session": session,
+            "tasks": {},
+        }
+
+    def _register_step_tasks(
+        self,
+        job_id: str,
+        *,
+        step_index: int,
+        step_action: str,
+        step_kind: str,
+        task_ids: list[str],
+        session: str | None,
+    ) -> None:
+        job_state = self._task_state.setdefault(
+            job_id,
+            {
+                "session": session,
+                "tasks": {},
+            },
+        )
+        job_state["session"] = session
+        tasks = job_state["tasks"]
+        if not isinstance(tasks, dict):
+            tasks = {}
+            job_state["tasks"] = tasks
+        now = time.time()
+        for task_id in task_ids:
+            tasks[task_id] = {
+                "task_id": task_id,
+                "session": session,
+                "step_index": step_index,
+                "step_action": step_action,
+                "step_kind": step_kind,
+                "state": "started",
+                "status": "started",
+                "errorCode": 0,
+                "errorMessage": "",
+                "timeStart": None,
+                "timeEnd": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+
+    def _query_task_status(self, sdk_client: object | None, job_id: str) -> list[dict[str, Any]]:
+        if sdk_client is None:
+            return []
+        job_state = self._task_state.get(job_id)
+        if not job_state:
+            return []
+        tasks = job_state.get("tasks")
+        if not isinstance(tasks, dict) or not tasks:
+            return []
+        task_ids = list(tasks.keys())
+        if not task_ids:
+            return []
+        try:
+            statuses = sdk_client.project.tasks(task_ids=task_ids)  # type: ignore[attr-defined]
+        except Exception as exc:
+            self._log.debug("job=%s task status poll failed: %s", job_id, exc)
+            return []
+        if not isinstance(statuses, (list, tuple)):
+            self._log.debug(
+                "job=%s project.tasks returned non-sequence response=%s",
+                job_id,
+                self._safe_preview(statuses),
+            )
+            return []
+        now = time.time()
+        for raw_status in statuses:
+            payload = self._to_jsonable_dict(raw_status)
+            if not payload:
+                continue
+            task_id = str(payload.get("taskID", "")).strip()
+            if not task_id:
+                continue
+            task = tasks.get(task_id)
+            if task is None:
+                continue
+            task.update(
+                {
+                    "state": payload.get("state", ""),
+                    "status": payload.get("state", ""),
+                    "errorCode": payload.get("errorCode", 0),
+                    "errorMessage": payload.get("errorMessage", ""),
+                    "timeStart": payload.get("timeStart", None),
+                    "timeEnd": payload.get("timeEnd", None),
+                    "updated_at": now,
+                }
+            )
+        result = []
+        for task in tasks.values():
+            task_state = dict(task)
+            state = task_state.get("state")
+            task_state["is_terminal"] = self._is_task_terminal(state)
+            result.append(task_state)
+        return result
+
+    def _query_project_status(self, sdk_client: object | None) -> dict[str, Any] | None:
+        if sdk_client is None:
+            return None
+        try:
+            status = sdk_client.project.status()  # type: ignore[attr-defined]
+        except Exception as exc:
+            self._log.debug("project status poll failed: %s", exc)
+            return None
+        return self._to_jsonable_dict(status)
 
     def _sdk_client(self) -> object:
         if not _SDK_AVAILABLE:
@@ -267,6 +457,25 @@ class ClientRuntime:
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             self._log.debug("publishing heartbeat for client_id=%s", self.client_id)
+            task_state: dict[str, Any] | None = None
+            project_status: dict[str, Any] | None = None
+            running_tasks: list[dict[str, Any]] = []
+            completed_tasks: list[dict[str, Any]] = []
+            if self._active_job_id is not None and self._active_sdk_client is not None:
+                task_updates = self._query_task_status(self._active_sdk_client, self._active_job_id)
+                project_status = self._query_project_status(self._active_sdk_client)
+                if task_updates:
+                    task_state = {"tasks": task_updates}
+                    running_tasks = [t for t in task_updates if not t.get("is_terminal")]
+                    completed_tasks = [t for t in task_updates if t.get("is_terminal")]
+                    self._log.debug(
+                        "client=%s active_job=%s task_count=%s running=%s completed=%s",
+                        self.client_id,
+                        self._active_job_id,
+                        len(task_updates),
+                        len(running_tasks),
+                        len(completed_tasks),
+                    )
             self.redis_bus.heartbeat(
                 self.client_id,
                 {
@@ -274,6 +483,12 @@ class ClientRuntime:
                     "service": "rslogic-client",
                     "pid": os.getpid(),
                     "host": socket.gethostname(),
+                    "active_job_id": self._active_job_id,
+                    "task_state": task_state,
+                    "project_status": project_status,
+                    "task_count": len(running_tasks) + len(completed_tasks),
+                    "running_tasks": running_tasks,
+                    "completed_tasks": completed_tasks,
                 },
             )
             with contextlib.suppress(Exception):
@@ -305,26 +520,68 @@ class ClientRuntime:
         total_steps: int,
         step_action: str,
         step_kind: str,
+        sdk_client: object | None = None,
     ) -> tuple[threading.Event, threading.Thread, float]:
         started_at = time.monotonic()
         stop_event = threading.Event()
 
         def report_loop() -> None:
-            while not stop_event.wait(self._step_heartbeat_seconds):
+            while not stop_event.wait(self._task_heartbeat_seconds):
                 elapsed = round(time.monotonic() - started_at, 2)
                 progress = ((step_index - 1) / max(1, total_steps)) * 100.0
+                task_updates = self._query_task_status(sdk_client, job_id)
+                project_status = self._query_project_status(sdk_client)
+                session = None
+                job_state = self._task_state.get(job_id, {})
+                if isinstance(job_state, dict):
+                    raw_session = job_state.get("session")
+                    if isinstance(raw_session, str) and raw_session.strip():
+                        session = raw_session.strip()
+                running_tasks = [t for t in task_updates if not t.get("is_terminal")]
+                completed_tasks = [t for t in task_updates if t.get("is_terminal")]
+                self._log.debug(
+                    "job=%s step=%s/%s heartbeat task_count=%s running=%s completed=%s session=%s",
+                    job_id,
+                    step_index,
+                    total_steps,
+                    len(task_updates),
+                    len(running_tasks),
+                    len(completed_tasks),
+                    session,
+                )
+                if project_status:
+                    self._log.debug(
+                        "job=%s project_status=%s",
+                        job_id,
+                        self._safe_preview(project_status),
+                    )
+                if task_updates:
+                    sample = task_updates[:3]
+                    self._log.debug(
+                        "job=%s task_updates=%s",
+                        job_id,
+                        self._safe_preview(sample, max_len=500),
+                    )
                 self._report_progress(
                     job_id=job_id,
                     group_id=group_id,
                     progress=progress,
                     status="running",
                     message=f"step {step_index}/{total_steps} in_progress: {step_action}",
+                    task_state={"tasks": task_updates},
+                    project_status=project_status,
                     result_summary={
                         "phase": "step_heartbeat",
                         "step_index": step_index,
                         "step_kind": step_kind,
                         "step_action": step_action,
+                        "session": session,
                         "elapsed_seconds": elapsed,
+                        "task_count": len(task_updates),
+                        "running_tasks": running_tasks,
+                        "completed_tasks": completed_tasks,
+                        "task_state": {"tasks": task_updates},
+                        "project_status": project_status,
                     },
                 )
 
@@ -341,6 +598,8 @@ class ClientRuntime:
         message: str,
         status: str = "running",
         result_summary: dict[str, Any] | None = None,
+        task_state: dict[str, Any] | None = None,
+        project_status: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             "job_id": job_id,
@@ -349,6 +608,10 @@ class ClientRuntime:
             "progress": progress,
             "message": message,
         }
+        if task_state is not None:
+            payload["task_state"] = task_state
+        if project_status is not None:
+            payload["project_status"] = project_status
         if result_summary is not None:
             payload["result_summary"] = result_summary
         self.redis_bus.publish_result(self.client_id, payload)
@@ -359,12 +622,14 @@ class ClientRuntime:
         steps = payload.get("steps", [])
         last_step_result: dict[str, Any] | None = None
         last_step_duration: float | None = None
+        self._active_job_id = job_id
         self._log.info("job_start job_id=%s group_id=%s step_count=%s", job_id, group_id, len(steps))
         step_objects = [Step.model_validate(raw_step) for raw_step in steps]
         sdk_needed = any(step.kind == "sdk" for step in step_objects)
         sdk_client = self._sdk_client() if sdk_needed else None
         if sdk_client is not None:
             self._log.debug("sdk client instantiated for job_id=%s", job_id)
+        self._active_sdk_client = sdk_client
         executor = StepExecutor(
             sdk_client=sdk_client,
             file_executor=self.file_executor,
@@ -373,6 +638,7 @@ class ClientRuntime:
         )
         try:
             executor.begin_job(job_id, group_id=group_id)
+            self._init_job_task_state(job_id, executor.current_session())
             self.node_guard.start()
             self._log.debug("node guard started for job_id=%s", job_id)
             self.db.upsert_processing_job(
@@ -388,7 +654,10 @@ class ClientRuntime:
                 group_id=group_id,
                 progress=0.0,
                 message="started",
-                result_summary={"phase": "job_start"},
+                result_summary={
+                    "phase": "job_start",
+                    "session": executor.current_session(),
+                },
             )
             for idx, raw_step in enumerate(steps, start=1):
                 self._log.info(
@@ -422,6 +691,7 @@ class ClientRuntime:
                         total_steps=len(steps),
                         step_action=step.action,
                         step_kind=step.kind,
+                        sdk_client=sdk_client,
                     )
                     self._report_progress(
                         job_id=job_id,
@@ -438,6 +708,16 @@ class ClientRuntime:
                     )
                     step_started = time.monotonic()
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
+                    step_task_ids = self._extract_task_ids(res)
+                    if step_task_ids:
+                        self._register_step_tasks(
+                            job_id,
+                            step_index=idx,
+                            step_action=step.action,
+                            step_kind=step.kind,
+                            task_ids=step_task_ids,
+                            session=executor.current_session(),
+                        )
                     step_time = round(time.monotonic() - step_started, 3)
                     last_step_result = self._result_preview(res)
                     last_step_result["duration_seconds"] = step_time
@@ -475,6 +755,8 @@ class ClientRuntime:
                     step_time,
                     self._safe_preview(res, max_len=500),
                 )
+                task_snapshot = self._query_task_status(sdk_client, job_id)
+                step_project_status = self._query_project_status(sdk_client)
                 self.db.upsert_processing_job(
                     job_id=job_id,
                     image_group_id=group_id,
@@ -492,7 +774,10 @@ class ClientRuntime:
                             "duration_seconds": step_time,
                             "result_type": type(res).__name__,
                             "heartbeat_seconds": heartbeat_seconds,
+                            "session": executor.current_session(),
                         },
+                        "task_state": {"tasks": task_snapshot},
+                        "project_status": step_project_status,
                     },
                 )
                 self._report_progress(
@@ -500,6 +785,8 @@ class ClientRuntime:
                     group_id=group_id,
                     progress=progress,
                     message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
+                    task_state={"tasks": task_snapshot},
+                    project_status=step_project_status,
                     result_summary={
                         "phase": "step_complete",
                         "step_index": idx,
@@ -508,6 +795,9 @@ class ClientRuntime:
                         "duration_seconds": step_time,
                         "result_type": type(res).__name__,
                         "result": self._safe_preview(res),
+                        "session": executor.current_session(),
+                        "task_state": {"tasks": task_snapshot},
+                        "project_status": step_project_status,
                     },
                 )
 
@@ -520,10 +810,17 @@ class ClientRuntime:
             if last_step_result is not None:
                 completion_result = dict(last_step_result)
                 completion_result["duration_seconds"] = last_step_duration
+                final_task_state = self._query_task_status(sdk_client, job_id)
+                project_status = self._query_project_status(sdk_client)
                 completion_payload["result_summary"] = {
                     "phase": "job_complete",
                     "last_step_result": completion_result,
+                    "session": executor.current_session(),
+                    "final_task_state": {"tasks": final_task_state},
+                    "final_project_status": project_status,
                 }
+                completion_payload["task_state"] = {"tasks": final_task_state}
+                completion_payload["project_status"] = project_status
             self.db.upsert_processing_job(
                 job_id=job_id,
                 image_group_id=group_id,
@@ -534,6 +831,8 @@ class ClientRuntime:
             )
             self.redis_bus.publish_result(self.client_id, completion_payload)
         except Exception as exc:
+            failure_tasks = self._query_task_status(sdk_client, job_id)
+            failure_project_status = self._query_project_status(sdk_client)
             self.db.upsert_processing_job(
                 job_id=job_id,
                 image_group_id=group_id,
@@ -541,7 +840,21 @@ class ClientRuntime:
                 progress=0,
                 message=str(exc),
             )
-            self._report_progress(job_id=job_id, group_id=group_id, progress=0, message=str(exc))
+            self._report_progress(
+                job_id=job_id,
+                group_id=group_id,
+                progress=0,
+                message=str(exc),
+                task_state={"tasks": failure_tasks},
+                project_status=failure_project_status,
+                result_summary={
+                    "phase": "job_failed",
+                    "error": str(exc),
+                    "task_state": {"tasks": failure_tasks},
+                    "project_status": failure_project_status,
+                    "session": executor.current_session(),
+                },
+            )
             self.redis_bus.publish_result(self.client_id, {"job_id": job_id, "status": "failed", "progress": 0, "message": str(exc)})
             self._log.exception("job_failed job_id=%s group_id=%s", job_id, group_id)
         finally:
@@ -549,6 +862,9 @@ class ClientRuntime:
             if sdk_client is not None:
                 with contextlib.suppress(Exception):
                     sdk_client.close()
+            self._task_state.pop(job_id, None)
+            self._active_job_id = None
+            self._active_sdk_client = None
             self._job_lock.release()
 
     def _shutdown(self, *_args) -> None:
