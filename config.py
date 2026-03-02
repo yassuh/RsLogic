@@ -106,6 +106,31 @@ def _derive_redis_url() -> str:
     return f"redis://{host}:{port}/{database}"
 
 
+def _resolve_label_db_root() -> str:
+    env_root = _env("RSLOGIC_LABEL_DB_ROOT", "")
+    if env_root:
+        candidate = Path(env_root)
+        if not candidate.is_absolute():
+            candidate = Path(__file__).resolve().parent / candidate
+        if candidate.exists():
+            return str(candidate.resolve())
+
+    base = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    for parent in (base, *base.parents):
+        for head in ("", "rslogic", "RsLogic"):
+            candidate = parent / head / "internal_tools" / "label-db" / "studio-db" if head else parent / "internal_tools" / "label-db" / "studio-db"
+            candidates.append(candidate)
+            if head == "":
+                candidates.append(parent / "rslogic" / "internal_tools" / "label-db" / "studio-db")
+                candidates.append(parent / "RsLogic" / "internal_tools" / "label-db" / "studio-db")
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return str(candidate.resolve())
+    raise RuntimeError("could not locate rslogic/internal_tools/label-db/studio-db")
+
+
 @dataclass(frozen=True)
 class S3Config:
     """S3 configuration used by upload and ingest flows."""
@@ -253,20 +278,8 @@ def load_config() -> AppConfig:
         sdk_auth_token=os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"),
     )
 
-    label_db_root = _env("RSLOGIC_LABEL_DB_ROOT", "rslogic/internal_tools/label-db/studio-db")
-    if not Path(label_db_root).exists():
-        base_root = Path(__file__).resolve().parent
-        fallback_candidates = [
-            base_root / "internal_tools" / "label-db" / "studio-db",
-            base_root / "rslogic" / "internal_tools" / "label-db" / "studio-db",
-        ]
-        for candidate in fallback_candidates:
-            if candidate.exists():
-                label_db_root = str(candidate)
-                break
+    label_db_root = _resolve_label_db_root()
     label_db_root_path = Path(label_db_root)
-    if not label_db_root_path.is_absolute():
-        label_db_root_path = Path(__file__).resolve().parent / label_db_root_path
     label_db = LabelDbConfig(
         migration_root=str(label_db_root_path),
         alembic_ini=_env(
