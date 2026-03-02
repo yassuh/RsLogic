@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 from realityscan_sdk.client import RealityScanClient
 
@@ -72,17 +74,62 @@ class StepExecutor:
         self.sdk_client = sdk_client
         self.file_executor = file_executor
         self._staging_dir: Path | None = None
+        self._context: dict[str, str] = {}
 
-    def begin_job(self, job_id: str) -> None:
+    def begin_job(self, job_id: str, *, group_id: str | None = None) -> None:
         self._staging_dir = None
+        self._context = {
+            "job_id": job_id,
+        }
+        if group_id:
+            self._context["group_id"] = group_id
+        if self.file_executor is not None:
+            self._context.update(
+                {
+                    "working_root": str(self.file_executor.working_root),
+                    "working_projects_root": str(self.file_executor.working_projects_root),
+                    "staging_root": str(self.file_executor.staging_root),
+                }
+            )
+
+    def _set_context_session(self, session: str | None) -> None:
+        if not session:
+            return
+        self._context["session"] = session
+        if self.file_executor is not None:
+            self._context["session_data_dir"] = str(self.file_executor.working_root / f"{session}_data")
+
+    @staticmethod
+    def _render_text_template(value: str, context: dict[str, str]) -> str:
+        def replace(match: re.Match[str]) -> str:
+            key = match.group(1)
+            if key in context:
+                return str(context[key])
+            return match.group(0)
+
+        return re.sub(r"{([a-zA-Z0-9_]+)}", replace, value)
+
+    def _render(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._render_text_template(value, self._context)
+        if isinstance(value, list):
+            return [self._render(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._render(item) for item in value)
+        if isinstance(value, dict):
+            return {key: self._render(item) for key, item in value.items()}
+        return value
 
     def end_job(self, job_id: str) -> None:
         self._staging_dir = None
+        self._context = {"job_id": job_id}
 
     def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> str:
         action = step.action
         kind = step.kind
-        params = dict(step.params or {})
+        params = self._render(dict(step.params or {}))
+        if group_id:
+            self._context["group_id"] = group_id
 
         if kind == "file":
             if self.file_executor is None:
@@ -93,6 +140,7 @@ class StepExecutor:
                     raise RuntimeError("group_id required for file_stage action")
                 stage_dir = self.file_executor.stage_group(group_id, job_id)
                 self._staging_dir = stage_dir
+                self._context["staging_dir"] = str(stage_dir)
                 return str(stage_dir)
 
             if action == "file_write_manifest":
@@ -112,7 +160,30 @@ class StepExecutor:
                 if not staging.exists():
                     raise RuntimeError(f"staging directory does not exist: {staging}")
                 working_dir = params.get("working_dir")
-                if working_dir is not None:
+                if working_dir is None:
+                    working_dir = self.file_executor.working_projects_root / str(job_id)
+                else:
+                    working_dir = Path(str(working_dir))
+                return str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+
+            if action in {"file_move_to_session_imagery", "file_move_staging_to_session_imagery", "file_move_to_session_folder"}:
+                staging = self._staging_dir
+                if staging is None:
+                    staging = self.file_executor.staging_root / str(job_id)
+                if not staging.exists():
+                    raise RuntimeError(f"staging directory does not exist: {staging}")
+
+                session = self._context.get("session")
+                if not session:
+                    raise RuntimeError("session is not available; run sdk_project_create before moving files into session imagery")
+
+                working_dir = params.get("working_dir")
+                if working_dir is None:
+                    base_dir = self._context.get("session_data_dir")
+                    if not base_dir:
+                        raise RuntimeError("session data directory not known")
+                    working_dir = Path(base_dir) / "Imagery"
+                else:
                     working_dir = Path(str(working_dir))
                 return str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
 
@@ -125,7 +196,13 @@ class StepExecutor:
         if method is None:
             raise RuntimeError(f"unsupported action {action}")
         try:
-            return str(method(**params))
+            result = method(**params)
+            if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):
+                self._set_context_session(result)
+            if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
+                self._context.pop("session", None)
+                self._context.pop("session_data_dir", None)
+            return str(result)
         except TypeError:
             if params:
                 raise

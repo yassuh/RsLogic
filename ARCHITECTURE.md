@@ -17,6 +17,8 @@ RsLogic execution architecture
   - Upload directory picker is initialized at the current workspace directory (`Path.cwd()`), which is typically the launched repository root.
 - `rslogic/common/*` contains shared Redis, S3, DB, and workflow schemas used by orchestrator and client.
 - `rslogic/client/executor.py` translates step actions into realityscan-sdk calls and file operations.
+  - New context-aware behavior now tracks `session` after `sdk_project_create/open` and supports placeholder expansion in step params (`{session}`, `{session_data_dir}`, `{job_id}`, `{staging_dir}`, etc.).
+  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/<session>_data/Imagery` before project import.
 - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
 - `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
 

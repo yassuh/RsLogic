@@ -159,7 +159,7 @@ class ClientRuntime:
         sdk_client = self._sdk_client()
         executor = StepExecutor(sdk_client=sdk_client, file_executor=self.file_executor)
         try:
-            executor.begin_job(job_id)
+            executor.begin_job(job_id, group_id=group_id)
             self.node_guard.start()
             self.db.upsert_processing_job(
                 job_id=job_id,
