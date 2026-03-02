@@ -47,6 +47,7 @@ RsLogic execution architecture
 - bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`rslogic.config` and optionally `textual`) and can run without `RSLOGIC_ROOT`.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
+  - Added status-panel action `Clear queued jobs` that clears Redis command/result queue entries for a configured client id directly through `RedisBus`, without calling orchestrator API endpoints.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
 - `installer.bat` now boots a local uv + python3.14t virtual environment, installs this repo in editable mode, and points operators to `rslogic-clientctl` for process control.
 - Job contract artifacts:

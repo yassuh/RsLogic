@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Rule, Static, Tree
 
 from rslogic.config import CONFIG
+from rslogic.common.redis_bus import RedisBus
 from rslogic.ingest import IngestService
 from rslogic.upload_service import FolderUploader
 
@@ -162,6 +164,12 @@ class RsLogicTUI(App):
                         yield Input(placeholder="Job ID", id="job_status_id")
                         with Horizontal():
                             yield Button("Refresh", id="action_job_status", variant="default")
+                            yield Input(
+                                placeholder="Client ID to clear jobs",
+                                value=os.getenv("RSLOGIC_CLIENT_ID", ""),
+                                id="clear_client_id",
+                            )
+                            yield Button("Clear queued jobs", id="action_clear_jobs", variant="warning")
                             yield Button("Exit", id="action_exit", variant="warning")
 
             yield Rule(id="sep_bottom")
@@ -362,6 +370,20 @@ class RsLogicTUI(App):
         payload = response.json()
         self._log(json.dumps(payload, indent=2))
 
+    def _clear_jobs_for_client(self) -> None:
+        client_id = self._input_value("clear_client_id")
+        if not client_id:
+            self._log("Clear jobs failed: client_id required")
+            return
+
+        bus = RedisBus(
+            CONFIG.queue.redis_url,
+            CONFIG.control.command_queue_key,
+            CONFIG.control.result_queue_key,
+        )
+        deleted = bus.clear_client_queues(client_id)
+        self._log(f"Cleared queued jobs for client {client_id}: {deleted} redis keys removed")
+
     def _run_command(self, action: str) -> None:
         self._log(f"Action: {action}")
         try:
@@ -384,6 +406,8 @@ class RsLogicTUI(App):
                 self._submit_job()
             elif action == "action_job_status":
                 self._status()
+            elif action == "action_clear_jobs":
+                self._clear_jobs_for_client()
             elif action == "action_exit":
                 self.exit()
         except Exception as exc:

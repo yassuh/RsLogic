@@ -39,6 +39,14 @@ class RedisBus:
         # de-duplicate while preserving order
         return list(dict.fromkeys([k for k in keys if k]))
 
+    def clear_client_queues(self, client_id: str) -> int:
+        """Clear queued command and result entries for one client."""
+        keys = [self._command_key(client_id), *self._result_keys(client_id)]
+        unique_keys = list(dict.fromkeys([k for k in keys if k]))
+        if not unique_keys:
+            return 0
+        return int(self._redis.delete(*unique_keys))
+
     def _heartbeat_key(self, client_id: str) -> str:
         return f"{self._heartbeat_prefix}:{client_id}:heartbeat"
 
