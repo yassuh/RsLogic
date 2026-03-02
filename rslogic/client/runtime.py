@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
 
-from realityscan_sdk.client import RealityScanClient
+try:
+    from realityscan_sdk.client import RealityScanClient
+    _SDK_AVAILABLE = True
+except ModuleNotFoundError as exc:
+    RealityScanClient = None  # type: ignore[assignment]
+    _SDK_AVAILABLE = False
+    _SDK_IMPORT_ERROR = str(exc)
 
 def _load_client_env() -> None:
     env_candidates = [
@@ -86,7 +92,11 @@ class ClientRuntime:
             logger.addHandler(handler)
         logger.propagate = False
 
-    def _sdk_client(self) -> RealityScanClient:
+    def _sdk_client(self) -> object:
+        if not _SDK_AVAILABLE:
+            raise RuntimeError(
+                "realityscan_sdk is not installed. Install it in this environment to run sdk commands."
+            )
         return RealityScanClient(
             base_url=os.getenv("RSLOGIC_RSTOOLS_SDK_BASE_URL", CONFIG.rstools.sdk_base_url or "http://127.0.0.1:8000"),
             client_id=self.sdk_client_id,
@@ -231,7 +241,9 @@ class ClientRuntime:
         job_id = str(payload.get("job_id"))
         group_id = self._ensure_group_id(payload.get("group_id"))
         steps = payload.get("steps", [])
-        sdk_client = self._sdk_client()
+        step_objects = [Step.model_validate(raw_step) for raw_step in steps]
+        sdk_needed = any(step.kind == "sdk" for step in step_objects)
+        sdk_client = self._sdk_client() if sdk_needed else None
         executor = StepExecutor(sdk_client=sdk_client, file_executor=self.file_executor)
         try:
             executor.begin_job(job_id, group_id=group_id)
@@ -262,7 +274,7 @@ class ClientRuntime:
                     raw_step.get("kind"),
                     self._safe_preview(raw_step.get("params", {})),
                 )
-                step = Step.model_validate(raw_step)
+                step = step_objects[idx - 1]
                 heartbeat_stop = None
                 heartbeat_thread = None
                 heartbeat_started = None
@@ -366,7 +378,9 @@ class ClientRuntime:
             self.redis_bus.publish_result(self.client_id, {"job_id": job_id, "status": "failed", "progress": 0, "message": str(exc)})
         finally:
             executor.end_job(job_id)
-            sdk_client.close()
+            if sdk_client is not None:
+                with contextlib.suppress(Exception):
+                    sdk_client.close()
             self._job_lock.release()
 
     def _shutdown(self, *_args) -> None:

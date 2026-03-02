@@ -27,6 +27,7 @@ dependencies = [
   "requests>=2.32",
   "ftputil>=5.1",
   "redis>=5.2",
+  "realityscan-sdk>=0.1.0",
 ]
 
 [project.scripts]
@@ -55,3 +56,9 @@ where = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[tool.uv.sources]
+realityscan-sdk = { path = "rslogic/internal_tools/rstool-sdk", editable = true }

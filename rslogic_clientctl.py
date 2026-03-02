@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import runpy
 import sys
@@ -39,11 +40,51 @@ def _candidate_project_roots() -> list[Path]:
             continue
     roots.extend(nested_candidates)
 
+    for candidate in list(roots):
+        if not candidate.is_dir():
+            continue
+        try:
+            for child in candidate.iterdir():
+                if child.is_dir() and (child / "rslogic" / "client" / "control_tui.py").exists():
+                    roots.append(child)
+        except Exception:
+            continue
     return roots
 
 
 def _looks_like_repo_root(path: Path) -> bool:
     return (path / "rslogic").is_dir() and (path / "config.py").exists() and (path / "pyproject.toml").exists()
+
+
+def _looks_like_runtime_repo_root(path: Path) -> bool:
+    return (path / "rslogic" / "client" / "control_tui.py").exists() and (path / "config.py").exists()
+
+
+def _find_control_tui_script() -> Path:
+    checked: set[str] = set()
+    for root in _candidate_project_roots():
+        try:
+            current = root.resolve()
+        except Exception:
+            current = root
+        paths = [current, *current.parents]
+        for path in paths:
+            marker = str(path)
+            if marker in checked:
+                continue
+            checked.add(marker)
+            script = path / "rslogic" / "client" / "control_tui.py"
+            if script.exists():
+                return script
+            try:
+                for child in path.iterdir():
+                    if child.is_dir():
+                        alt_script = child / "rslogic" / "client" / "control_tui.py"
+                        if alt_script.exists():
+                            return alt_script
+            except Exception:
+                continue
+    raise RuntimeError("could not locate rslogic/client/control_tui.py")
 
 
 def _path_already_on_syspath(candidate: str) -> bool:
@@ -82,9 +123,16 @@ def _ensure_import_path() -> Path:
 
 def _run_control_tui_from_source(argv: Sequence[str] | None = None) -> None:
     repo_root = _ensure_import_path()
-    control_tui = repo_root / "rslogic" / "client" / "control_tui.py"
-    if not control_tui.exists():
-        raise RuntimeError("could not locate rslogic/client/control_tui.py")
+    control_tui = _find_control_tui_script()
+    try:
+        path_root = control_tui.parent.parent.parent
+    except Exception:
+        path_root = repo_root
+    if str(path_root) not in sys.path:
+        sys.path.insert(0, str(path_root))
+    py_path = os.environ.get("PYTHONPATH", "")
+    if str(path_root) not in py_path.split(os.pathsep):
+        os.environ["PYTHONPATH"] = f"{path_root}{os.pathsep}{py_path}" if py_path else str(path_root)
 
     sys.argv = [str(control_tui), *(argv or sys.argv[1:])]
     runpy.run_path(str(control_tui), run_name="__main__")
@@ -93,8 +141,8 @@ def _run_control_tui_from_source(argv: Sequence[str] | None = None) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     _ensure_import_path()
     try:
-        from rslogic.client import control_tui
-    except ModuleNotFoundError:
+        control_tui = importlib.import_module("rslogic.client.control_tui")
+    except ImportError:
         _run_control_tui_from_source(argv)
         return
     except Exception:

@@ -8,6 +8,7 @@ RsLogic execution architecture
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
   - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
+  - SDK availability is now optional at import time: the runtime starts even if `realityscan_sdk` is absent, and only fails SDK jobs with a clear error, allowing file-only jobs to execute.
 - `rslogic/client/rsnode_client.py` is the runtime bootstrap entrypoint used by the control TUI and CLI.
   - now auto-discovers the repo root at startup and injects it into `sys.path`/`PYTHONPATH` when executed directly, so `python <repo>/rslogic/client/rsnode_client.py` works even when the venv interpreter has broken package discovery.
 - `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
@@ -22,6 +23,7 @@ RsLogic execution architecture
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from `RSLOGIC_ROOT`/cwd and inserts it into `PYTHONPATH` before importing package modules.
   - auto-discovers nested `RsLogic`/repo layouts and can continue by running `rslogic/client/control_tui.py` from source if package import fails.
+  - imports `rslogic.client.control_tui` by fully-qualified module name and no longer depends on `from rslogic.client import control_tui` to avoid `ImportError` on nested installs.
 - bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`config` and optionally `textual`) rather than requiring `import rslogic`, so the TUI can start even when package resolution is partially broken in a local environment.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
@@ -36,6 +38,7 @@ RsLogic execution architecture
   - New context-aware behavior now tracks `session` after `sdk_project_create/open` and supports placeholder expansion in step params (`{session}`, `{session_data_dir}`, `{job_id}`, `{staging_dir}`, etc.).
   - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
   - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
+  - SDK execution now fails fast with a clear message when SDK actions are submitted without the SDK dependency installed.
   - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
   - Client `file_stage` is image-only; it stages only image assets referenced in DB rows and does not download/pull sidecar objects to the local client.
   - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.

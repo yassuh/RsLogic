@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from realityscan_sdk.client import RealityScanClient
+if TYPE_CHECKING:
+    from realityscan_sdk.client import RealityScanClient
 
 from rslogic.client.file_ops import FileExecutor
 from rslogic.common.schemas import Step
@@ -77,7 +78,7 @@ def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]
 
 
 class StepExecutor:
-    def __init__(self, sdk_client: RealityScanClient, file_executor: FileExecutor | None = None):
+    def __init__(self, sdk_client: object | None, file_executor: FileExecutor | None = None):
         self.sdk_client = sdk_client
         self.file_executor = file_executor
         self._staging_dir: Path | None = None
@@ -200,6 +201,12 @@ class StepExecutor:
 
         if kind != "sdk":
             raise RuntimeError(f"unsupported kind {kind}")
+
+        if self.sdk_client is None:
+            raise RuntimeError(
+                "SDK command requested but realityscan_sdk is not available in this runtime. "
+                "Install the sdk package or remove sdk steps from this job."
+            )
 
         method = _sdk_method(self.sdk_client, action)
         if method is None:
