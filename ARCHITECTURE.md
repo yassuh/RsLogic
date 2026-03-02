@@ -134,6 +134,7 @@ Auto-assignment:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
   - publishes command result text from each completed step in redis `result_summary` (`result`, `result_type`, `result_preview`) so operators can see what each SDK call returned.
+  - `sdk_project_create` and `sdk_project_open` are treated as session-establishing steps: when no task IDs are returned, runtime now requires a non-empty session string (from result or current executor context) before advancing, and uses that as the completion signal for the step.
   - when an SDK step returns a `TaskHandle`, runtime keeps an in-memory task registry keyed by `job_id` and keeps it updated by polling `project.tasks`; task + project status are included in heartbeat and completion payloads.
 - Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
 - Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.
