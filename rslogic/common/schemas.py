@@ -19,6 +19,12 @@ class Step(BaseModel):
     timeout_s: int = 600
     display_name: str | None = None
 
+    @field_validator("timeout_s")
+    @classmethod
+    def normalize_timeout_s(cls, value: int | None) -> int:
+        value_i = int(value or 0)
+        return value_i if value_i >= 0 else 0
+
     @field_validator("kind")
     @classmethod
     def normalize_kind(cls, value: str) -> str:

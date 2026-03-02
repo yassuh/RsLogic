@@ -102,6 +102,7 @@ class ClientRuntime:
         self._log = logging.getLogger("rslogic.client.runtime")
         self.stop_event = threading.Event()
         self._task_state: dict[str, dict[str, Any]] = {}
+        self._task_state_lock = threading.Lock()
         self._active_job_id: str | None = None
         self._active_sdk_client: object | None = None
         self.client_id = os.getenv("RSLOGIC_CLIENT_ID", "").strip()
@@ -281,10 +282,11 @@ class ClientRuntime:
         return 0.0 < progress_f < 1.0
 
     def _init_job_task_state(self, job_id: str, session: str | None) -> None:
-        self._task_state[job_id] = {
-            "session": session,
-            "tasks": {},
-        }
+        with self._task_state_lock:
+            self._task_state[job_id] = {
+                "session": session,
+                "tasks": {},
+            }
 
     def _register_step_tasks(
         self,
@@ -296,35 +298,36 @@ class ClientRuntime:
         task_ids: list[str],
         session: str | None,
     ) -> None:
-        job_state = self._task_state.setdefault(
-            job_id,
-            {
-                "session": session,
-                "tasks": {},
-            },
-        )
-        job_state["session"] = session
-        tasks = job_state["tasks"]
-        if not isinstance(tasks, dict):
-            tasks = {}
-            job_state["tasks"] = tasks
         now = time.time()
-        for task_id in task_ids:
-            tasks[task_id] = {
-                "task_id": task_id,
-                "session": session,
-                "step_index": step_index,
-                "step_action": step_action,
-                "step_kind": step_kind,
-                "state": "started",
-                "status": "started",
-                "errorCode": 0,
-                "errorMessage": "",
-                "timeStart": None,
-                "timeEnd": None,
-                "created_at": now,
-                "updated_at": now,
-            }
+        with self._task_state_lock:
+            job_state = self._task_state.setdefault(
+                job_id,
+                {
+                    "session": session,
+                    "tasks": {},
+                },
+            )
+            job_state["session"] = session
+            tasks = job_state["tasks"]
+            if not isinstance(tasks, dict):
+                tasks = {}
+                job_state["tasks"] = tasks
+            for task_id in task_ids:
+                tasks[task_id] = {
+                    "task_id": task_id,
+                    "session": session,
+                    "step_index": step_index,
+                    "step_action": step_action,
+                    "step_kind": step_kind,
+                    "state": "started",
+                    "status": "started",
+                    "errorCode": 0,
+                    "errorMessage": "",
+                    "timeStart": None,
+                    "timeEnd": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
 
     def _query_task_status(
         self,
@@ -335,10 +338,11 @@ class ClientRuntime:
     ) -> list[dict[str, Any]]:
         if sdk_client is None:
             return []
-        job_state = self._task_state.get(job_id)
-        if not job_state:
-            job_state = {"session": None, "tasks": {}}
-            self._task_state[job_id] = job_state
+        with self._task_state_lock:
+            job_state = self._task_state.get(job_id)
+            if not job_state:
+                job_state = {"session": None, "tasks": {}}
+                self._task_state[job_id] = job_state
         tasks = job_state.get("tasks")
         if not isinstance(tasks, dict):
             tasks = None
@@ -365,50 +369,53 @@ class ClientRuntime:
             return []
         if tasks is None:
             tasks = {}
-            self._task_state[job_id] = {"session": job_state.get("session"), "tasks": tasks}
+            with self._task_state_lock:
+                self._task_state[job_id] = {"session": job_state.get("session"), "tasks": tasks}
 
         now = time.time()
-        for raw_status in statuses:
-            payload = self._to_jsonable_dict(raw_status)
-            if not payload:
-                continue
-            task_id = str(payload.get("taskID", "")).strip()
-            if not task_id:
-                continue
-            task = tasks.get(task_id)
-            if task is None:
-                task = {
-                    "taskID": task_id,
-                    "created_at": now,
-                    "state": "",
-                    "status": "",
-                    "errorCode": 0,
-                    "errorMessage": "",
-                    "timeStart": None,
-                    "timeEnd": None,
-                }
-                tasks[task_id] = task
-            task.update(
-                {
-                    "state": payload.get("state", ""),
-                    "status": payload.get("state", ""),
-                    "errorCode": payload.get("errorCode", 0),
-                    "errorMessage": payload.get("errorMessage", ""),
-                    "timeStart": payload.get("timeStart", None),
-                    "timeEnd": payload.get("timeEnd", None),
-                    "updated_at": now,
-                }
-            )
+        with self._task_state_lock:
+            for raw_status in statuses:
+                payload = self._to_jsonable_dict(raw_status)
+                if not payload:
+                    continue
+                task_id = str(payload.get("taskID", "")).strip()
+                if not task_id:
+                    continue
+                task = tasks.get(task_id)
+                if task is None:
+                    task = {
+                        "taskID": task_id,
+                        "created_at": now,
+                        "state": "",
+                        "status": "",
+                        "errorCode": 0,
+                        "errorMessage": "",
+                        "timeStart": None,
+                        "timeEnd": None,
+                    }
+                    tasks[task_id] = task
+                task.update(
+                    {
+                        "state": payload.get("state", ""),
+                        "status": payload.get("state", ""),
+                        "errorCode": payload.get("errorCode", 0),
+                        "errorMessage": payload.get("errorMessage", ""),
+                        "timeStart": payload.get("timeStart", None),
+                        "timeEnd": payload.get("timeEnd", None),
+                        "updated_at": now,
+                    }
+                )
 
-            if "created_at" not in task:
-                task["created_at"] = now
+                if "created_at" not in task:
+                    task["created_at"] = now
 
         result = []
-        for task in tasks.values():
-            task_state = dict(task)
-            state = task_state.get("state")
-            task_state["is_terminal"] = self._is_task_terminal(state)
-            result.append(task_state)
+        with self._task_state_lock:
+            for task in tasks.values():
+                task_state = dict(task)
+                state = task_state.get("state")
+                task_state["is_terminal"] = self._is_task_terminal(state)
+                result.append(task_state)
         return result
 
     def _query_project_status(self, sdk_client: object | None) -> dict[str, Any] | None:
@@ -436,52 +443,148 @@ class ClientRuntime:
     ) -> list[dict[str, Any]]:
         if not task_ids or sdk_client is None:
             return []
-        timeout = max(1, timeout_s)
-        deadline = time.monotonic() + timeout
+        timeout = max(0, int(timeout_s))
+        deadline = time.monotonic() + timeout if timeout > 0 else None
+        started_at = time.monotonic()
         wanted = [task_id for task_id in task_ids if task_id]
-        while True:
-            task_updates = self._query_task_status(
-                sdk_client,
-                job_id,
-                task_ids=wanted,
-            )
-            by_id: dict[str, dict[str, Any]] = {}
-            for task_update in task_updates:
-                task_id = str(task_update.get("taskID", "")).strip()
-                if task_id:
-                    by_id[task_id] = task_update
+        monitor_state: dict[str, list[dict[str, Any]] | dict[str, Any] | None | bool] = {
+            "task_updates": [],
+            "project_status": None,
+            "running_tasks": [],
+            "completed_tasks": [],
+            "completed": False,
+        }
+        state_lock = threading.Lock()
+        monitor_done = threading.Event()
+        monitor_stop = threading.Event()
+        failed: list[Exception] = []
 
-            missing = [task_id for task_id in wanted if task_id not in by_id]
-            terminal_updates = [task_update for task_update in task_updates if self._is_task_terminal(task_update.get("state"))]
-            running_updates = [task_update for task_update in task_updates if self._is_task_started(task_update.get("state"))]
-            project_status = self._query_project_status(sdk_client)
-            project_running = self._project_is_running(project_status)
-            if missing:
-                self._log.debug(
-                    "job=%s step=%s/%s waiting for task status; missing=%s",
-                    job_id,
-                    step_index,
-                    total_steps,
-                    self._safe_preview(missing, max_len=300),
-                )
-            elif task_updates and len(terminal_updates) == len(task_updates) and len(task_updates) == len(wanted):
-                if project_running:
+        def _is_finished(task_updates: list[dict[str, Any]]) -> bool:
+            return (
+                len(task_updates) == len(wanted)
+                and task_updates
+                and all(self._is_task_terminal(task_update.get("state")) for task_update in task_updates)
+            )
+
+        def monitor_loop() -> None:
+            while not monitor_stop.is_set():
+                if self.stop_event.is_set():
+                    break
+                task_updates = self._query_task_status(sdk_client, job_id, task_ids=wanted)
+                by_id: dict[str, dict[str, Any]] = {}
+                for task_update in task_updates:
+                    task_id = str(task_update.get("taskID", "")).strip()
+                    if task_id:
+                        by_id[task_id] = task_update
+
+                running_updates = [task_update for task_update in task_updates if self._is_task_started(task_update.get("state"))]
+                terminal_updates = [task_update for task_update in task_updates if self._is_task_terminal(task_update.get("state"))]
+                project_status = self._query_project_status(sdk_client)
+                missing = [task_id for task_id in wanted if task_id not in by_id]
+                elapsed = round(time.monotonic() - started_at, 2)
+
+                with state_lock:
+                    monitor_state["task_updates"] = task_updates
+                    monitor_state["project_status"] = project_status
+                    monitor_state["running_tasks"] = running_updates
+                    monitor_state["completed_tasks"] = terminal_updates
+
+                if missing:
                     self._log.debug(
-                        "job=%s step=%s/%s waiting for project to become idle; processID=%s progress=%s",
+                        "job=%s step=%s/%s waiting for task status; missing=%s",
                         job_id,
                         step_index,
                         total_steps,
-                        project_status.get("processID") if isinstance(project_status, dict) else None,
-                        project_status.get("progress") if isinstance(project_status, dict) else None,
+                        self._safe_preview(missing, max_len=300),
                     )
-                else:
+                elif task_updates:
+                    self._log.debug(
+                        "job=%s step=%s/%s task wave: running=%s terminal=%s project_running=%s",
+                        job_id,
+                        step_index,
+                        total_steps,
+                        len(running_updates),
+                        len(terminal_updates),
+                        self._project_is_running(project_status),
+                    )
+
+                if terminal_updates and _is_finished(task_updates):
                     if any(
                         int(task_update.get("errorCode", 0) or 0) != 0
-                        or str(task_update.get("state", "")).strip().lower() in {"failed", "error", "aborted", "canceled", "cancelled"}
+                        or str(task_update.get("state", "")).strip().lower()
+                        in {"failed", "error", "aborted", "canceled", "cancelled"}
                         for task_update in task_updates
                     ):
                         error_codes = {
-                            t.get("taskID"): t.get("errorCode") for t in task_updates if int(t.get("errorCode", 0) or 0) != 0
+                            t.get("taskID"): t.get("errorCode")
+                            for t in task_updates
+                            if int(t.get("errorCode", 0) or 0) != 0
+                        }
+                        failed.append(RuntimeError(f"step task failed: {error_codes}"))
+                    with state_lock:
+                        monitor_state["completed"] = True
+                    monitor_done.set()
+                    break
+
+                if task_updates:
+                    self._report_progress(
+                        job_id=job_id,
+                        group_id=group_id,
+                        progress=((step_index - 1) / max(1, total_steps)) * 100.0,
+                        status="running",
+                        message=f"step {step_index}/{total_steps} waiting: {step_action}",
+                        task_state={"tasks": task_updates},
+                        project_status=project_status,
+                        result_summary={
+                            "phase": "step_task_wait",
+                            "step_index": step_index,
+                            "step_kind": step_kind,
+                            "step_action": step_action,
+                            "elapsed_seconds": elapsed,
+                            "task_count": len(task_updates),
+                            "running_tasks": running_updates,
+                            "completed_tasks": terminal_updates,
+                            "task_state": {"tasks": task_updates},
+                            "project_status": project_status,
+                        },
+                    )
+
+                if monitor_done.wait(self._task_heartbeat_seconds):
+                    break
+
+        monitor_thread = threading.Thread(
+            target=monitor_loop,
+            name=f"task-monitor-{job_id}-{step_index}",
+            daemon=True,
+        )
+        monitor_thread.start()
+
+        try:
+            while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                if monitor_done.wait(min(self._task_heartbeat_seconds, max(0.1, (deadline - time.monotonic()) if deadline else self._task_heartbeat_seconds))):
+                    break
+
+                if failed:
+                    raise failed[0]
+                with state_lock:
+                    task_updates = list(monitor_state["task_updates"])  # type: ignore[arg-type]
+                    project_status = monitor_state["project_status"]
+                    running_updates = list(monitor_state["running_tasks"])  # type: ignore[arg-type]
+                    completed_updates = list(monitor_state["completed_tasks"])  # type: ignore[arg-type]
+                    completed = bool(monitor_state["completed"])
+                if completed and _is_finished(task_updates):
+                    if any(
+                        int(task_update.get("errorCode", 0) or 0) != 0
+                        or str(task_update.get("state", "")).strip().lower()
+                        in {"failed", "error", "aborted", "canceled", "cancelled"}
+                        for task_update in task_updates
+                    ):
+                        error_codes = {
+                            t.get("taskID"): t.get("errorCode")
+                            for t in task_updates
+                            if int(t.get("errorCode", 0) or 0) != 0
                         }
                         raise RuntimeError(f"step task failed: {error_codes}")
                     self._report_progress(
@@ -497,44 +600,44 @@ class ClientRuntime:
                             "step_index": step_index,
                             "step_kind": step_kind,
                             "step_action": step_action,
-                            "elapsed_seconds": round(time.monotonic() - (deadline - timeout), 2),
+                            "elapsed_seconds": round(time.monotonic() - started_at, 2),
                             "task_count": len(task_updates),
                             "running_tasks": running_updates,
-                            "completed_tasks": terminal_updates,
+                            "completed_tasks": completed_updates,
                             "task_state": {"tasks": task_updates},
                             "project_status": project_status,
                         },
                     )
                     return task_updates
 
-            if time.monotonic() >= deadline:
-                if task_updates:
-                    raise TimeoutError(f"step {step_index}/{total_steps} task wait timed out after {timeout}s: {self._safe_preview(task_updates, max_len=300)}")
+            if failed:
+                raise failed[0]
+            if deadline is not None and time.monotonic() >= deadline and not monitor_done.is_set():
+                with state_lock:
+                    timeout_state = list(monitor_state["task_updates"])  # type: ignore[arg-type]
+                if timeout_state:
+                    raise TimeoutError(
+                        f"step {step_index}/{total_steps} task wait timed out after {timeout}s: "
+                        f"{self._safe_preview(timeout_state, max_len=300)}"
+                    )
                 raise TimeoutError(f"step {step_index}/{total_steps} task wait timed out after {timeout}s with no task status")
 
-            if task_updates:
-                self._report_progress(
-                    job_id=job_id,
-                    group_id=group_id,
-                    progress=((step_index - 1) / max(1, total_steps)) * 100.0,
-                    status="running",
-                    message=f"step {step_index}/{total_steps} waiting: {step_action}",
-                    task_state={"tasks": task_updates},
-                    project_status=project_status,
-                    result_summary={
-                        "phase": "step_task_wait",
-                        "step_index": step_index,
-                        "step_kind": step_kind,
-                        "step_action": step_action,
-                        "elapsed_seconds": round(time.monotonic() - (deadline - timeout), 2),
-                        "task_count": len(task_updates),
-                        "running_tasks": running_updates,
-                        "completed_tasks": terminal_updates,
-                        "task_state": {"tasks": task_updates},
-                        "project_status": project_status,
-                    },
-                )
-            time.sleep(self._task_heartbeat_seconds)
+            with state_lock:
+                final_updates = list(monitor_state["task_updates"])  # type: ignore[arg-type]
+            if not final_updates:
+                with state_lock:
+                    final_updates = list(monitor_state["task_updates"])  # type: ignore[arg-type]
+            return final_updates
+        finally:
+            monitor_stop.set()
+            monitor_thread.join(timeout=1.0)
+
+    @staticmethod
+    def _is_unlimited_step_timeout(step: Step) -> bool:
+        if step.action == "sdk_project_command":
+            command = str(step.params.get("name", "")).strip().lower()
+            return command == "align"
+        return False
 
     def _sdk_client(self) -> object:
         if not _SDK_AVAILABLE:
@@ -699,7 +802,8 @@ class ClientRuntime:
                 task_updates = self._query_task_status(sdk_client, job_id)
                 project_status = self._query_project_status(sdk_client)
                 session = None
-                job_state = self._task_state.get(job_id, {})
+                with self._task_state_lock:
+                    job_state = self._task_state.get(job_id, {})
                 if isinstance(job_state, dict):
                     raw_session = job_state.get("session")
                     if isinstance(raw_session, str) and raw_session.strip():
@@ -878,6 +982,7 @@ class ClientRuntime:
                     step_task_ids = self._extract_task_ids(res)
                     step_snapshot = None
                     if step_task_ids:
+                        step_timeout = 0 if self._is_unlimited_step_timeout(step) else step.timeout_s
                         self._register_step_tasks(
                             job_id,
                             step_index=idx,
@@ -895,7 +1000,7 @@ class ClientRuntime:
                             step_action=step.action,
                             step_kind=step.kind,
                             task_ids=step_task_ids,
-                            timeout_s=step.timeout_s,
+                            timeout_s=step_timeout,
                         )
                     else:
                         step_snapshot = []
@@ -1045,7 +1150,8 @@ class ClientRuntime:
             if sdk_client is not None:
                 with contextlib.suppress(Exception):
                     sdk_client.close()
-            self._task_state.pop(job_id, None)
+            with self._task_state_lock:
+                self._task_state.pop(job_id, None)
             self._active_job_id = None
             self._active_sdk_client = None
             self._job_lock.release()
