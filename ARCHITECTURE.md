@@ -44,7 +44,7 @@ RsLogic execution architecture
 - `rslogic/common/*` contains shared Redis, S3, DB, and workflow schemas used by orchestrator and client.
 - `rslogic/client/executor.py` translates step actions into realityscan-sdk calls and file operations.
   - New context-aware behavior now tracks `session` after `sdk_project_create/open` and supports placeholder expansion in step params (`{session}`, `{session_data_dir}`, `{job_id}`, `{staging_dir}`, etc.).
-  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
+  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to copy staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
   - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
   - SDK execution now fails fast with a clear message when SDK actions are submitted without the SDK dependency installed.
 - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
@@ -52,8 +52,8 @@ RsLogic execution architecture
   - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
   - `file_stage` now downloads assets in parallel with a thread pool (`CONFIG.s3.multipart_concurrency`, defaulting to CPU count) for faster staging throughput.
   - staging is cache-first: existing files in `staging_root` are reused across jobs and skipped if already present; `file_stage` only fetches missing assets.
-  - `file_move_*` operations now copy from `stage-map.json` (if present) so only files touched by the most recent stage action move into working directories, while shared cache files remain in staging for future jobs.
-  - File move steps (`file_move_staging_to_working`, `file_move_to_working`, `file_import_to_working`, and session imagery variants) default to `staging_root` when `working_dir` is not explicitly provided, and never to `staging_root/<job_id>`.
+  - `file_move_*` operations now copy from `stage-map.json` (if present) so only files touched by the most recent stage action are copied into working directories, while shared cache files remain in staging for future jobs.
+  - File copy steps (`file_move_staging_to_working`, `file_move_to_working`, `file_import_to_working`, `file_move_to_session_imagery`, and session imagery variants) default to `staging_root` when `working_dir` is not explicitly provided, and never to `staging_root/<job_id>`.
 - `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
 
 Auto-assignment:

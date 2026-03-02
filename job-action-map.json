@@ -29,7 +29,7 @@
     },
     "file_move_staging_to_working": {
       "kind": "file",
-      "description": "Moves staging directory files into working directory for session.",
+      "description": "Copies staged files into working directory for session.",
       "required_params": [],
       "optional_params": [
         "working_dir"
@@ -40,7 +40,7 @@
     },
     "file_move_to_working": {
       "kind": "file",
-      "description": "Alias for file_move_staging_to_working.",
+      "description": "Alias for file_copy_staging_to_working.",
       "required_params": [],
       "optional_params": [
         "working_dir"
@@ -48,7 +48,71 @@
     },
     "file_import_to_working": {
       "kind": "file",
-      "description": "Alias for file_move_staging_to_working.",
+      "description": "Alias for file_copy_staging_to_working.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_copy_staging_to_working": {
+      "kind": "file",
+      "description": "Copies staged files into working directory for session.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_copy_to_working": {
+      "kind": "file",
+      "description": "Alias for file_copy_staging_to_working.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_move_staging_to_session_imagery": {
+      "kind": "file",
+      "description": "Copies staged files into <working_root>/sessions/<session>/_data/Imagery.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_move_to_session_imagery": {
+      "kind": "file",
+      "description": "Alias for file_move_staging_to_session_imagery.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_move_to_session_folder": {
+      "kind": "file",
+      "description": "Alias for file_move_staging_to_session_imagery.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_copy_staging_to_session_imagery": {
+      "kind": "file",
+      "description": "Copies staged files into <working_root>/sessions/<session>/_data/Imagery.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_copy_to_session_imagery": {
+      "kind": "file",
+      "description": "Alias for file_copy_staging_to_session_imagery.",
+      "required_params": [],
+      "optional_params": [
+        "working_dir"
+      ]
+    },
+    "file_copy_to_session_folder": {
+      "kind": "file",
+      "description": "Alias for file_copy_staging_to_session_imagery.",
       "required_params": [],
       "optional_params": [
         "working_dir"
@@ -154,4 +218,3 @@
     "sdk_fallback": "if action not in explicit mapping and action starts with sdk_"
   }
 }
-

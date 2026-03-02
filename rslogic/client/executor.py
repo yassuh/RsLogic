@@ -202,7 +202,7 @@ class StepExecutor:
                 _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
                 return str(manifest)
 
-            if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working"}:
+            if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working", "file_copy_to_working", "file_copy_staging_to_working"}:
                 staging = self._staging_dir
                 if staging is None:
                     staging = self.file_executor.staging_root
@@ -213,16 +213,23 @@ class StepExecutor:
                     working_dir = self.file_executor.working_projects_root / str(job_id)
                 else:
                     working_dir = Path(str(working_dir))
-                result = str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                result = str(self.file_executor.copy_staging_to_working(job_id, staging, working_dir))
                 _LOGGER.info(
-                    "file_move_staging_to_working complete job_id=%s staging=%s destination=%s",
+                    "file_copy_to_working complete job_id=%s staging=%s destination=%s",
                     job_id,
                     staging,
                     working_dir,
                 )
                 return result
 
-            if action in {"file_move_to_session_imagery", "file_move_staging_to_session_imagery", "file_move_to_session_folder"}:
+            if action in {
+                "file_move_to_session_imagery",
+                "file_move_staging_to_session_imagery",
+                "file_move_to_session_folder",
+                "file_copy_to_session_imagery",
+                "file_copy_staging_to_session_imagery",
+                "file_copy_to_session_folder",
+            }:
                 staging = self._staging_dir
                 if staging is None:
                     staging = self.file_executor.staging_root
@@ -241,9 +248,9 @@ class StepExecutor:
                     working_dir = Path(base_dir) / "Imagery"
                 else:
                     working_dir = Path(str(working_dir))
-                result = str(self.file_executor.move_staging_to_working(job_id, staging, working_dir))
+                result = str(self.file_executor.copy_staging_to_working(job_id, staging, working_dir))
                 _LOGGER.info(
-                    "file_move_to_session_imagery complete job_id=%s group_id=%s session=%s destination=%s",
+                    "file_copy_to_session_imagery complete job_id=%s group_id=%s session=%s destination=%s",
                     job_id,
                     group_id,
                     session,

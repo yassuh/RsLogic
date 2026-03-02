@@ -240,13 +240,19 @@ class FileExecutor:
         _LOGGER.debug("write_manifest wrote %s", manifest_path)
         return manifest_path
 
-    def move_staging_to_working(self, job_id: str, staging_dir: Path | None = None, working_dir: Path | None = None) -> Path:
+    def copy_staging_to_working(
+        self,
+        job_id: str,
+        staging_dir: Path | None = None,
+        working_dir: Path | None = None,
+    ) -> Path:
+        """Copy staged assets into a working destination."""
         if staging_dir is None:
             staging_dir = self.staging_root
         if working_dir is None:
             working_dir = self.working_projects_root / str(job_id)
         working_dir.mkdir(parents=True, exist_ok=True)
-        _LOGGER.info("move_staging_to_working start job_id=%s staging_dir=%s working_dir=%s", job_id, staging_dir, working_dir)
+        _LOGGER.info("copy_staging_to_working start job_id=%s staging_dir=%s working_dir=%s", job_id, staging_dir, working_dir)
         moved = 0
 
         manifest_files = self._manifested_staging_files(staging_dir)
@@ -264,5 +270,9 @@ class FileExecutor:
             if target.exists():
                 target.unlink()
             shutil.copy2(str(source), str(target))
-        _LOGGER.info("move_staging_to_working done job_id=%s moved=%s target=%s", job_id, moved, working_dir)
+        _LOGGER.info("copy_staging_to_working done job_id=%s moved=%s target=%s", job_id, moved, working_dir)
         return working_dir
+
+    def move_staging_to_working(self, job_id: str, staging_dir: Path | None = None, working_dir: Path | None = None) -> Path:
+        """Backward-compatible alias for copy-based staging transfer."""
+        return self.copy_staging_to_working(job_id, staging_dir=staging_dir, working_dir=working_dir)

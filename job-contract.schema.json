@@ -106,9 +106,17 @@
                 "file_stage",
                 "file_stage_group",
                 "file_write_manifest",
+                "file_copy_staging_to_working",
+                "file_copy_to_working",
+                "file_copy_staging_to_session_imagery",
+                "file_copy_to_session_imagery",
+                "file_copy_to_session_folder",
                 "file_move_staging_to_working",
                 "file_move_to_working",
-                "file_import_to_working"
+                "file_import_to_working",
+                "file_move_staging_to_session_imagery",
+                "file_move_to_session_imagery",
+                "file_move_to_session_folder"
               ]
             }
           },
@@ -129,6 +137,72 @@
                       "working_dir": {
                         "type": "string",
                         "description": "Optional absolute path for final working directory"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "file_copy_staging_to_working"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "type": "object",
+                    "properties": {
+                      "working_dir": {
+                        "type": "string",
+                        "description": "Optional absolute path for final working directory"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "file_move_staging_to_session_imagery"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "type": "object",
+                    "properties": {
+                      "working_dir": {
+                        "type": "string",
+                        "description": "Optional absolute path for session imagery"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "file_copy_staging_to_session_imagery"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "type": "object",
+                    "properties": {
+                      "working_dir": {
+                        "type": "string",
+                        "description": "Optional absolute path for session imagery"
                       }
                     }
                   }
@@ -175,4 +249,3 @@
     }
   }
 }
-
