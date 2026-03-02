@@ -643,15 +643,17 @@ def _build_sdk_runner(config: RsToolsConfig) -> RsToolsRunner:
     )
 
 
+def _has_remote_credentials(config: RsToolsConfig) -> bool:
+    return bool(
+        (config.sdk_base_url or "").strip()
+        and (config.sdk_client_id or "").strip()
+        and (config.sdk_app_token or "").strip()
+        and (config.sdk_auth_token or "").strip()
+    )
+
+
 def _build_remote_runner(config: RsToolsConfig) -> RsToolsRunner:
-    del config
     runtime = load_config()
-    if not (runtime.rstools.sdk_base_url and runtime.rstools.sdk_client_id and runtime.rstools.sdk_app_token and runtime.rstools.sdk_auth_token):
-        raise RuntimeError(
-            "Remote RSTools runner requires RSLOGIC_RSTOOLS_SDK_BASE_URL, "
-            "RSLOGIC_RSTOOLS_SDK_CLIENT_ID, RSLOGIC_RSTOOLS_SDK_APP_TOKEN, "
-            "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN."
-        )
     return RsToolsRemoteRunner(
         redis_url=runtime.queue.redis_url,
         command_queue_key=runtime.control.command_queue_key,
@@ -667,6 +669,8 @@ def build_runner_from_config(config: Optional[RsToolsConfig] = None) -> RsToolsR
     mode = (cfg.mode or "stub").strip().lower()
     if mode == "sdk":
         return _build_sdk_runner(cfg)
+    if mode == "stub" and _has_remote_credentials(cfg):
+        return _build_remote_runner(cfg)
     if mode in {"remote", "rsnode_client", "client"}:
         return _build_remote_runner(cfg)
     if mode in {"cli", "subprocess"} and cfg.executable_path:

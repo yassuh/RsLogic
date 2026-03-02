@@ -108,13 +108,42 @@ def test_build_runner_from_config_sdk_mode_requires_credentials():
         raise AssertionError("Expected RuntimeError")
 
 
-def test_build_runner_from_config_remote_mode_requires_runtime_config(monkeypatch):
+def test_build_runner_from_config_remote_mode_uses_remote_transport(monkeypatch):
     cfg = build_test_app_config()
     cfg = replace(
         cfg,
         rstools=replace(
             cfg.rstools,
             mode="remote",
+        ),
+    )
+
+    class _FakeBus:
+        def __init__(self, *_, **__):
+            pass
+
+        def push(self, *_, **__):
+            pass
+
+        def pop(self, *_, **__):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runners, "RedisCommandBus", _FakeBus)
+    monkeypatch.setattr(runners, "load_config", lambda: cfg)
+    runner = runners.build_runner_from_config(cfg.rstools)
+    assert runner.__class__.__name__ == "RsToolsRemoteRunner"
+
+
+def test_build_runner_from_config_stub_auto_uses_remote_when_credentials_available(monkeypatch):
+    cfg = build_test_app_config()
+    cfg = replace(
+        cfg,
+        rstools=replace(
+            cfg.rstools,
+            mode="stub",
             sdk_base_url="http://127.0.0.1:8000",
             sdk_client_id="client-id",
             sdk_app_token="app-token",

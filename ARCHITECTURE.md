@@ -49,7 +49,7 @@
   - SDK fallback for the RSNode client default is `http://{server_host}:8000`.
 - Queue/runtime services:
   - Redis default connection in `config.py` is `REDIS_HOST: REDIS_PORT` (`6379`) with DB `RSLOGIC_REDIS_DB` default `0`.
-  - Orchestrator default CLI queue connection is `--server-host 192.168.193.59`, `--redis-host 192.168.193.56`, `--redis-port 9002`.
+- Orchestrator queue connection resolution follows environment overrides first (`RSLOGIC_REDIS_HOST` / `REDIS_HOST`, `RSLOGIC_REDIS_PORT` / `REDIS_PORT`), then command-line flags.
   - Control bus keys default to:
     - `RSLOGIC_CONTROL_COMMAND_QUEUE=rslogic:control:commands`
     - `RSLOGIC_CONTROL_RESULT_QUEUE=rslogic:control:results`
@@ -73,11 +73,11 @@
 
 ## Machines, IPs, and Network Topology
 
-- Known default host in code:
+- Known defaults in code:
   - `192.168.193.59` (defined as `DEFAULT_SERVER_HOST` in `scripts/rslogic_rsnode_client.py`).
   - User-facing startup defaults in the same script assume:
     - RS API: `http://192.168.193.59:8000`
-    - Redis: `192.168.193.56:9002`
+    - Redis: `192.168.193.56:9002` only when `--redis-port` or `RSLOGIC_REDIS_PORT` is explicitly set that way.
   - Label: **configuration default / deployment target**, not an auto-discovered runtime value.
 - Known user-reported node reference:
   - `192.168.193.59` is the active test/integration endpoint for direct RSNode verification.
@@ -311,6 +311,10 @@
   - polls task state with timeout (`sdk_task_timeout_seconds`) and returns command + node/project status in job summary
 - The active runner is selected from `RSLOGIC_RSTOOLS_MODE` in config.
   - `remote` (or alias `rsnode_client`/`client`) dispatches work through Redis to an external RSNode worker.
+  - If `RSLOGIC_RSTOOLS_MODE` is unset or `stub` and all SDK credentials are present
+    (`RSLOGIC_RSTOOLS_SDK_BASE_URL`, `RSLOGIC_RSTOOLS_SDK_CLIENT_ID`,
+    `RSLOGIC_RSTOOLS_SDK_APP_TOKEN`, `RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN`),
+    the server auto-selects `RsToolsRemoteRunner` instead of dry-run `StubRsToolsRunner`.
 
 ## File upload and ingestion
 
