@@ -43,6 +43,10 @@ _REQUIRED_CLIENT_ENV_KEYS = {
     "RSLOGIC_RSTOOLS_SDK_CLIENT_ID",
     "RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN",
     "RSLOGIC_RSTOOLS_SDK_APP_TOKEN",
+    "S3_ACCESS_KEY",
+    "S3_SECRET_KEY",
+    "S3_ENDPOINT_URL",
+    "S3_REGION",
 }
 
 _CLIENT_ENV_FILE = Path(__file__).resolve().parents[2] / "client.env"
