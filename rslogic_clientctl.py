@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Sequence
+from os import path as os_path
 
 
 def _candidate_project_roots() -> list[Path]:
@@ -20,6 +21,11 @@ def _candidate_project_roots() -> list[Path]:
 
 def _looks_like_repo_root(path: Path) -> bool:
     return (path / "rslogic").is_dir() and (path / "config.py").exists() and (path / "pyproject.toml").exists()
+
+
+def _path_already_on_syspath(candidate: str) -> bool:
+    wanted = os_path.normcase(os_path.abspath(candidate))
+    return any(os_path.normcase(os_path.abspath(existing)) == wanted for existing in sys.path if existing)
 
 
 def _ensure_import_path() -> Path:
@@ -41,14 +47,28 @@ def _ensure_import_path() -> Path:
         )
 
     path = str(selected)
-    if path not in sys.path:
+    if not _path_already_on_syspath(path):
         sys.path.insert(0, path)
+    py_path = os.environ.get("PYTHONPATH", "")
+    if path not in py_path.split(os.pathsep):
+        os.environ["PYTHONPATH"] = f"{path}{os.pathsep}{py_path}" if py_path else path
     return selected
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    _ensure_import_path()
-    from rslogic.client import control_tui
+    repo_root = _ensure_import_path()
+    try:
+        from rslogic.client import control_tui
+    except ModuleNotFoundError:
+        control_tui = Path(__file__).resolve().parent / "rslogic" / "client" / "control_tui.py"
+        if not control_tui.exists():
+            control_tui = repo_root / "rslogic" / "client" / "control_tui.py"
+        if not control_tui.exists():
+            raise
+        import runpy
+
+        runpy.run_path(str(control_tui), run_name="__main__")
+        return
 
     if argv is None:
         argv = tuple(sys.argv[1:])
