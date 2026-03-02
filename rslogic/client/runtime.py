@@ -46,9 +46,21 @@ _REQUIRED_CLIENT_ENV_KEYS = {
 
 
 def _validate_client_env_contract() -> None:
-    missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not os.getenv(name)]
+    values = _read_client_env_values()
+    missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not values.get(name)]
     if missing:
         raise RuntimeError(f"Client runtime missing required env values: {', '.join(missing)}")
+
+
+def _read_client_env_values() -> dict[str, str]:
+    raw = dotenv_values(path=os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip() or "")
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        normalized_key = str(key).strip().lstrip("\ufeff")
+        if not normalized_key:
+            continue
+        normalized[normalized_key] = str(value).strip() if isinstance(value, str) else ""
+    return normalized
 
 
 def _load_client_env() -> None:
@@ -62,14 +74,10 @@ def _load_client_env() -> None:
     if not path.is_file():
         raise RuntimeError(f"Client env file not found: {path}")
 
-    loaded = dotenv_values(path)
+    loaded_raw = _read_client_env_values()
+    loaded = loaded_raw
     for key, value in loaded.items():
-        if value is None:
-            continue
-        normalized_key = str(key).strip().lstrip("\ufeff")
-        if not normalized_key:
-            continue
-        os.environ[normalized_key] = str(value)
+        os.environ[key] = str(value)
     _validate_client_env_contract()
 
 

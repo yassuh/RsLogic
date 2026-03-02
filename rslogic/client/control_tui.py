@@ -21,6 +21,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, RichLog, Static
 
 _VENV_BOOTSTRAP_ENV = "RSLOGIC_CLIENTCTL_BOOTSTRAPPED"
+_CONFIG: Any | None = None
+_ENV_VALUES: dict[str, str] | None = None
 _REQUIRED_CLIENT_ENV_KEYS = {
     "RSLOGIC_CLIENT_ID",
     "RSLOGIC_CLIENT_LOG_LEVEL",
@@ -59,8 +61,6 @@ for _extra in (
     if str(_extra) not in sys.path:
         sys.path.insert(0, str(_extra))
 
-from rslogic.config import CONFIG
-
 
 def _read_env_file(path: Path) -> dict[str, str]:
     values = dotenv_values(path)
@@ -71,6 +71,18 @@ def _read_env_file(path: Path) -> dict[str, str]:
             continue
         normalized[normalized_key] = str(value).strip() if isinstance(value, str) else ""
     return normalized
+
+
+def _read_client_env() -> dict[str, str]:
+    global _ENV_VALUES
+    if _ENV_VALUES is not None:
+        return _ENV_VALUES
+    path = _client_env_file()
+    _ENV_VALUES = _read_env_file(path)
+    for key, value in _ENV_VALUES.items():
+        if key:
+            os.environ[str(key)] = str(value)
+    return _ENV_VALUES
 
 
 def _client_env_file() -> Path:
@@ -85,7 +97,7 @@ def _client_env_file() -> Path:
 
 
 def _derive_client_id() -> str:
-    env_values = _read_env_file(_client_env_file())
+    env_values = _read_client_env()
     resolved = env_values.get("RSLOGIC_CLIENT_ID", "").strip()
     if resolved:
         return resolved
@@ -100,13 +112,26 @@ def _validate_client_env_contract(path: Path | None = None) -> None:
     values: dict[str, str] = _read_env_file(path)
     for key in _REQUIRED_CLIENT_ENV_KEYS:
         if not values.get(key):
-            values[key] = os.getenv(key, "").strip()
+            raise RuntimeError(f"Invalid client env format. Missing required key {key} in {path}")
     missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not values.get(name)]
     if missing:
         raise RuntimeError(
-            "Invalid client env format. Missing required keys in environment or "
-            f"{path}: {', '.join(missing)}"
+            f"Invalid client env format. Missing required keys in {path}: {', '.join(missing)}"
         )
+
+
+def _get_config():
+    global _CONFIG
+    if _CONFIG is not None:
+        return _CONFIG
+    values = _read_client_env()
+    for key, value in values.items():
+        if key:
+            os.environ[str(key)] = str(value)
+    from rslogic.config import CONFIG
+
+    _CONFIG = CONFIG
+    return _CONFIG
 
 
 def _repo_root() -> Path:
@@ -120,6 +145,7 @@ def _venv_python_path() -> Path:
 
 
 def _with_project_pythonpath(env: dict[str, str] | None = None) -> dict[str, str]:
+    _read_client_env()
     base = dict(os.environ.copy() if env is None else env)
     extra_paths = [
         str(_repo_root()),
@@ -386,7 +412,7 @@ class ClientProcessManager:
         return [python_exec, str(script)]
 
     def _command_key(self) -> str:
-        command_key = CONFIG.control.command_queue_key
+        command_key = _get_config().control.command_queue_key
         if "{client_id}" in command_key:
             return command_key.format(client_id=self.client_id)
         return f"{command_key}:{self.client_id}:jobs"
@@ -395,7 +421,7 @@ class ClientProcessManager:
         import redis
 
         try:
-            with redis.Redis.from_url(CONFIG.queue.redis_url, decode_responses=True) as rc:
+            with redis.Redis.from_url(_get_config().queue.redis_url, decode_responses=True) as rc:
                 return int(rc.llen(self._command_key()))
         except Exception:
             return None
@@ -404,7 +430,7 @@ class ClientProcessManager:
         import redis
 
         try:
-            with redis.Redis.from_url(CONFIG.queue.redis_url, decode_responses=True) as rc:
+            with redis.Redis.from_url(_get_config().queue.redis_url, decode_responses=True) as rc:
                 raw = rc.get(f"rslogic:clients:{self.client_id}:heartbeat")
                 return _safe_json_loads(raw)
         except Exception:
@@ -414,7 +440,7 @@ class ClientProcessManager:
         import redis
 
         try:
-            with redis.Redis.from_url(CONFIG.queue.redis_url, decode_responses=True) as rc:
+            with redis.Redis.from_url(_get_config().queue.redis_url, decode_responses=True) as rc:
                 keys = rc.keys("rslogic:clients:*:heartbeat")
             if not keys:
                 return []

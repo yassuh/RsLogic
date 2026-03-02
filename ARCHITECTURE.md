@@ -21,6 +21,7 @@ RsLogic execution architecture
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
   - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
   - client env contract is loaded with `python-dotenv`; `client.env` at repo root is used by default and can be overridden by `RSLOGIC_CLIENT_ENV_FILE`.
+  - `client.env` is the source of truth for all client settings: values are hydrated into `os.environ` before any client config import to ensure runtime/control paths are consistent.
   - `RSLOGIC_CLIENT_ENV_FILE` is not required in process environment; it is set automatically when resolved from `client.env`.
   - status now reports active heartbeat clients discovered from Redis (`heartbeat_clients`) to make mismatched client-id/runtime combinations obvious.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
@@ -110,6 +111,7 @@ Auto-assignment:
 ### Client runtime
 - Reads `RSLOGIC_CLIENT_ID` and waits for job envelopes from Redis.
 - Loads client environment from `client.env` at repo root by default; if `RSLOGIC_CLIENT_ENV_FILE` is set, that path is used instead.
+- Client startup is env-file authoritative: values are injected into process env before import-time config resolution, so shell-level env overrides are intentionally ignored for client semantics.
 - Creates/maintains `RealityScanClient` and executes ordered steps:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
