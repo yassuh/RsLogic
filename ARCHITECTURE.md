@@ -14,6 +14,7 @@ RsLogic execution architecture
 - `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
   - start/stop/restart/status management for `rslogic.client.rsnode_client`.
   - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
+  - `start` now verifies the spawned runtime remains alive after launch; if it exits immediately, the command returns a clear failure with captured startup stderr/stdout tail.
   - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches with deterministic root detection.
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.

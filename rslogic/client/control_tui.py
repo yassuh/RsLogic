@@ -468,6 +468,21 @@ class ClientProcessManager:
             creationflags=creationflags,
         )
         self._write_pid(proc.pid)
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            self._clear_pid()
+            self._stdout_handle.flush() if self._stdout_handle else None
+            self._stderr_handle.flush() if self._stderr_handle else None
+            self._stdout_tail._offset = 0
+            self._stderr_tail._offset = 0
+            stdout_tail = self._stdout_tail.read(max_lines=20)
+            stderr_tail = self._stderr_tail.read(max_lines=40)
+            raise RuntimeError(
+                "client process exited early before becoming healthy: "
+                f"pid={proc.pid} rc={proc.returncode}; "
+                f"tail stdout={stdout_tail[-3:] if stdout_tail else []}; "
+                f"tail stderr={stderr_tail[-3:] if stderr_tail else []}"
+            )
         if not detach:
             self._proc = proc
         return f"started (pid={proc.pid})"
