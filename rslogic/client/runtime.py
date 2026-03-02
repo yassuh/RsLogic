@@ -286,6 +286,16 @@ class ClientRuntime:
             return text
         return f"{text[:max_len]}…(+{len(text)-max_len} chars)"
 
+    @staticmethod
+    def _result_preview(value: Any, *, max_len: int = 1800) -> dict[str, Any]:
+        text = repr(value)
+        preview = text if len(text) <= max_len else f"{text[:max_len]}…(+{len(text)-max_len} chars)"
+        return {
+            "result_type": type(value).__name__,
+            "result": text,
+            "result_preview": preview,
+        }
+
     def _start_step_heartbeat(
         self,
         *,
@@ -347,6 +357,8 @@ class ClientRuntime:
         job_id = str(payload.get("job_id"))
         group_id = self._ensure_group_id(payload.get("group_id"))
         steps = payload.get("steps", [])
+        last_step_result: dict[str, Any] | None = None
+        last_step_duration: float | None = None
         self._log.info("job_start job_id=%s group_id=%s step_count=%s", job_id, group_id, len(steps))
         step_objects = [Step.model_validate(raw_step) for raw_step in steps]
         sdk_needed = any(step.kind == "sdk" for step in step_objects)
@@ -427,6 +439,12 @@ class ClientRuntime:
                     step_started = time.monotonic()
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
                     step_time = round(time.monotonic() - step_started, 3)
+                    last_step_result = self._result_preview(res)
+                    last_step_result["duration_seconds"] = step_time
+                    last_step_result["step_index"] = idx
+                    last_step_result["step_kind"] = step.kind
+                    last_step_result["step_action"] = step.action
+                    last_step_duration = step_time
                 except Exception as exc:
                     step_error = exc
                     self._log.exception(
@@ -464,7 +482,9 @@ class ClientRuntime:
                     progress=progress,
                     message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
                     result_summary={
-                        "last_result": res,
+                        "last_result": last_step_result["result"] if last_step_result else None,
+                        "last_result_type": last_step_result["result_type"] if last_step_result else type(res).__name__,
+                        "last_result_preview": last_step_result,
                         "last_step": {
                             "index": idx,
                             "kind": step.kind,
@@ -487,17 +507,32 @@ class ClientRuntime:
                         "step_action": step.action,
                         "duration_seconds": step_time,
                         "result_type": type(res).__name__,
+                        "result": self._safe_preview(res),
                     },
                 )
 
+            completion_payload = {
+                "job_id": job_id,
+                "status": "completed",
+                "progress": 100,
+                "message": "completed",
+            }
+            if last_step_result is not None:
+                completion_result = dict(last_step_result)
+                completion_result["duration_seconds"] = last_step_duration
+                completion_payload["result_summary"] = {
+                    "phase": "job_complete",
+                    "last_step_result": completion_result,
+                }
             self.db.upsert_processing_job(
                 job_id=job_id,
                 image_group_id=group_id,
                 status="completed",
                 progress=100,
                 message="completed",
+                result_summary=completion_payload.get("result_summary"),
             )
-            self.redis_bus.publish_result(self.client_id, {"job_id": job_id, "status": "completed", "progress": 100, "message": "completed"})
+            self.redis_bus.publish_result(self.client_id, completion_payload)
         except Exception as exc:
             self.db.upsert_processing_job(
                 job_id=job_id,

@@ -8,6 +8,7 @@ RsLogic execution architecture
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
   - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
+  - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
   - SDK availability is now optional at import time: the runtime starts even if `realityscan_sdk` is absent, and only fails SDK jobs with a clear error, allowing file-only jobs to execute.
 - `rslogic/client/rsnode_client.py` is the runtime bootstrap entrypoint used by the control TUI and CLI.
   - now auto-discovers the repo root at startup and injects it into `sys.path`/`PYTHONPATH` when executed directly, so `python <repo>/rslogic/client/rsnode_client.py` works even when the venv interpreter has broken package discovery.
@@ -120,6 +121,7 @@ Auto-assignment:
 - Creates/maintains `RealityScanClient` and executes ordered steps:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
+  - publishes command result text from each completed step in redis `result_summary` (`result`, `result_type`, `result_preview`) so operators can see what each SDK call returned.
 - Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
 - Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.
 - Publishes heartbeat and result updates.
