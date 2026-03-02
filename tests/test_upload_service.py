@@ -61,3 +61,49 @@ def test_run_reports_upload_progress(tmp_path: Path) -> None:
 
     assert progress
     assert progress[-1] == (2, 2)
+
+
+def test_sidecar_with_embedded_image_extension_is_paired(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.jpeg"
+    sidecar_path = tmp_path / "image.jpeg.xmp"
+    image_path.write_bytes(b"image-bytes")
+    sidecar_path.write_bytes(b"sidecar-bytes")
+
+    uploader = FolderUploader.__new__(FolderUploader)
+    uploader.bucket = "drone-imagery-waiting"
+    uploader.max_workers = 1
+    uploader.manifest_dir = tmp_path / "manifests"
+    uploader.manifest_dir.mkdir()
+    uploader.s3 = _FakeS3()
+
+    uploader.run(tmp_path)
+
+    uploaded_keys = [item[2] for item in uploader.s3.uploads]
+    image_hash = _hash_file(image_path)
+    assert f"{image_hash}.jpeg" in uploaded_keys
+    assert f"{image_hash}.xmp" in uploaded_keys
+
+
+def test_missing_sidecars_are_synthesized_from_image_metadata(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"image-bytes")
+
+    monkeypatch.setattr(
+        "rslogic.upload_service.parse_exif",
+        lambda path: {"exif": {"Model": "X1"}},
+    )
+
+    uploader = FolderUploader.__new__(FolderUploader)
+    uploader.bucket = "drone-imagery-waiting"
+    uploader.max_workers = 1
+    uploader.manifest_dir = tmp_path / "manifests"
+    uploader.manifest_dir.mkdir()
+    uploader.s3 = _FakeS3()
+
+    uploader.run(tmp_path)
+
+    image_hash = _hash_file(image_path)
+    uploaded_keys = [item[2] for item in uploader.s3.uploads]
+    assert f"{image_hash}.jpg" in uploaded_keys
+    assert f"{image_hash}.json" in uploaded_keys
+    assert len(uploaded_keys) == 2

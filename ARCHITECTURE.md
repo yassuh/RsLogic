@@ -37,27 +37,34 @@ Auto-assignment:
 - Keying:
   - image keys are `hash.extension`, where hash is the SHA-256 of image bytes.
   - sidecar keys are the same base hash as its paired image, with the sidecar extension.
+  - if no matching sidecar file is found, the uploader generates a synthetic `*.json` sidecar from parsed image metadata so ingest still receives sidecar-style payloads.
 - No folder-like keys (no `/` path segments) are written to S3; organization happens in Postgres (`image_groups`, links, metadata).
 - Behavior:
   - multi-threaded upload with configurable workers (defaults to `os.cpu_count()`),
   - callback hook (`on_progress`) to drive UI loading bars,
   - artifact pairing is directory + stem based,
+  - sidecar stem matching accepts both `image.ext` and `image.ext.sidecar` style file names (e.g. `image.jpg.xmp`) so these are treated as the same asset group and uploaded as sidecars.
   - manifest file is written to `CONFIG.s3.manifest_dir`.
 
 ### Ingest
 - Input: objects currently in waiting bucket.
 - Pairing: directory + stem anchor is used to match image↔sidecar.
+- If an image has no sidecar object, ingest synthesizes a `*.json` sidecar payload from parsed image EXIF/XMP so `metadata['sidecars']` is still populated.
 - Execution: multi-threaded image ingest workers (from `CONFIG.s3.multipart_concurrency`), with optional per-run `on_progress` callback.
+- Observability: ingest now emits explicit preflight/status messages (`Scanning waiting bucket...`, pair counts, worker count, and queue phase) so UI can show why startup is paused before the first rows appear.
 - Output:
   - downloads each matched image and parses EXIF/sidecar,
-  - EXIF parser normalizes non-JSON values (for example IFDRational) into JSON-safe primitives before writing metadata,
-  - GPS EXIF fields are extracted during ingest and mapped into `RsLogicImageAsset` geospatial columns:
+  - EXIF parser normalizes non-JSON values (for example IFDRational) into JSON-safe primitives and strips null bytes from text before writing metadata,
+  - complete EXIF is preserved under `metadata['exif']`, with:
+    - camera/make/model/focal length/size/software fields extracted into `RsLogicImageAsset` columns (`drone_model`, `camera_make`, `camera_model`, `focal_length_mm`, `image_width`, `image_height`, `software`, `captured_at`),
+    - GPS EXIF fields are extracted during ingest and mapped into `RsLogicImageAsset` geospatial columns:
     - `latitude`
     - `longitude`
     - `altitude_m`
     - `location` (`POINT` geometry, SRID 4326)
   - creates `image_assets` rows and attaches optional `image_group`,
   - moves images and sidecars into `drone-imagery` bucket using flat keys (no folder paths),
+  - each image is moved independently as soon as its worker completes, so assets appear in `drone-imagery` incrementally instead of waiting for batch completion,
   - writes source/parsed metadata into the row metadata.
 
 ### Job orchestration
@@ -74,6 +81,8 @@ Auto-assignment:
 - Creates/maintains `RealityScanClient` and executes ordered steps:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
+- Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
+- Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.
 - Publishes heartbeat and result updates.
 - Rejects work when already busy with another job and reports `rejected`.
 

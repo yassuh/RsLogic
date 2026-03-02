@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 import hashlib
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 from .common.s3 import make_client
 from config import CONFIG
+from .sidecar_parser import parse_exif
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
@@ -22,6 +24,16 @@ SIDECAR_SUFFIXES = {".xmp", ".xml", ".json"}
 def _artifact_anchor(item: Path, folder: Path) -> str:
     rel = item.relative_to(folder).with_suffix("")
     return rel.as_posix().lower()
+
+
+def _sidecar_anchors(item: Path, folder: Path) -> set[str]:
+    rel = item.relative_to(folder)
+    base = rel.with_suffix("")
+    anchors = {base.as_posix().lower()}
+    image_stem = base.with_suffix("")
+    if base.suffix.lower() in IMAGE_SUFFIXES:
+        anchors.add(image_stem.as_posix().lower())
+    return anchors
 
 
 def _flatten_prefix(prefix: str | None) -> str:
@@ -42,7 +54,7 @@ def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
 @dataclass
 class UploadRecord:
     image: Path
-    sidecars: list[Path]
+    sidecars: list[tuple[Path | dict[str, Any], str]]
     image_key: str
     sidecar_keys: list[str]
     bucket: str
@@ -63,13 +75,27 @@ def _scan_folder(
             by_stem.setdefault(_artifact_anchor(item, folder), []).append(item)
             continue
         if suffix in SIDECAR_SUFFIXES:
-            sidecars.setdefault(_artifact_anchor(item, folder), []).append(item)
+            for anchor in _sidecar_anchors(item, folder):
+                sidecars.setdefault(anchor, []).append(item)
     return images, by_stem, sidecars
 
 
 def _upload_one(s3_client, bucket: str, source: Path, key: str) -> dict[str, str]:
     s3_client.upload_file(str(source), bucket, key)
     return {"local": str(source), "bucket": bucket, "key": key}
+
+
+def _upload_embedded_sidecar(s3_client, bucket: str, payload: dict[str, Any], key: str) -> dict[str, str]:
+    data = json.dumps(payload, indent=2, sort_keys=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as file_obj:
+        file_obj.write(data)
+        file_obj.flush()
+        path = file_obj.name
+    try:
+        s3_client.upload_file(path, bucket, key)
+    finally:
+        os.remove(path)
+    return {"local": f"embedded://{key}", "bucket": bucket, "key": key}
 
 
 class FolderUploader:
@@ -101,7 +127,21 @@ class FolderUploader:
                 file_hash = _hash_file(image)
                 image_key = f"{flat_prefix}{file_hash}{image.suffix.lower()}"
                 sidecar_paths = by_sidecar.get(stem, [])
+                sidecar_specs: list[tuple[Path | dict[str, Any], str]] = []
                 sidecar_keys = [f"{flat_prefix}{file_hash}{sp.suffix.lower()}" for sp in sidecar_paths]
+                for sidecar_path, sidecar_key in zip(sidecar_paths, sidecar_keys):
+                    sidecar_specs.append((sidecar_path, sidecar_key))
+                if not sidecar_paths:
+                    try:
+                        exif_payload = parse_exif(image)
+                    except Exception as exc:
+                        exif_payload = {"exif": {}, "parse_error": str(exc)}
+                    sidecar_key = f"{flat_prefix}{file_hash}.json"
+                    sidecar_keys = [sidecar_key]
+                    sidecar_specs.append(({"embedded": True, "image": image.name, "payload": exif_payload}, sidecar_key))
+                else:
+                    sidecar_keys = [f"{flat_prefix}{file_hash}{sp.suffix.lower()}" for sp in sidecar_paths]
+                records.append(UploadRecord(image=image, sidecars=sidecar_specs, image_key=image_key, sidecar_keys=sidecar_keys, bucket=self.bucket))
                 records.append(UploadRecord(image=image, sidecars=sidecar_paths, image_key=image_key, sidecar_keys=sidecar_keys, bucket=self.bucket))
 
         manifest = []
@@ -114,11 +154,17 @@ class FolderUploader:
                     "image",
                     str(rec.image),
                 )
-                for sidecar_path, sidecar_key in zip(rec.sidecars, rec.sidecar_keys):
-                    futures[pool.submit(_upload_one, self.s3, rec.bucket, sidecar_path, sidecar_key)] = (
-                        "sidecar",
-                        str(sidecar_path),
-                    )
+                for sidecar_source, sidecar_key in rec.sidecars:
+                    if isinstance(sidecar_source, Path):
+                        futures[pool.submit(_upload_one, self.s3, rec.bucket, sidecar_source, sidecar_key)] = (
+                            "sidecar",
+                            str(sidecar_source),
+                        )
+                    else:
+                        futures[pool.submit(_upload_embedded_sidecar, self.s3, rec.bucket, sidecar_source, sidecar_key)] = (
+                            "sidecar",
+                            f"embedded://{sidecar_key}",
+                        )
             total = len(futures)
 
             for future in as_completed(futures):

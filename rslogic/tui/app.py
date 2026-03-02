@@ -230,9 +230,14 @@ class RsLogicTUI(App):
                     done,
                     total,
                 ),
+                on_result=lambda item, result: self.call_from_thread(
+                    self._log,
+                    f"Ingested: {item.image_key} -> {result['bucket']}/{result['key']}",
+                ),
+                on_status=lambda message: self.call_from_thread(self._log, message),
             )
             if not items:
-                images, unmatched = service._pair_objects()
+                images, unmatched, _ = service._pair_objects()
                 self.call_from_thread(
                     self._log,
                     "Ingested 0 images. "

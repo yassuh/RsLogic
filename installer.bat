@@ -57,16 +57,19 @@ if not exist "%ROOT%\client.env" (
 if not exist "%ROOT%\logs" mkdir "%ROOT%\logs"
 if not exist "%ROOT%\logs\client" mkdir "%ROOT%\logs\client"
 
-if not exist "%ROOT%\start-rslogic-client.bat" (
-  > "%ROOT%\start-rslogic-client.bat" echo @echo off
-  >> "%ROOT%\start-rslogic-client.bat" echo setlocal
-  >> "%ROOT%\start-rslogic-client.bat" echo cd /d "%ROOT%"
-  >> "%ROOT%\start-rslogic-client.bat" echo call ".\\%VENV%\\Scripts\\activate.bat"
-  >> "%ROOT%\start-rslogic-client.bat" echo rslogic-client >> "%ROOT%\start-rslogic-client.bat"
-)
+> "%ROOT%\start-rslogic-client.bat" echo @echo off
+>> "%ROOT%\start-rslogic-client.bat" echo setlocal
+>> "%ROOT%\start-rslogic-client.bat" echo set "ROOT=%~dp0"
+>> "%ROOT%\start-rslogic-client.bat" echo set "VENV=%VENV%"
+>> "%ROOT%\start-rslogic-client.bat" echo set "LOG_DIR=%ROOT%logs\client"
+>> "%ROOT%\start-rslogic-client.bat" echo if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+>> "%ROOT%\start-rslogic-client.bat" echo set PYTHON_GIL=0
+>> "%ROOT%\start-rslogic-client.bat" echo set PYTHONUNBUFFERED=1
+>> "%ROOT%\start-rslogic-client.bat" echo cd /d "%ROOT%"
+>> "%ROOT%\start-rslogic-client.bat" echo call ".\\%VENV%\\Scripts\\activate.bat"
+>> "%ROOT%\start-rslogic-client.bat" echo rslogic-client 1>>"%ROOT%\\logs\\client\\rslogic-client.stdout.log" 2>>"%ROOT%\\logs\\client\\rslogic-client.stderr.log"
 
 echo [*] Install complete.
 echo [*] Edit %ROOT%\client.env, then run:
 echo     %ROOT%\start-rslogic-client.bat
 exit /b 0
-

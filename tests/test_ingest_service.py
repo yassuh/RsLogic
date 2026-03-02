@@ -72,7 +72,7 @@ def test_ingest_run_reports_progress(monkeypatch) -> None:
         ),
     ]
 
-    service._pair_objects = lambda: (items, [])  # type: ignore[method-assign]
+    service._pair_objects = lambda: (items, [], {"scanned_objects": 0, "images": 2, "sidecars": 1, "images_with_sidecars": 1, "unmatched_objects": 0})  # type: ignore[method-assign]
     service._parse_payload = MethodType(
         lambda _self, image_tmp, sidecar_keys, image_key: {
             "exif": {},

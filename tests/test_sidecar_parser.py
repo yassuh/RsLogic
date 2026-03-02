@@ -13,11 +13,17 @@ from rslogic.ingest import IngestService
 
 
 class _FakeImage:
+    def __init__(self) -> None:
+        self.info = {}
+
     def __enter__(self) -> "_FakeImage":
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> bool | None:
         return None
+
+    def _getexif(self):
+        return {}
 
     def getexif(self):
         return {
@@ -29,22 +35,34 @@ class _FakeImage:
 
 
 class _FakeImageForIngest:
+    def __init__(self) -> None:
+        self.info = {}
+
     def __enter__(self) -> "_FakeImageForIngest":
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> bool | None:
         return None
 
+    def _getexif(self):
+        return {}
+
     def getexif(self):
         return {9_999_991: IFDRational(1, 2)}
 
 
 class _FakeImageForIngestGps:
+    def __init__(self) -> None:
+        self.info = {}
+
     def __enter__(self) -> "_FakeImageForIngestGps":
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> bool | None:
         return None
+
+    def _getexif(self):
+        return {}
 
     def getexif(self):
         return {
@@ -77,8 +95,29 @@ def test_extract_gps_from_exif_works() -> None:
     }
 
 
+def test_extract_gps_from_exif_uses_xmp_attributes() -> None:
+    exif = {
+        "xmp": {
+            "attributes": {
+                "GpsLatitude": 18.158777394,
+                "GpsLongitude": -76.961200741,
+                "Altitude": 499.0,
+            }
+        }
+    }
+    assert extract_gps_from_exif(exif) == {
+        "latitude": 18.158777394,
+        "longitude": -76.961200741,
+        "altitude_m": 499.0,
+    }
+
+
 def test_to_json_value_converts_ifdrational() -> None:
     assert _to_json_value(IFDRational(3, 2)) == 1.5
+
+
+def test_to_json_value_sanitizes_null_bytes() -> None:
+    assert _to_json_value("hello\x00world") == "helloworld"
 
 
 def _assert_payload_tags(payload: dict) -> None:
@@ -119,7 +158,7 @@ def test_ingest_parse_payload_uses_json_safe_exif(tmp_path: Path) -> None:
         payload = service._parse_payload(image_path, ["img/side.json"], "img/image.jpg")
 
     json.dumps(payload)
-    _assert_payload_tags(payload)
+    assert payload["exif"]["exif"]["9999991"] == 0.5
     assert payload["sidecars"][0]["parsed"]["json"] == {"ok": True}
 
 
@@ -137,8 +176,29 @@ def test_ingest_parse_payload_includes_geodata(tmp_path: Path) -> None:
 
     service.s3 = _FakeS3()
     with patch("rslogic.sidecar_parser.Image.open", return_value=_FakeImageForIngestGps()):
-        payload = service._parse_payload(image_path, [], "img/image.jpg")
+    payload = service._parse_payload(image_path, [], "img/image.jpg")
 
     assert payload["geodata"]["latitude"] == 10.5
     assert payload["geodata"]["longitude"] == -20.0
     assert payload["geodata"]["altitude_m"] == 250.0
+
+
+def test_parse_payload_adds_embedded_sidecar_when_missing(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"fake-jpeg")
+
+    service = IngestService.__new__(IngestService)
+    service.waiting = "drone-imagery-waiting"
+    service.processed = "drone-imagery"
+
+    class _FakeS3:
+        def download_file(self, bucket: str, key: str, filename: str) -> None:
+            Path(filename).write_text("{}", encoding="utf-8")
+
+    service.s3 = _FakeS3()
+    with patch("rslogic.sidecar_parser.Image.open", return_value=_FakeImageForIngestGps()):
+        payload = service._parse_payload(image_path, [], "img/image.jpg")
+
+    assert payload["sidecars"]
+    assert payload["sidecars"][0]["key"] == "image.jpg.json"
+    assert payload["sidecars"][0]["parsed"]["json"]["embedded"] is True

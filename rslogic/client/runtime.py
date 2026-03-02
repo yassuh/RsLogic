@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import uuid
 import os
 import signal
 import threading
@@ -42,6 +43,10 @@ class ClientRuntime:
     def __init__(self) -> None:
         self.stop_event = threading.Event()
         self.client_id = os.getenv("RSLOGIC_CLIENT_ID", os.getenv("CLIENT_ID", "default-client"))
+        self.sdk_client_id = self._normalize_sdk_client_id(
+            os.getenv("RSLOGIC_RSTOOLS_SDK_CLIENT_ID", CONFIG.rstools.sdk_client_id or None),
+            fallback=self.client_id,
+        )
         self.redis_bus = RedisBus(
             CONFIG.queue.redis_url,
             CONFIG.control.command_queue_key,
@@ -60,11 +65,42 @@ class ClientRuntime:
     def _sdk_client(self) -> RealityScanClient:
         return RealityScanClient(
             base_url=os.getenv("RSLOGIC_RSTOOLS_SDK_BASE_URL", CONFIG.rstools.sdk_base_url or "http://127.0.0.1:8000"),
-            client_id=os.getenv("RSLOGIC_RSTOOLS_SDK_CLIENT_ID", CONFIG.rstools.sdk_client_id or self.client_id),
+            client_id=self.sdk_client_id,
             auth_token=os.getenv("RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN", CONFIG.rstools.sdk_auth_token or ""),
             app_token=os.getenv("RSLOGIC_RSTOOLS_SDK_APP_TOKEN", CONFIG.rstools.sdk_app_token or "123"),
             verify_tls=False,
         )
+
+    @staticmethod
+    def _normalize_sdk_client_id(raw_client_id: str | None, *, fallback: str) -> str:
+        raw = (raw_client_id or "").strip()
+        if not raw:
+            raw = (fallback or "").strip()
+        if raw:
+            try:
+                uuid.UUID(raw)
+                return raw
+            except ValueError:
+                return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"rslogic:{raw}"))
+        return str(uuid.uuid4())
+
+    @staticmethod
+    def _looks_like_uuid(value: str | None) -> bool:
+        if not value:
+            return False
+        try:
+            uuid.UUID(str(value).strip())
+            return True
+        except ValueError:
+            return False
+
+    def _ensure_group_id(self, raw_group_id: str | None) -> str | None:
+        if not raw_group_id:
+            return None
+        if self._looks_like_uuid(raw_group_id):
+            return raw_group_id
+        group, _ = self.db.get_or_create_group(raw_group_id)
+        return group.id
 
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._shutdown)
@@ -82,13 +118,14 @@ class ClientRuntime:
                 continue
             if not self._job_lock.acquire(blocking=False):
                 job_id = str(payload.get("job_id"))
+                group_id = self._ensure_group_id(payload.get("group_id"))
                 self.redis_bus.publish_result(
                     self.client_id,
                     {"job_id": job_id, "status": "rejected", "progress": 0, "message": "client is already busy"},
                 )
                 self.db.upsert_processing_job(
                     job_id=job_id,
-                    image_group_id=payload.get("group_id"),
+                    image_group_id=group_id,
                     status="rejected",
                     progress=0.0,
                     message="client is already busy",
@@ -117,7 +154,7 @@ class ClientRuntime:
 
     def _run_job(self, payload: dict) -> None:
         job_id = str(payload.get("job_id"))
-        group_id = payload.get("group_id")
+        group_id = self._ensure_group_id(payload.get("group_id"))
         steps = payload.get("steps", [])
         sdk_client = self._sdk_client()
         executor = StepExecutor(sdk_client=sdk_client, file_executor=self.file_executor)
