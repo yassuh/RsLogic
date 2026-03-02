@@ -8,6 +8,8 @@ RsLogic execution architecture
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
   - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
+- `rslogic/client/rsnode_client.py` is the runtime bootstrap entrypoint used by the control TUI and CLI.
+  - now auto-discovers the repo root at startup and injects it into `sys.path`/`PYTHONPATH` when executed directly, so `python <repo>/rslogic/client/rsnode_client.py` works even when the venv interpreter has broken package discovery.
 - `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
   - start/stop/restart/status management for `rslogic.client.rsnode_client`.
   - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
