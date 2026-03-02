@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studio-db"
+version = "0.1.0"
+description = "studio-db repo."
+requires-python = ">=3.12"
+dependencies = [
+  "alembic",
+  "SQLAlchemy",
+  "psycopg",
+  "geoalchemy2",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+py-modules = ["models", "studio_db"]
+include-package-data = true

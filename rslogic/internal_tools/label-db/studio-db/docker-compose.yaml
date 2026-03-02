@@ -1,0 +1,73 @@
+services:
+  postgis:
+    build: .
+    image: label-db-postgis:18
+    pull_policy: never
+    ports:
+      - "9000:5432"
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_DB: studio_db
+      POSTGRES_USER: studio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    command: >
+      postgres
+      -c shared_buffers=2GB
+      -c work_mem=32MB
+      -c maintenance_work_mem=512MB
+      -c max_connections=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U studio -d studio_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - studio-network
+
+  pgbouncer:
+    image: edoburu/pgbouncer
+    depends_on:
+      - postgis
+    env_file:
+      - ../.env
+    environment:
+      AUTH_TYPE: scram-sha-256
+      DB_HOST: postgis
+      DB_PORT: 5432
+      DB_USER: studio
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: studio_db
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+    ports:
+      - "9001:5432"   # optional; keep internal-only if possible
+    networks:
+      - studio-network
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "9002:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - studio-network
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  studio-network:
+    name: studio-network
+    driver: bridge

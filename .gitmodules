@@ -1,4 +1,0 @@
-[submodule "rslogic/internal_tools/label-db"]
-    path = rslogic/internal_tools/label-db
-    url = https://github.com/yassuh/label-db.git
-    branch = 2.0
