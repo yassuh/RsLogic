@@ -20,9 +20,9 @@ RsLogic execution architecture
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
   - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
-  - client env contract is loaded with `python-dotenv`; `client.env` at repo root is used by default and can be overridden by `RSLOGIC_CLIENT_ENV_FILE`.
+  - client env contract is loaded with `python-dotenv` from `client.env` at repo root only (hardcoded location).
   - `client.env` is the source of truth for all client settings: values are hydrated into `os.environ` before any client config import to ensure runtime/control paths are consistent.
-  - `RSLOGIC_CLIENT_ENV_FILE` is not required in process environment; it is set automatically when resolved from `client.env`.
+  - `RSLOGIC_CLIENT_ENV_FILE` is not used by the client runtime path anymore; the root `client.env` file is the single source of truth.
   - status now reports active heartbeat clients discovered from Redis (`heartbeat_clients`) to make mismatched client-id/runtime combinations obvious.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:

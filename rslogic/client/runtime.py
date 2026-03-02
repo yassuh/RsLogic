@@ -16,7 +16,7 @@ from dotenv import dotenv_values
 try:
     from realityscan_sdk.client import RealityScanClient
     _SDK_AVAILABLE = True
-except ModuleNotFoundError as exc:
+except ModuleNotFoundError:
     RealityScanClient = None  # type: ignore[assignment]
     _SDK_AVAILABLE = False
 
@@ -44,6 +44,8 @@ _REQUIRED_CLIENT_ENV_KEYS = {
     "RSLOGIC_RSTOOLS_SDK_APP_TOKEN",
 }
 
+_CLIENT_ENV_FILE = Path(__file__).resolve().parents[2] / "client.env"
+
 
 def _validate_client_env_contract() -> None:
     values = _read_client_env_values()
@@ -53,7 +55,7 @@ def _validate_client_env_contract() -> None:
 
 
 def _read_client_env_values() -> dict[str, str]:
-    raw = dotenv_values(path=os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip() or "")
+    raw = dotenv_values(_CLIENT_ENV_FILE)
     normalized: dict[str, str] = {}
     for key, value in raw.items():
         normalized_key = str(key).strip().lstrip("\ufeff")
@@ -64,13 +66,7 @@ def _read_client_env_values() -> dict[str, str]:
 
 
 def _load_client_env() -> None:
-    env_file = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
-    if not env_file:
-        env_file = str((Path(__file__).resolve().parents[2] / "client.env"))
-    path = Path(env_file).expanduser()
-    if not path.is_absolute():
-        path = (Path(__file__).resolve().parents[2] / path).resolve()
-    os.environ["RSLOGIC_CLIENT_ENV_FILE"] = str(path)
+    path = _CLIENT_ENV_FILE
     if not path.is_file():
         raise RuntimeError(f"Client env file not found: {path}")
 

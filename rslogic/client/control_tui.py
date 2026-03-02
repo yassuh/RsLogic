@@ -61,6 +61,8 @@ for _extra in (
     if str(_extra) not in sys.path:
         sys.path.insert(0, str(_extra))
 
+CLIENT_ENV_FILE = ROOT_DIR / "client.env"
+
 
 def _read_env_file(path: Path) -> dict[str, str]:
     values = dotenv_values(path)
@@ -86,14 +88,9 @@ def _read_client_env() -> dict[str, str]:
 
 
 def _client_env_file() -> Path:
-    explicit = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
-    candidate = Path(explicit).expanduser() if explicit else (ROOT_DIR / "client.env")
-    if not candidate.is_absolute():
-        candidate = (ROOT_DIR / candidate).resolve()
-    if not candidate.is_file():
-        raise RuntimeError(f"Client env file not found: {candidate}")
-    os.environ["RSLOGIC_CLIENT_ENV_FILE"] = str(candidate)
-    return candidate
+    if not CLIENT_ENV_FILE.is_file():
+        raise RuntimeError(f"Client env file not found: {CLIENT_ENV_FILE}")
+    return CLIENT_ENV_FILE
 
 
 def _derive_client_id() -> str:
@@ -390,7 +387,6 @@ class ClientProcessManager:
             env["RSLOGIC_CLIENT_LOG_LEVEL"] = self.log_level
 
         client_env = _client_env_file()
-        env["RSLOGIC_CLIENT_ENV_FILE"] = str(client_env)
         env.update(_read_env_file(client_env))
 
         existing_python_path = env.get("PYTHONPATH", "")
