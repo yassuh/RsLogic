@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from rslogic.common.db import LabelDbStore
 from rslogic.common.s3 import make_client
@@ -39,6 +41,36 @@ class FileExecutor:
     def _safe_name(value: str) -> str:
         return "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", ".", " "))
 
+    def _download_one(self, *, idx: int, total: int, asset: Any, group_dir: Path) -> dict[str, str]:
+        if not (asset.object_key or asset.uri):
+            raise RuntimeError(f"asset {getattr(asset, 'id', '<unknown>')} missing object locator")
+        bucket = asset.bucket_name or CONFIG.s3.processed_bucket_name
+        image_key = asset.object_key or asset.uri or ""
+        if not image_key:
+            raise RuntimeError(f"asset {asset.id} has empty image key")
+        bucket, image_key = self._coerce_storage_location(bucket, image_key, CONFIG.s3.processed_bucket_name)
+        image_name = self._safe_name(str(asset.id) + "_" + (asset.filename or Path(image_key).name))
+        local_path = group_dir / image_name
+        _LOGGER.info(
+            "downloading [%s/%s] asset=%s bucket=%s key=%s -> %s",
+            idx,
+            total,
+            asset.id,
+            bucket,
+            image_key,
+            local_path,
+        )
+        self.s3.download_file(bucket, image_key, str(local_path))
+        return {
+            "asset_id": str(asset.id),
+            "image": {
+                "bucket": bucket,
+                "key": image_key,
+                "local_path": str(local_path),
+                "filename": asset.filename or "",
+            },
+        }
+
     def stage_group(self, group_id: str, job_id: str) -> Path:
         _LOGGER.info("stage_group start group_id=%s job_id=%s", group_id, job_id)
         group_dir = self.staging_root
@@ -56,41 +88,26 @@ class FileExecutor:
         assets = self.db.image_assets_for_group(group_id)
         assets_list = list(assets)
         _LOGGER.debug("stage_group total assets=%s for group_id=%s", len(assets_list), group_id)
-        manifests = []
-        for idx, asset in enumerate(assets_list, start=1):
-            if not (asset.object_key or asset.uri):
-                _LOGGER.warning("asset %s missing object locator, skipping", getattr(asset, "id", "<unknown>"))
-                continue
-            bucket = asset.bucket_name or CONFIG.s3.processed_bucket_name
-            image_key = asset.object_key or asset.uri or ""
-            if not image_key:
-                _LOGGER.warning("asset %s has empty image key, skipping", getattr(asset, "id", "<unknown>"))
-                continue
-            bucket, image_key = self._coerce_storage_location(bucket, image_key, CONFIG.s3.processed_bucket_name)
-            image_name = self._safe_name(asset.id + "_" + (asset.filename or Path(image_key).name))
-            local_path = group_dir / image_name
-            _LOGGER.info(
-                "downloading [%s/%s] asset=%s bucket=%s key=%s -> %s",
-                idx,
-                len(assets_list),
-                asset.id,
-                bucket,
-                image_key,
-                local_path,
-            )
-            self.s3.download_file(bucket, image_key, str(local_path))
+        worker_count = max(1, CONFIG.s3.multipart_concurrency)
+        _LOGGER.debug("stage_group launching %s workers for file download", worker_count)
+        manifests: list[dict[str, str] | None] = [None] * len(assets_list)
+        download_futures = {}
 
-            manifests.append(
-                {
-                    "asset_id": asset.id,
-                    "image": {
-                        "bucket": bucket,
-                        "key": image_key,
-                        "local_path": str(local_path),
-                        "filename": asset.filename,
-                    },
-                }
-            )
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            for idx, asset in enumerate(assets_list, start=1):
+                futures = pool.submit(
+                    self._download_one,
+                    idx=idx,
+                    total=len(assets_list),
+                    asset=asset,
+                    group_dir=group_dir,
+                )
+                download_futures[futures] = idx - 1
+            for fut in as_completed(download_futures):
+                slot = download_futures[fut]
+                manifests[slot] = fut.result()
+
+        manifests: list[dict[str, str]] = [m for m in manifests if m is not None]
         _LOGGER.info("stage_group done group_id=%s manifest_count=%s", group_id, len(manifests))
 
         manifest_path = group_dir / "stage-map.json"

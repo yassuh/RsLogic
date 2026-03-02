@@ -50,6 +50,7 @@ RsLogic execution architecture
   - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
   - Client `file_stage` is image-only; it stages only image assets referenced in DB rows and does not download/pull sidecar objects to the local client.
   - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
+  - `file_stage` now downloads assets in parallel with a thread pool (`CONFIG.s3.multipart_concurrency`, defaulting to CPU count) for faster staging throughput.
   - File move steps (`file_move_staging_to_working`, `file_move_to_working`, `file_import_to_working`, and session imagery variants) default to `staging_root` when `working_dir` is not explicitly provided, and never to `staging_root/<job_id>`.
 - `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
 
