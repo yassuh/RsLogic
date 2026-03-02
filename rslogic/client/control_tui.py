@@ -20,8 +20,56 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, RichLog, Static
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
 _VENV_BOOTSTRAP_ENV = "RSLOGIC_CLIENTCTL_BOOTSTRAPPED"
+
+
+def _looks_like_repo_root(path: Path) -> bool:
+    return (path / "config.py").exists() and (path / "pyproject.toml").exists() and (path / "rslogic").is_dir()
+
+
+def _discover_repo_root() -> Path:
+    candidates: list[Path] = []
+    cwd = Path.cwd()
+    module_root = Path(__file__).resolve().parents[2]
+    env_root = os.getenv("RSLOGIC_ROOT")
+
+    for root in (cwd, cwd.parent, module_root, module_root.parent, Path(__file__).resolve().parent):
+        if root:
+            candidates.append(root)
+
+    if env_root:
+        candidates.append(Path(env_root))
+        candidates.append(Path(env_root).resolve())
+        candidates.append(Path(env_root).expanduser())
+
+    visited: set[Path] = set()
+    for root in list(candidates):
+        try:
+            current = root.resolve()
+        except Exception:
+            current = root
+        for p in (current, *current.parents):
+            if p in visited or not p.exists():
+                continue
+            visited.add(p)
+            if _looks_like_repo_root(p):
+                return p
+            child_names = {"RsLogic", "rslogic", "repo", "work"}
+            try:
+                for child in p.iterdir():
+                    if child.name in child_names and _looks_like_repo_root(child):
+                        return child
+            except Exception:
+                pass
+        # scan one explicit nested child if names didn't match directly
+        for child in getattr(root, "iterdir", lambda: [])():
+            if child.is_dir() and _looks_like_repo_root(child):
+                return child
+
+    raise RuntimeError("Could not auto-detect rslogic repo root. Set RSLOGIC_ROOT to the real repo folder.")
+
+
+ROOT_DIR = _discover_repo_root()
 
 for _extra in (
     ROOT_DIR,
@@ -128,9 +176,9 @@ def _install_project(venv_python: Path) -> None:
 
 def _bootstrap_launch_args(venv_python: Path) -> list[str]:
     launcher = _repo_root() / "rslogic_clientctl.py"
-    if launcher.exists():
-        return [str(venv_python), str(launcher), *sys.argv[1:]]
-    return [str(venv_python), "-m", "rslogic.client.control_tui", *sys.argv[1:]]
+    if not launcher.exists():
+        raise RuntimeError("control launcher missing: rslogic_clientctl.py")
+    return [str(venv_python), str(launcher), *sys.argv[1:]]
 
 
 def bootstrap_self(*, require_textual: bool = False) -> None:
@@ -300,6 +348,13 @@ class ClientProcessManager:
         env["PYTHONPATH"] = existing_python_path
         return env
 
+    def _resolve_client_command(self) -> list[str]:
+        python_exec = self._python_exec
+        script = self.root / "rslogic" / "client" / "rsnode_client.py"
+        if not script.exists():
+            raise RuntimeError(f"runtime script not found: {script}")
+        return [python_exec, str(script)]
+
     def _command_key(self) -> str:
         command_key = CONFIG.control.command_queue_key
         if "{client_id}" in command_key:
@@ -387,7 +442,7 @@ class ClientProcessManager:
 
         return sorted(set(pids))
 
-    def start(self) -> str:
+    def start(self, detach: bool = False) -> str:
         running, _ = self._current_client_process()
         if running:
             raise RuntimeError("client is already running")
@@ -396,15 +451,15 @@ class ClientProcessManager:
         self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
         self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
 
-        client_script = self.root / "rslogic" / "client" / "rsnode_client.py"
-        cmd = [self._python_exec, str(client_script)]
-        if not client_script.exists():
-            cmd = [self._python_exec, "-m", "rslogic.client.rsnode_client"]
+        cmd = self._resolve_client_command()
+        if self._stderr_handle is not None:
+            self._stderr_handle.write(f"[clientctl] starting runtime command: {' '.join(cmd)}\n")
+            self._stderr_handle.flush()
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
 
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(self.root),
             stdout=self._stdout_handle,
@@ -412,8 +467,10 @@ class ClientProcessManager:
             env=self._build_child_env(),
             creationflags=creationflags,
         )
-        self._write_pid(self._proc.pid)
-        return f"started (pid={self._proc.pid})"
+        self._write_pid(proc.pid)
+        if not detach:
+            self._proc = proc
+        return f"started (pid={proc.pid})"
 
     def stop(self) -> str:
         pid = self._load_pid()
@@ -452,12 +509,12 @@ class ClientProcessManager:
                 pass
         return "stopped"
 
-    def restart(self) -> str:
+    def restart(self, detach: bool = False) -> str:
         try:
             self.stop()
         except Exception:
             pass
-        return self.start()
+        return self.start(detach=detach)
 
     def status(self) -> dict[str, Any]:
         running, pid = self._current_client_process()
@@ -631,18 +688,23 @@ class ClientControlTUI(App):
 
 def run_command(mode: str) -> None:
     manager = ClientProcessManager()
+    detach = mode in {"start", "restart"}
     actions = {
         "status": lambda: manager.status(),
-        "start": lambda: manager.start(),
+        "start": lambda: manager.start(detach=True),
         "stop": lambda: manager.stop(),
-        "restart": lambda: manager.restart(),
+        "restart": lambda: manager.restart(detach=True),
     }
     if mode == "status":
         result = actions[mode]()
         print(json.dumps(result, indent=2))
+        manager.shutdown()
         return
     if mode in actions:
-        print(actions[mode]())
+        try:
+            print(actions[mode]())
+        finally:
+            manager.shutdown()
         return
     raise RuntimeError(f"unsupported mode: {mode}")
 

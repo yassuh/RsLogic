@@ -11,14 +11,15 @@ RsLogic execution architecture
 - `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
   - start/stop/restart/status management for `rslogic.client.rsnode_client`.
   - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
-  - bootstrap import verification is non-fatal; if import checks are noisy on a platform, it falls back to best-effort venv launch and continues.
+  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches with deterministic root detection.
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
-  - starts `rslogic.client.rsnode_client` with a source-script fallback (`rslogic/client/rsnode_client.py`) so launch works even if `-m rslogic...` module resolution is broken in a specific venv.
+  - auto-discovers the real repo root even in nested installs (for example `C:\\ProgramData\\RsLogic\\RsLogic`) and always starts runtime from the discovered `<root>\\rslogic\\client\\rsnode_client.py`.
+  - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from `RSLOGIC_ROOT`/cwd and inserts it into `PYTHONPATH` before importing package modules.
-  - keeps startup resilient when editable import resolution is fragile on Windows by falling back to executing `rslogic/client/control_tui.py` from source when package imports fail.
+  - auto-discovers nested `RsLogic`/repo layouts and can continue by running `rslogic/client/control_tui.py` from source if package import fails.
 - bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`config` and optionally `textual`) rather than requiring `import rslogic`, so the TUI can start even when package resolution is partially broken in a local environment.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
