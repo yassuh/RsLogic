@@ -24,24 +24,40 @@ Auto-assignment:
 - If `auto_assign=true` and no explicit client is set, orchestrator selects the first active heartbeat client.
 - `GET /clients` lists heartbeat-active clients via `rslogic:clients:*:heartbeat`.
 - `rslogic/tui/app.py` can also dispatch workflow JSON directly to `POST /jobs`.
+- Ingest UX behavior:
+  - The TUI ingest action now logs a useful preflight state when no assets are inserted:
+    - number of ready images found in `drone-imagery-waiting`,
+    - number of unmatched objects in the bucket.
 
 ## In/out contracts
 
 ### Upload
 - Input: local folder path.
 - Output: uploads only image files and sidecar files (`.xmp`, `.xml`, `.json`) to `CONFIG.s3.bucket_name` (`drone-imagery-waiting`).
+- Keying:
+  - image keys are `hash.extension`, where hash is the SHA-256 of image bytes.
+  - sidecar keys are the same base hash as its paired image, with the sidecar extension.
+- No folder-like keys (no `/` path segments) are written to S3; organization happens in Postgres (`image_groups`, links, metadata).
 - Behavior:
-  - multi-threaded upload with configurable workers,
+  - multi-threaded upload with configurable workers (defaults to `os.cpu_count()`),
+  - callback hook (`on_progress`) to drive UI loading bars,
   - artifact pairing is directory + stem based,
   - manifest file is written to `CONFIG.s3.manifest_dir`.
 
 ### Ingest
 - Input: objects currently in waiting bucket.
 - Pairing: directory + stem anchor is used to match image↔sidecar.
+- Execution: multi-threaded image ingest workers (from `CONFIG.s3.multipart_concurrency`), with optional per-run `on_progress` callback.
 - Output:
   - downloads each matched image and parses EXIF/sidecar,
+  - EXIF parser normalizes non-JSON values (for example IFDRational) into JSON-safe primitives before writing metadata,
+  - GPS EXIF fields are extracted during ingest and mapped into `RsLogicImageAsset` geospatial columns:
+    - `latitude`
+    - `longitude`
+    - `altitude_m`
+    - `location` (`POINT` geometry, SRID 4326)
   - creates `image_assets` rows and attaches optional `image_group`,
-  - moves images and sidecars into `drone-imagery` bucket,
+  - moves images and sidecars into `drone-imagery` bucket using flat keys (no folder paths),
   - writes source/parsed metadata into the row metadata.
 
 ### Job orchestration

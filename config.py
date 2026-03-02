@@ -207,6 +207,7 @@ def load_config() -> AppConfig:
     )
     if not label_db_url:
         label_db_url = _derive_postgres_url()
+    cpu_default_workers = max(os.cpu_count() or 1, 1)
 
     # Compatibility default: keep queue worker defaults from explicit config with sane minimums.
     s3 = S3Config(
@@ -219,7 +220,7 @@ def load_config() -> AppConfig:
         scratchpad_prefix=_env("RSLOGIC_S3_SCRATCHPAD_PREFIX", _env("S3_SCRATCHPAD_PREFIX", "scratchpad")),
         endpoint_url=os.getenv("RSLOGIC_S3_ENDPOINT_URL", os.getenv("S3_ENDPOINT_URL")),
         multipart_part_size=max(_env_int("RSLOGIC_S3_MULTIPART_PART_SIZE", 16 * 1024 * 1024), 5 * 1024 * 1024),
-        multipart_concurrency=max(_env_int("RSLOGIC_S3_MULTIPART_CONCURRENCY", 24), 1),
+        multipart_concurrency=max(_env_int("RSLOGIC_S3_MULTIPART_CONCURRENCY", cpu_default_workers), 1),
         resume_uploads=_env_bool("RSLOGIC_S3_RESUME_UPLOADS", True),
         manifest_dir=_env("RSLOGIC_S3_MANIFEST_DIR", str(Path.home() / ".rslogic" / "upload-state")),
     )

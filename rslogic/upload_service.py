@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .common.s3 import make_client
@@ -21,6 +22,21 @@ SIDECAR_SUFFIXES = {".xmp", ".xml", ".json"}
 def _artifact_anchor(item: Path, folder: Path) -> str:
     rel = item.relative_to(folder).with_suffix("")
     return rel.as_posix().lower()
+
+
+def _flatten_prefix(prefix: str | None) -> str:
+    if not prefix:
+        return ""
+    sanitized = "".join(ch if (ch.isalnum() or ch in "-._") else "_" for ch in prefix.strip())
+    return sanitized.rstrip("_") + ("_" if sanitized else "")
+
+
+def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass
@@ -65,24 +81,32 @@ class FolderUploader:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
         self.s3 = make_client(endpoint_url=CONFIG.s3.endpoint_url, region_name=CONFIG.s3.region)
 
-    def run(self, folder: Path, root_prefix: str | None = None) -> list[dict[str, str]]:
+    def run(
+        self,
+        folder: Path,
+        root_prefix: str | None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[dict[str, str]]:
         folder = folder.resolve()
         if not folder.exists():
             raise FileNotFoundError(folder)
         _, by_stem, by_sidecar = _scan_folder(folder)
         batch = uuid4().hex
-        root_prefix = root_prefix or batch
+        flat_prefix = _flatten_prefix(root_prefix)
         records: list[UploadRecord] = []
 
         for stem, image_paths in by_stem.items():
             for image in image_paths:
-                rel = image.relative_to(folder)
-                image_key = f"{root_prefix}/{rel.as_posix()}"
+                file_hash = _hash_file(image)
+                image_key = f"{flat_prefix}{file_hash}{image.suffix.lower()}"
                 sidecar_paths = by_sidecar.get(stem, [])
-                sidecar_keys = [f"{root_prefix}/{sp.relative_to(folder).as_posix()}" for sp in sidecar_paths]
+                sidecar_keys = [f"{flat_prefix}{file_hash}{sp.suffix.lower()}" for sp in sidecar_paths]
                 records.append(UploadRecord(image=image, sidecars=sidecar_paths, image_key=image_key, sidecar_keys=sidecar_keys, bucket=self.bucket))
 
         manifest = []
+        total = 0
+        completed = 0
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures: dict[Any, tuple[str, str]] = {}
             for rec in records:
@@ -95,10 +119,14 @@ class FolderUploader:
                         "sidecar",
                         str(sidecar_path),
                     )
+            total = len(futures)
 
             for future in as_completed(futures):
                 kind, local = futures[future]
                 result = future.result()
+                completed += 1
+                if on_progress is not None:
+                    on_progress(completed, total)
                 manifest.append({
                     "type": kind,
                     "local": local,
@@ -106,6 +134,7 @@ class FolderUploader:
                     "s3_key": result["key"],
                 })
 
-        manifest_path = self.manifest_dir / f"{os.getpid()}-{root_prefix}.json"
+        manifest_id = root_prefix or batch
+        manifest_path = self.manifest_dir / f"{os.getpid()}-{manifest_id}.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return manifest

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 import requests
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Footer, Header, Input, RichLog, Rule, Static, Tree
+from textual.widgets import Button, Footer, Header, Input, ProgressBar, RichLog, Rule, Static, Tree
 
 from config import CONFIG
 from rslogic.ingest import IngestService
@@ -98,12 +99,10 @@ class RsLogicTUI(App):
     #col_sep {
         color: white;
         width: 1;
-        border: none;
     }
     #sep_bottom {
         color: white;
         height: 1;
-        border: none;
     }
     """
 
@@ -125,7 +124,7 @@ class RsLogicTUI(App):
                     yield Button("Ingest waiting", id="menu_ingest", variant="default")
                     yield Button("Submit job", id="menu_job", variant="default")
                     yield Button("Check status", id="menu_status", variant="default")
-                yield Rule(orientation="vertical", id="col_sep", line_style="solid")
+                yield Rule(orientation="vertical", id="col_sep")
 
                 with Vertical(id="right_panel", classes="card"):
                     with Vertical(id="panel_upload", classes="function-panel"):
@@ -133,14 +132,17 @@ class RsLogicTUI(App):
                         yield Static("Select upload directory:", classes="row")
                         yield Tree("Upload folders", id="upload_dir_tree")
                         yield Static("No folder selected", id="upload_selected_path", classes="row muted")
-                        yield Input(placeholder="Optional group name", id="upload_group")
                         yield Button("Upload", id="action_upload", variant="primary")
+                        yield Static("[b]Upload progress[/b]", id="upload_progress_label", classes="row")
+                        yield ProgressBar(id="upload_progress", total=1, show_eta=False, classes="row")
 
                     with Vertical(id="panel_ingest", classes="function-panel"):
                         yield Static("[b]Ingest waiting bucket[/b]")
                         yield Input(placeholder="Optional group name", id="ingest_group")
                         yield Input(placeholder="Optional limit", id="ingest_limit")
                         yield Button("Ingest", id="action_ingest", variant="primary")
+                        yield Static("[b]Ingest progress[/b]", id="ingest_progress_label", classes="row")
+                        yield ProgressBar(id="ingest_progress", total=1, show_eta=False, classes="row")
 
                     with Vertical(id="panel_job", classes="function-panel"):
                         yield Static("[b]Submit job to orchestrator[/b]")
@@ -162,7 +164,7 @@ class RsLogicTUI(App):
                             yield Button("Refresh", id="action_job_status", variant="default")
                             yield Button("Exit", id="action_exit", variant="warning")
 
-            yield Rule(id="sep_bottom", line_style="solid")
+            yield Rule(id="sep_bottom")
 
         with Vertical(id="log_panel", classes="card"):
             yield Static("[b]Activity (5 rows max)[/b]", classes="row")
@@ -171,7 +173,10 @@ class RsLogicTUI(App):
 
     def on_mount(self) -> None:
         self._log("RsLogic TUI ready")
+        self._selected_upload_dir = None
         self._build_upload_directory_tree()
+        self._set_progress("upload", 0, 0)
+        self._set_progress("ingest", 0, 0)
         self._show_panel("upload")
 
     def _show_panel(self, name: str) -> None:
@@ -188,27 +193,68 @@ class RsLogicTUI(App):
         input_widget = self.query_one(f"#{widget_id}", expect_type=Input)
         return (input_widget.value or "").strip()
 
+    def _set_progress(self, kind: str, done: int, total: int) -> None:
+        total_value = max(total, 1)
+        done_value = min(max(done, 0), total_value)
+        self.query_one(f"#{kind}_progress", expect_type=ProgressBar).update(total=total_value, progress=done_value)
+        self.query_one(f"#{kind}_progress_label", expect_type=Static).update(
+            f"{kind.capitalize()} progress: {done_value}/{total_value}"
+        )
+
+    def _upload_worker(self, folder: Path) -> None:
+        uploader = FolderUploader()
+        try:
+            records = uploader.run(
+                Path(folder).expanduser(),
+                on_progress=lambda done, total: self.call_from_thread(
+                    self._set_progress,
+                    "upload",
+                    done,
+                    total,
+                ),
+            )
+            self.call_from_thread(self._log, f"Uploading from: {folder}")
+            self.call_from_thread(self._log, f"Uploaded {len(records)} objects")
+        except Exception as exc:
+            self.call_from_thread(self._log, f"Upload failed: {type(exc).__name__}: {exc}")
+
+    def _ingest_worker(self, group: str | None, limit: int | None) -> None:
+        service = IngestService()
+        try:
+            items = service.run(
+                group_name=group,
+                limit=limit,
+                on_progress=lambda done, total: self.call_from_thread(
+                    self._set_progress,
+                    "ingest",
+                    done,
+                    total,
+                ),
+            )
+            if not items:
+                images, unmatched = service._pair_objects()
+                self.call_from_thread(
+                    self._log,
+                    "Ingested 0 images. "
+                    f"Ready images in waiting bucket: {len(images)}, unmatched objects: {len(unmatched)}",
+                )
+            else:
+                self.call_from_thread(self._log, f"Ingested {len(items)} images")
+        except Exception as exc:
+            self.call_from_thread(self._log, f"Ingest failed: {type(exc).__name__}: {exc}")
+
     def _upload(self) -> None:
         folder = self._selected_upload_path()
         if not folder:
             self._log("Upload failed: folder path required")
             return
-        group = self._input_value("upload_group") or None
-        uploader = FolderUploader()
-        records = uploader.run(Path(folder).expanduser())
-        self._log(f"Uploaded {len(records)} objects")
-        self._log(f"Group hint: {group or '<none>'}")
+        self._set_progress("upload", 0, 1)
+        folder_path = Path(folder).expanduser()
+        self._log(f"Uploading from: {folder_path}")
+        threading.Thread(target=self._upload_worker, args=(folder_path,), daemon=True).start()
 
     def _selected_upload_path(self) -> str | None:
-        label = self.query_one("#upload_selected_path", expect_type=Static)
-        text = label.renderable
-        if text is None:
-            return None
-        text_value = str(text)
-        if text_value.startswith("Selected: "):
-            path_text = text_value.removeprefix("Selected: ")
-            return path_text if path_text and path_text != "No folder selected" else None
-        return None
+        return self._selected_upload_dir
 
     def _build_upload_directory_tree(self) -> None:
         tree = self.query_one("#upload_dir_tree", expect_type=Tree)
@@ -247,15 +293,16 @@ class RsLogicTUI(App):
         data = event.node.data
         if not isinstance(data, str):
             return
+        self._selected_upload_dir = data
         self.query_one("#upload_selected_path", expect_type=Static).update(f"Selected: {data}")
 
     def _ingest(self) -> None:
         group = self._input_value("ingest_group") or None
         limit_value = self._input_value("ingest_limit")
         limit = int(limit_value) if limit_value.isdigit() else None
-        service = IngestService()
-        items = service.run(group_name=group, limit=limit)
-        self._log(f"Ingested {len(items)} images")
+        self._set_progress("ingest", 0, 1)
+        self._log(f"Starting ingest: group={group or '<none>'} limit={limit}")
+        threading.Thread(target=self._ingest_worker, args=(group, limit), daemon=True).start()
 
     def _submit_job(self) -> None:
         auto_assign = self._input_value("job_auto_assign").lower() != "false"
@@ -311,6 +358,7 @@ class RsLogicTUI(App):
         self._log(json.dumps(payload, indent=2))
 
     def _run_command(self, action: str) -> None:
+        self._log(f"Action: {action}")
         try:
             if action.startswith("menu_"):
                 if action == "menu_upload":
@@ -334,7 +382,7 @@ class RsLogicTUI(App):
             elif action == "action_exit":
                 self.exit()
         except Exception as exc:
-            self._log(f"Error: {exc}")
+            self._log(f"Error [{type(exc).__name__}]: {exc}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self._run_command(event.button.id or "")

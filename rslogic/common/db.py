@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from geoalchemy2.elements import WKTElement
 
 
 def _load_models(models_path: Path):
@@ -66,7 +67,13 @@ class LabelDbStore:
         metadata: dict[str, Any],
         sidecar_keys: list[str],
         source_bucket: str,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        altitude_m: float | None = None,
+        location: object | None = None,
     ) -> Any:
+        if location is None and latitude is not None and longitude is not None:
+            location = WKTElement(f"POINT({longitude} {latitude})", srid=4326)
         uri = f"s3://{processed_bucket}/{processed_key}"
         with self.session() as session:
             asset = self.RsLogicImageAsset(
@@ -75,6 +82,10 @@ class LabelDbStore:
                 bucket_name=processed_bucket,
                 object_key=processed_key,
                 filename=filename,
+                latitude=latitude,
+                longitude=longitude,
+                altitude_m=altitude_m,
+                location=location,
                 metadata_json=metadata,
                 extra={
                     "ingest_state": "pending_move",
@@ -157,4 +168,3 @@ class LabelDbStore:
                 .where(self.ImageGroupItem.group_id == group_id)
             )
             return session.execute(q).scalars().all()
-
