@@ -113,6 +113,10 @@ class StepExecutor:
             )
 
     @staticmethod
+    def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]:
+        return _normalize_sdk_params(method, params)
+
+    @staticmethod
     def _render_text_template(value: str, context: dict[str, str]) -> str:
         def replace(match: re.Match[str]) -> str:
             key = match.group(1)
