@@ -441,26 +441,39 @@ class ClientProcessManager:
         if running:
             raise RuntimeError("client is already running")
 
-        self.logs_root.mkdir(parents=True, exist_ok=True)
-        self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
-        self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
-
         cmd = self._resolve_client_command()
-        if self._stderr_handle is not None:
-            self._stderr_handle.write(f"[clientctl] starting runtime command: {' '.join(cmd)}\n")
-            self._stderr_handle.flush()
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW
 
+        if detach:
+            self.logs_root.mkdir(parents=True, exist_ok=True)
+            self._stdout_handle = self.log_stdout.open("a", encoding="utf-8", buffering=1)
+            self._stderr_handle = self.log_stderr.open("a", encoding="utf-8", buffering=1)
+            if self._stderr_handle is not None:
+                self._stderr_handle.write(f"[clientctl] starting runtime command: {' '.join(cmd)}\n")
+                self._stderr_handle.flush()
+            stdout = self._stdout_handle
+            stderr = self._stderr_handle
+        else:
+            stdout = None
+            stderr = None
+
         proc = subprocess.Popen(
             cmd,
             cwd=str(self.root),
-            stdout=self._stdout_handle,
-            stderr=self._stderr_handle,
+            stdout=stdout,
+            stderr=stderr,
             env=self._build_child_env(),
             creationflags=creationflags,
         )
+
+        if not detach:
+            returncode = proc.wait()
+            if returncode != 0:
+                raise RuntimeError(f"client exited quickly with status={returncode}")
+            return "client exited with code 0"
+
         self._write_pid(proc.pid)
         time.sleep(0.5)
         if proc.poll() is not None:
@@ -695,25 +708,26 @@ class ClientControlTUI(App):
         self.query_one("#event_log", expect_type=RichLog).write(message)
 
 
-def run_command(mode: str) -> None:
+def run_command(mode: str, *, foreground: bool = False) -> None:
     manager = ClientProcessManager()
-    detach = mode in {"start", "restart"}
-    actions = {
-        "status": lambda: manager.status(),
-        "start": lambda: manager.start(detach=True),
-        "stop": lambda: manager.stop(),
-        "restart": lambda: manager.restart(detach=True),
-    }
+    detach = mode in {"start", "restart"} and not foreground
+
     if mode == "status":
-        result = actions[mode]()
+        result = manager.status()
         print(json.dumps(result, indent=2))
         manager.shutdown()
         return
-    if mode in actions:
-        try:
-            print(actions[mode]())
-        finally:
-            manager.shutdown()
+    if mode == "start":
+        print(manager.start(detach=detach))
+        manager.shutdown()
+        return
+    if mode == "stop":
+        print(manager.stop())
+        manager.shutdown()
+        return
+    if mode == "restart":
+        print(manager.restart(detach=detach))
+        manager.shutdown()
         return
     raise RuntimeError(f"unsupported mode: {mode}")
 
@@ -727,6 +741,11 @@ def main(argv: list[str] | None = None) -> None:
         choices=("tui", "start", "stop", "restart", "status"),
         help="Run the control TUI or manage one-off client actions.",
     )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run client in foreground for this command so exceptions and logs print to console.",
+    )
     args = parser.parse_args(argv)
     try:
         bootstrap_self(require_textual=(args.mode == "tui"))
@@ -737,7 +756,7 @@ def main(argv: list[str] | None = None) -> None:
         app = ClientControlTUI()
         app.run()
         return
-    run_command(args.mode)
+    run_command(args.mode, foreground=args.foreground)
 
 
 if __name__ == "__main__":
