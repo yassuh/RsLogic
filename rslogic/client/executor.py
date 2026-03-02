@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from realityscan_sdk.client import RealityScanClient
@@ -81,17 +81,29 @@ def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]
 
 
 class StepExecutor:
-    def __init__(self, sdk_client: object | None, file_executor: FileExecutor | None = None):
+    def __init__(
+        self,
+        sdk_client: object | None,
+        file_executor: FileExecutor | None = None,
+        *,
+        initial_session: str | None = None,
+        on_session_update: Callable[[str | None], None] | None = None,
+    ):
         self.sdk_client = sdk_client
         self.file_executor = file_executor
+        self._session: str | None = None
+        self._on_session_update = on_session_update
         self._staging_dir: Path | None = None
         self._context: dict[str, str] = {}
+        if initial_session:
+            self._set_context_session(initial_session)
 
     def begin_job(self, job_id: str, *, group_id: str | None = None) -> None:
         self._staging_dir = None
         self._context = {
             "job_id": job_id,
         }
+        self._sync_session_context()
         if group_id:
             self._context["group_id"] = group_id
         if self.file_executor is not None:
@@ -104,12 +116,28 @@ class StepExecutor:
             )
 
     def _set_context_session(self, session: str | None) -> None:
+        if self._on_session_update is not None:
+            self._on_session_update(session)
+        self._session = session
         if not session:
+            self._context.pop("session", None)
+            self._context.pop("session_data_dir", None)
             return
         self._context["session"] = session
         if self.file_executor is not None:
             self._context["session_data_dir"] = str(
                 self.file_executor.working_root / "sessions" / session / "_data"
+            )
+
+    def _sync_session_context(self) -> None:
+        if not self._session:
+            self._context.pop("session", None)
+            self._context.pop("session_data_dir", None)
+            return
+        self._context["session"] = self._session
+        if self.file_executor is not None:
+            self._context["session_data_dir"] = str(
+                self.file_executor.working_root / "sessions" / self._session / "_data"
             )
 
     @staticmethod
@@ -140,6 +168,7 @@ class StepExecutor:
     def end_job(self, job_id: str) -> None:
         self._staging_dir = None
         self._context = {"job_id": job_id}
+        self._sync_session_context()
 
     def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> str:
         action = step.action
@@ -236,6 +265,7 @@ class StepExecutor:
         method = _sdk_method(self.sdk_client, action)
         if method is None:
             raise RuntimeError(f"unsupported action {action}")
+
         params = self._normalize_sdk_params(method, params)
         _LOGGER.debug("sdk call action=%s method=%s params=%s", action, getattr(method, "__name__", str(method)), params)
         try:
@@ -244,8 +274,7 @@ class StepExecutor:
             if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):
                 self._set_context_session(result)
             if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
-                self._context.pop("session", None)
-                self._context.pop("session_data_dir", None)
+                self._set_context_session(None)
             return str(result)
         except TypeError:
             if params:

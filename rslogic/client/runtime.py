@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import uuid
 import os
@@ -50,6 +51,7 @@ _REQUIRED_CLIENT_ENV_KEYS = {
 }
 
 _CLIENT_ENV_FILE = Path(__file__).resolve().parents[2] / "client.env"
+_SESSION_STATE_FILE = "client-sdk-session.json"
 
 
 def _validate_client_env_contract() -> None:
@@ -118,6 +120,8 @@ class ClientRuntime:
         self.data_root = Path(os.environ["RSLOGIC_DATA_ROOT"])
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.file_executor = FileExecutor(self.db, self.data_root)
+        self._session_state_file = self.data_root / _SESSION_STATE_FILE
+        self._active_session: str | None = self._load_active_session()
         self._job_lock = threading.Lock()
         self._step_heartbeat_seconds = max(
             int(os.getenv("RSLOGIC_CLIENT_STEP_HEARTBEAT_SECONDS", "3")),
@@ -152,18 +156,44 @@ class ClientRuntime:
             child_logger.propagate = True
         logging.captureWarnings(True)
 
+    def _load_active_session(self) -> str | None:
+        if not self._session_state_file.is_file():
+            return None
+        try:
+            payload = json.loads(self._session_state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        session = payload.get("session")
+        if isinstance(session, str) and session.strip():
+            return session.strip()
+        return None
+
+    def _persist_active_session(self, session: str | None) -> None:
+        self._active_session = session
+        if not session:
+            if self._session_state_file.is_file():
+                with contextlib.suppress(OSError):
+                    self._session_state_file.unlink()
+            return
+        payload = {"session": session}
+        with self._session_state_file.open("w", encoding="utf-8") as fp:
+            json.dump(payload, fp)
+
     def _sdk_client(self) -> object:
         if not _SDK_AVAILABLE:
             raise RuntimeError(
                 "realityscan_sdk is not installed. Install it in this environment to run sdk commands."
             )
-        return RealityScanClient(
+        client = RealityScanClient(
             base_url=os.environ["RSLOGIC_RSTOOLS_SDK_BASE_URL"],
             client_id=self.sdk_client_id,
             auth_token=os.environ["RSLOGIC_RSTOOLS_SDK_AUTH_TOKEN"],
             app_token=os.environ["RSLOGIC_RSTOOLS_SDK_APP_TOKEN"],
             verify_tls=False,
         )
+        if self._active_session:
+            client.session = self._active_session
+        return client
 
     @staticmethod
     def _normalize_sdk_client_id(raw_client_id: str | None, *, fallback: str) -> str:
@@ -323,7 +353,12 @@ class ClientRuntime:
         sdk_client = self._sdk_client() if sdk_needed else None
         if sdk_client is not None:
             self._log.debug("sdk client instantiated for job_id=%s", job_id)
-        executor = StepExecutor(sdk_client=sdk_client, file_executor=self.file_executor)
+        executor = StepExecutor(
+            sdk_client=sdk_client,
+            file_executor=self.file_executor,
+            initial_session=self._active_session,
+            on_session_update=self._persist_active_session,
+        )
         try:
             executor.begin_job(job_id, group_id=group_id)
             self.node_guard.start()
