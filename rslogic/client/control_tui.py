@@ -101,7 +101,10 @@ def _validate_client_env_contract(path: Path | None = None) -> None:
     if not path.is_file():
         raise RuntimeError(f"Client env file does not exist: {path}")
     values: dict[str, str] = _read_env_file(path)
-    values.update({k: os.getenv(k, "") for k in _REQUIRED_CLIENT_ENV_KEYS})
+    for key in _REQUIRED_CLIENT_ENV_KEYS:
+        env_value = os.getenv(key, "").strip()
+        if env_value:
+            values[key] = env_value
     missing = [name for name in sorted(_REQUIRED_CLIENT_ENV_KEYS) if not values.get(name)]
     if missing:
         raise RuntimeError(
