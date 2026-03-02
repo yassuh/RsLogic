@@ -35,7 +35,7 @@ rslogic-api = "rslogic.api.server:main"
 rslogic-migrate = "rslogic.db.migrate:main"
 rslogic-worker = "rslogic.jobs.worker:main"
 rslogic-client = "rslogic.client.rsnode_client:main"
-rslogic-clientctl = "rslogic.client.control_tui:main"
+rslogic-clientctl = "rslogic_clientctl:main"
 rslogic-tui = "rslogic.tui.app:main"
 rslogic-ingest = "rslogic.ingest:main"
 
@@ -47,7 +47,7 @@ dev = [
 
 [tool.setuptools]
 package-dir = {"" = "."}
-py-modules = ["config"]
+py-modules = ["config", "rslogic_clientctl"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
