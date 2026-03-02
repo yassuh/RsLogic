@@ -38,8 +38,13 @@ class FileExecutor:
         return "".join(ch for ch in value if ch.isalnum() or ch in ("-", "_", ".", " "))
 
     def stage_group(self, group_id: str, job_id: str) -> Path:
-        group_dir = self.staging_root / str(job_id)
+        group_dir = self.staging_root
         group_dir.mkdir(parents=True, exist_ok=True)
+        for stale in sorted(group_dir.iterdir()):
+            if stale.is_file():
+                stale.unlink()
+            elif stale.is_dir():
+                shutil.rmtree(stale)
         assets = self.db.image_assets_for_group(group_id)
         manifests = []
         for asset in assets:
@@ -54,14 +59,6 @@ class FileExecutor:
             local_path = group_dir / image_name
             self.s3.download_file(bucket, image_key, str(local_path))
 
-            local_sidecars: list[str] = []
-            for sidecar_key in (asset.extra or {}).get("sidecar_keys", []) or []:
-                sc_bucket, sc_key = self._coerce_storage_location(asset.bucket_name, sidecar_key, CONFIG.s3.processed_bucket_name)
-                safe_sidecar = self._safe_name(f"{asset.id}_{Path(sidecar_key).name}")
-                local_sidecar = group_dir / safe_sidecar
-                self.s3.download_file(sc_bucket, sc_key, str(local_sidecar))
-                local_sidecars.append(str(local_sidecar))
-
             manifests.append({
                 "asset_id": asset.id,
                 "image": {
@@ -70,7 +67,7 @@ class FileExecutor:
                     "local_path": str(local_path),
                     "filename": asset.filename,
                 },
-                "sidecars": local_sidecars,
+                "sidecars": list((asset.extra or {}).get("sidecar_keys", []) or []),
             })
 
         manifest_path = group_dir / "stage-map.json"
@@ -100,7 +97,7 @@ class FileExecutor:
 
     def move_staging_to_working(self, job_id: str, staging_dir: Path | None = None, working_dir: Path | None = None) -> Path:
         if staging_dir is None:
-            staging_dir = self.staging_root / str(job_id)
+            staging_dir = self.staging_root
         if working_dir is None:
             working_dir = self.working_projects_root / str(job_id)
         working_dir.mkdir(parents=True, exist_ok=True)

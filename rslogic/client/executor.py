@@ -69,6 +69,13 @@ def _sdk_method(client: RealityScanClient, action: str):
     return None
 
 
+def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(params)
+    if method.__name__ == "add_folder" and "path" in normalized and "folder_path" not in normalized:
+        normalized["folder_path"] = normalized.pop("path")
+    return normalized
+
+
 class StepExecutor:
     def __init__(self, sdk_client: RealityScanClient, file_executor: FileExecutor | None = None):
         self.sdk_client = sdk_client
@@ -97,7 +104,9 @@ class StepExecutor:
             return
         self._context["session"] = session
         if self.file_executor is not None:
-            self._context["session_data_dir"] = str(self.file_executor.working_root / f"{session}_data")
+            self._context["session_data_dir"] = str(
+                self.file_executor.working_root / "sessions" / session / "_data"
+            )
 
     @staticmethod
     def _render_text_template(value: str, context: dict[str, str]) -> str:
@@ -195,6 +204,7 @@ class StepExecutor:
         method = _sdk_method(self.sdk_client, action)
         if method is None:
             raise RuntimeError(f"unsupported action {action}")
+        params = self._normalize_sdk_params(method, params)
         try:
             result = method(**params)
             if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):

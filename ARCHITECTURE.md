@@ -6,6 +6,8 @@ RsLogic execution architecture
 - `rslogic/cli/upload.py` is the CLI upload entrypoint (`rslogic-upload`).
 - `rslogic/ingest.py` ingests objects from `drone-imagery-waiting` into `drone-imagery` and writes rows into `studio-db` (`rslogic-ingest`).
 - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
+  - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
+  - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
 - `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
   - Implemented with `textual` for interactive terminal controls.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
@@ -18,8 +20,10 @@ RsLogic execution architecture
 - `rslogic/common/*` contains shared Redis, S3, DB, and workflow schemas used by orchestrator and client.
 - `rslogic/client/executor.py` translates step actions into realityscan-sdk calls and file operations.
   - New context-aware behavior now tracks `session` after `sdk_project_create/open` and supports placeholder expansion in step params (`{session}`, `{session_data_dir}`, `{job_id}`, `{staging_dir}`, etc.).
-  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/<session>_data/Imagery` before project import.
+  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to move staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
+  - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
 - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
+  - `file_stage` now writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
 - `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
 
 Auto-assignment:

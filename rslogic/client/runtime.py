@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import uuid
 import os
 import signal
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 
 from realityscan_sdk.client import RealityScanClient
@@ -41,6 +43,8 @@ from rslogic.client.process_guard import RsNodeProcess
 
 class ClientRuntime:
     def __init__(self) -> None:
+        self._configure_logging()
+        self._log = logging.getLogger("rslogic.client.runtime")
         self.stop_event = threading.Event()
         self.client_id = os.getenv("RSLOGIC_CLIENT_ID", os.getenv("CLIENT_ID", "default-client"))
         self.sdk_client_id = self._normalize_sdk_client_id(
@@ -61,6 +65,26 @@ class ClientRuntime:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.file_executor = FileExecutor(self.db, self.data_root)
         self._job_lock = threading.Lock()
+        self._step_heartbeat_seconds = max(
+            int(os.getenv("RSLOGIC_CLIENT_STEP_HEARTBEAT_SECONDS", "3")),
+            1,
+        )
+
+    @staticmethod
+    def _configure_logging() -> None:
+        level_name = os.getenv("RSLOGIC_CLIENT_LOG_LEVEL", "INFO").upper()
+        level = getattr(logging, level_name, logging.INFO)
+        logger = logging.getLogger("rslogic.client.runtime")
+        logger.setLevel(level)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
+                )
+            )
+            logger.addHandler(handler)
+        logger.propagate = False
 
     def _sdk_client(self) -> RealityScanClient:
         return RealityScanClient(
@@ -140,17 +164,68 @@ class ClientRuntime:
                 self.node_guard.ensure_running()
             time.sleep(5)
 
-    def _report_progress(self, *, job_id: str, group_id: str | None, progress: float, message: str) -> None:
-        self.redis_bus.publish_result(
-            self.client_id,
-            {
-                "job_id": job_id,
-                "group_id": group_id,
-                "status": "running",
-                "progress": progress,
-                "message": message,
-            },
-        )
+    def _safe_preview(self, value: Any, *, max_len: int = 1400) -> str:
+        text = repr(value)
+        if len(text) <= max_len:
+            return text
+        return f"{text[:max_len]}…(+{len(text)-max_len} chars)"
+
+    def _start_step_heartbeat(
+        self,
+        *,
+        job_id: str,
+        group_id: str | None,
+        step_index: int,
+        total_steps: int,
+        step_action: str,
+        step_kind: str,
+    ) -> tuple[threading.Event, threading.Thread, float]:
+        started_at = time.monotonic()
+        stop_event = threading.Event()
+
+        def report_loop() -> None:
+            while not stop_event.wait(self._step_heartbeat_seconds):
+                elapsed = round(time.monotonic() - started_at, 2)
+                progress = ((step_index - 1) / max(1, total_steps)) * 100.0
+                self._report_progress(
+                    job_id=job_id,
+                    group_id=group_id,
+                    progress=progress,
+                    status="running",
+                    message=f"step {step_index}/{total_steps} in_progress: {step_action}",
+                    result_summary={
+                        "phase": "step_heartbeat",
+                        "step_index": step_index,
+                        "step_kind": step_kind,
+                        "step_action": step_action,
+                        "elapsed_seconds": elapsed,
+                    },
+                )
+
+        heartbeat = threading.Thread(target=report_loop, name=f"step-heartbeat-{job_id}", daemon=True)
+        heartbeat.start()
+        return stop_event, heartbeat, started_at
+
+    def _report_progress(
+        self,
+        *,
+        job_id: str,
+        group_id: str | None,
+        progress: float,
+        message: str,
+        status: str = "running",
+        result_summary: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            "job_id": job_id,
+            "group_id": group_id,
+            "status": status,
+            "progress": progress,
+            "message": message,
+        }
+        if result_summary is not None:
+            payload["result_summary"] = result_summary
+        self.redis_bus.publish_result(self.client_id, payload)
 
     def _run_job(self, payload: dict) -> None:
         job_id = str(payload.get("job_id"))
@@ -169,24 +244,106 @@ class ClientRuntime:
                 message=f"started by {self.client_id}",
                 filters={"steps": steps},
             )
-            self._report_progress(job_id=job_id, group_id=group_id, progress=0.0, message="started")
+            self._report_progress(
+                job_id=job_id,
+                group_id=group_id,
+                progress=0.0,
+                message="started",
+                result_summary={"phase": "job_start"},
+            )
             for idx, raw_step in enumerate(steps, start=1):
+                self._log.info(
+                    "job=%s client=%s step=%s/%s action=%s kind=%s params=%s",
+                    job_id,
+                    self.client_id,
+                    idx,
+                    len(steps),
+                    raw_step.get("action"),
+                    raw_step.get("kind"),
+                    self._safe_preview(raw_step.get("params", {})),
+                )
                 step = Step.model_validate(raw_step)
-                res = executor.execute(step, job_id=job_id, group_id=group_id)
+                heartbeat_stop = None
+                heartbeat_thread = None
+                heartbeat_started = None
+                step_error = None
+                try:
+                    heartbeat_stop, heartbeat_thread, heartbeat_started = self._start_step_heartbeat(
+                        job_id=job_id,
+                        group_id=group_id,
+                        step_index=idx,
+                        total_steps=len(steps),
+                        step_action=step.action,
+                        step_kind=step.kind,
+                    )
+                    self._report_progress(
+                        job_id=job_id,
+                        group_id=group_id,
+                        progress=((idx - 1) / max(1, len(steps))) * 100.0,
+                        message=f"step {idx}/{len(steps)} start: {step.action}",
+                        result_summary={
+                            "phase": "step_start",
+                            "step_index": idx,
+                            "step_kind": step.kind,
+                            "step_action": step.action,
+                            "step_params": raw_step.get("params"),
+                        },
+                    )
+                    step_started = time.monotonic()
+                    res = executor.execute(step, job_id=job_id, group_id=group_id)
+                    step_time = round(time.monotonic() - step_started, 3)
+                except Exception as exc:
+                    step_error = exc
+                    raise
+                finally:
+                    if heartbeat_stop is not None:
+                        heartbeat_stop.set()
+                    if heartbeat_thread is not None:
+                        heartbeat_thread.join(timeout=0.5)
+                    if heartbeat_started is not None and step_error is None:
+                        heartbeat_seconds = round(time.monotonic() - heartbeat_started, 3)
+                    else:
+                        heartbeat_seconds = None
+
                 progress = (idx / max(1, len(steps))) * 100.0
+                self._log.info(
+                    "job=%s step=%s done in %.2fs result=%s",
+                    job_id,
+                    idx,
+                    step_time,
+                    self._safe_preview(res, max_len=500),
+                )
                 self.db.upsert_processing_job(
                     job_id=job_id,
                     image_group_id=group_id,
                     status="running",
                     progress=progress,
-                    message=f"step {idx}/{len(steps)} ok: {step.action}",
-                    result_summary={"last_result": res},
+                    message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
+                    result_summary={
+                        "last_result": res,
+                        "last_step": {
+                            "index": idx,
+                            "kind": step.kind,
+                            "action": step.action,
+                            "duration_seconds": step_time,
+                            "result_type": type(res).__name__,
+                            "heartbeat_seconds": heartbeat_seconds,
+                        },
+                    },
                 )
                 self._report_progress(
                     job_id=job_id,
                     group_id=group_id,
                     progress=progress,
-                    message=f"step {idx}/{len(steps)} ok: {step.action}",
+                    message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
+                    result_summary={
+                        "phase": "step_complete",
+                        "step_index": idx,
+                        "step_kind": step.kind,
+                        "step_action": step.action,
+                        "duration_seconds": step_time,
+                        "result_type": type(res).__name__,
+                    },
                 )
 
             self.db.upsert_processing_job(
