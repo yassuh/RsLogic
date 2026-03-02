@@ -106,7 +106,7 @@ Auto-assignment:
 
 ### Client runtime
 - Reads `RSLOGIC_CLIENT_ID` and waits for job envelopes from Redis.
-- Loads client environment only from explicit `RSLOGIC_CLIENT_ENV_FILE` before config resolution; missing or incomplete values fail fast.
+- Loads client environment from `client.env` at repo root by default; if `RSLOGIC_CLIENT_ENV_FILE` is set, that path is used instead.
 - Creates/maintains `RealityScanClient` and executes ordered steps:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.

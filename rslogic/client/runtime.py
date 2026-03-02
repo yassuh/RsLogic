@@ -55,7 +55,8 @@ def _validate_client_env_contract() -> None:
 def _load_client_env() -> None:
     env_file = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
     if not env_file:
-        raise RuntimeError("RSLOGIC_CLIENT_ENV_FILE is required")
+        env_file = str(Path(__file__).resolve().parents[2] / "client.env")
+        os.environ["RSLOGIC_CLIENT_ENV_FILE"] = env_file
     path = Path(env_file).expanduser()
     if not path.is_file():
         raise RuntimeError(f"Client env file not found: {path}")

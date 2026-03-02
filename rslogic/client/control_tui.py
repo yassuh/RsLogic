@@ -86,11 +86,10 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 def _client_env_file() -> Path:
     explicit = os.getenv("RSLOGIC_CLIENT_ENV_FILE", "").strip()
-    if not explicit:
-        raise RuntimeError("RSLOGIC_CLIENT_ENV_FILE is required in process environment")
-    candidate = Path(explicit)
+    candidate = Path(explicit) if explicit else (ROOT_DIR / "client.env")
     if not candidate.is_file():
         raise RuntimeError(f"Client env file not found: {candidate}")
+    os.environ.setdefault("RSLOGIC_CLIENT_ENV_FILE", str(candidate))
     return candidate
 
 
