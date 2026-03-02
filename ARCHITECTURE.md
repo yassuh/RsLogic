@@ -35,6 +35,9 @@
     - `RSLOGIC_CONTROL_COMMAND_QUEUE` (default `rslogic:control:commands`)
     - `RSLOGIC_CONTROL_RESULT_QUEUE` (default `rslogic:control:results`)
     - `RSLOGIC_CONTROL_BLOCK_TIMEOUT_SECONDS`, `RSLOGIC_CONTROL_RESULT_TTL_SECONDS`, `RSLOGIC_CONTROL_REQUEST_TIMEOUT_SECONDS`
+  - Dedicated client package defaults in `rslogic/client`:
+    - `rslogic.client.rsnode_client` consumes `RSLOGIC_CLIENT_*` settings and publishes `rslogic:clients:<client_id>:status`.
+    - `RSLOGIC_CLIENT_REPO_URL` and `RSLOGIC_CLIENT_INSTALL_ROOT` drive `rslogic/client/install.bat` bootstrap behavior.
 - `config.py` loads `.env` with override disabled (`load_dotenv(override=False)`), so runtime-injected environment values (for example from orchestrator startup) are preserved unless the caller sets them explicitly.
 - Postgres DSN derivation URL-encodes credentials and defaults to `postgis:5432` when explicit DB URL env vars are not provided.
 - S3 bucket routing:
@@ -142,6 +145,7 @@
   - Interactive mode performs uploads inside the TUI worker thread, updates a live loading bar as files complete, and remains open after completion until the user explicitly closes it
   - TUI now includes a bottom log bar showing the latest 3 status log lines (rolling buffer) for quick in-app diagnostics
   - Upload progress now emits byte-level transfer callbacks (including multipart part completion) and the TUI loading bar tracks bytes transferred for visible movement during large uploads
+  - `Manage Groups` panel in `RsTerminal` now reads group summaries from `label_db` and renders live group-level metadata and image counts (images, bucket diversity, first/last capture).
   - Batch upload no longer aborts on a single-file failure: per-file errors are reported in-line and remaining files continue uploading
 - `rslogic-client` CLI runs the remote RSNode worker:
   - `run` / `worker`: runs a processing worker process that consumes `processing_job.execute` commands from Redis and executes them through `realityscan_sdk`.

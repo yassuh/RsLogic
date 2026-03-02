@@ -1,1 +1,3 @@
-"""Client package for distributed RsLogic execution workers."""
+"""Standalone rsnode client package."""
+
+__all__ = ["main"]

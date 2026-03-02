@@ -10,17 +10,56 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
+
+def _read_local_dotenv_value(name: str, default: str) -> str:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return default
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() != name:
+                continue
+            return value.strip().strip("\"'")
+    except Exception:
+        return default
+    return default
+
+
+def _normalize_redis_port(host: str, port: str) -> str:
+    # Compose maps redis as 9002 externally, but redis itself listens on 6379.
+    if host and host.strip().lower() == "redis" and str(port).strip() == "9002":
+        return "6379"
+    return str(port).strip()
+
+
+def _normalize_postgres_port(host: str, port: str) -> str:
+    # Compose publishes postgis on 9000 externally, but service listens on 5432.
+    if host and host.strip().lower() == "postgis" and str(port).strip() == "9000":
+        return "5432"
+    return str(port).strip()
+
+
 LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"
 LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"
 
 
 def _env(name: str, default: str) -> str:
-    return os.getenv(name, default)
+    value = os.getenv(name)
+    if value is None or not str(value).strip():
+        fallback = _read_local_dotenv_value(name, default)
+        return fallback if fallback else default
+    return str(value)
 
 
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
+        return default
+    if not str(value).strip():
         return default
     return int(value)
 
@@ -29,12 +68,18 @@ def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
+    if not str(value).strip():
+        return default
     return value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 def _derive_postgres_url() -> str:
     host = _env("POSTGRES_HOST", "postgis")
     port = _env("POSTGRES_PORT", "5432")
+    if not os.getenv("POSTGRES_HOST") and not os.getenv("POSTGRES_PORT"):
+        host = _read_local_dotenv_value("POSTGRES_HOST", host)
+        port = _read_local_dotenv_value("POSTGRES_PORT", port)
+    port = _normalize_postgres_port(host, port)
     database = _env("POSTGRES_DB", "rslogic")
     user = _env("POSTGRES_USER", "postgres")
     password = _env("POSTGRES_PASSWORD", "")
@@ -48,8 +93,12 @@ def _derive_redis_url() -> str:
     explicit = _env("RSLOGIC_REDIS_URL", _env("REDIS_URL", ""))
     if explicit:
         return explicit
-    host = _env("RSLOGIC_REDIS_HOST", _env("REDIS_HOST", "localhost"))
+    host = _env("RSLOGIC_REDIS_HOST", _env("REDIS_HOST", "redis"))
     port = _env("RSLOGIC_REDIS_PORT", _env("REDIS_PORT", "6379"))
+    if not os.getenv("RSLOGIC_REDIS_HOST") and not os.getenv("RSLOGIC_REDIS_PORT"):
+        host = _read_local_dotenv_value("REDIS_HOST", host)
+        port = _read_local_dotenv_value("REDIS_PORT", port)
+    port = _normalize_redis_port(host, port)
     database = _env("RSLOGIC_REDIS_DB", _env("REDIS_DB", "0"))
     password = _env("RSLOGIC_REDIS_PASSWORD", _env("REDIS_PASSWORD", "")).strip()
     if password:
