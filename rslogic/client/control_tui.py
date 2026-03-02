@@ -126,6 +126,13 @@ def _install_project(venv_python: Path) -> None:
     raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to install rslogic in local venv")
 
 
+def _bootstrap_launch_args(venv_python: Path) -> list[str]:
+    launcher = _repo_root() / "rslogic_clientctl.py"
+    if launcher.exists():
+        return [str(venv_python), str(launcher), *sys.argv[1:]]
+    return [str(venv_python), "-m", "rslogic.client.control_tui", *sys.argv[1:]]
+
+
 def bootstrap_self(*, require_textual: bool = False) -> None:
     venv_python = _venv_python_path()
     if _python_can_import(venv_python, require_textual=require_textual):
@@ -138,7 +145,7 @@ def bootstrap_self(*, require_textual: bool = False) -> None:
             pass
         if os.name == "nt":
             os.environ[_VENV_BOOTSTRAP_ENV] = "1"
-            os.execv(str(venv_python), [str(venv_python), "-m", "rslogic.client.control_tui", *sys.argv[1:]])
+            os.execv(str(venv_python), _bootstrap_launch_args(venv_python))
         return
 
     _ensure_python_venv()
@@ -153,7 +160,7 @@ def bootstrap_self(*, require_textual: bool = False) -> None:
         return
     if os.name == "nt":
         os.environ[_VENV_BOOTSTRAP_ENV] = "1"
-        os.execv(str(venv_python), [str(venv_python), "-m", "rslogic.client.control_tui", *sys.argv[1:]])
+        os.execv(str(venv_python), _bootstrap_launch_args(venv_python))
 
 
 def _client_id() -> str:
