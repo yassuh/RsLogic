@@ -705,7 +705,7 @@ class ClientProcessManager:
 class ClientControlTUI(App):
     """Small supervisory TUI for rslogic client + rsnode + heartbeat."""
 
-    CSS = """
+        CSS = """
     Screen {
         layout: vertical;
     }
@@ -724,6 +724,9 @@ class ClientControlTUI(App):
         height: 1fr;
         border: round $primary;
         margin-top: 1;
+    }
+    #task_progress {
+        height: 5;
     }
     """
 
@@ -753,6 +756,7 @@ class ClientControlTUI(App):
             with Vertical(classes="panel"):
                 yield Static("Task state", id="task_status")
                 yield Static("-", id="task_state")
+                yield RichLog(id="task_progress", max_lines=200, highlight=True, markup=True)
             with Vertical(classes="panel"):
                 yield Static("Project state", id="project_status")
                 yield Static("-", id="project_status_value")
@@ -822,17 +826,9 @@ class ClientControlTUI(App):
         running = [
             t
             for t in tasks
-            if str(t.get("state", "")).strip().lower() not in {
-                "finished",
-                "done",
-                "canceled",
-                "cancelled",
-                "failed",
-                "error",
-                "aborted",
-            }
+            if ClientControlTUI._is_task_started(t.get("state"))
         ]
-        completed = [t for t in tasks if t not in running]
+        completed = [t for t in tasks if ClientControlTUI._is_task_terminal(t.get("state"))]
         latest = "-"
         if tasks:
             latest_task = tasks[0]
@@ -842,6 +838,97 @@ class ClientControlTUI(App):
             f"total={len(tasks)} running={len(running)} completed={len(completed)} "
             f"latest={latest}"
         )
+
+    @staticmethod
+    def _is_task_terminal(state: Any) -> bool:
+        normalized = str(state).strip().lower() if state is not None else ""
+        return normalized in {
+            "finished",
+            "done",
+            "canceled",
+            "cancelled",
+            "failed",
+            "error",
+            "aborted",
+        }
+
+    @staticmethod
+    def _is_task_started(state: Any) -> bool:
+        normalized = str(state).strip().lower() if state is not None else ""
+        return normalized in {"started", "running", "in_progress", "inprogress"}
+
+    @staticmethod
+    def _coerce_progress(raw: Any) -> float | None:
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value == 0:
+            return 0.0
+        if 0 < value <= 1.0:
+            return min(100.0, value * 100.0)
+        return max(0.0, min(100.0, value))
+
+    @staticmethod
+    def _task_progress_bar(task: dict[str, Any], *, fallback: float | None = None) -> str:
+        percent = ClientControlTUI._coerce_progress(task.get("progress"))
+        if percent is None:
+            percent = ClientControlTUI._coerce_progress(task.get("timeRatio"))
+        if percent is None:
+            percent = fallback if fallback is not None else 0.0
+
+        width = 20
+        safe = max(0.0, min(100.0, percent))
+        filled = int((safe / 100.0) * width)
+        bar = "█" * filled + "░" * (width - filled)
+        state = str(task.get("state", "")).strip().lower() or "unknown"
+        task_id = str(task.get("taskID", task.get("taskId", "-")))
+        if task_id == "-":
+            task_id = "-"
+        label = task_id[:12]
+        return f"{label:<12} [{bar}] {safe:5.1f}% ({state})"
+
+    @staticmethod
+    def _render_running_task_bars(task_state: Any, project_status: Any) -> str:
+        project_progress_raw = None
+        if isinstance(project_status, dict):
+            project_progress_raw = project_status.get("progress")
+        project_progress = ClientControlTUI._coerce_progress(project_progress_raw)
+        if project_progress is None and project_status is not None:
+            project_progress = 0.0
+
+        tasks: list[dict[str, Any]] = []
+        if isinstance(task_state, dict):
+            raw_tasks = task_state.get("tasks", [])
+            if isinstance(raw_tasks, list):
+                tasks = [t for t in raw_tasks if isinstance(t, dict)]
+            elif isinstance(raw_tasks, dict):
+                for value in raw_tasks.values():
+                    if isinstance(value, dict):
+                        tasks.append(value)
+        elif isinstance(task_state, list):
+            tasks = [t for t in task_state if isinstance(t, dict)]
+
+        running = [task for task in tasks if ClientControlTUI._is_task_started(task.get("state"))]
+        if not running:
+            return "running tasks: 0"
+
+        def _task_percent(task: dict[str, Any]) -> float:
+            if not ClientControlTUI._is_task_started(task.get("state")):
+                return 0.0
+            if task.get("state") and str(task.get("state")).strip().lower() == "finished":
+                return 100.0
+            task_progress = ClientControlTUI._coerce_progress(task.get("progress"))
+            if task_progress is not None:
+                return task_progress
+            if project_progress is None:
+                return 0.0
+            return project_progress
+
+        lines = [ClientControlTUI._task_progress_bar(task, fallback=_task_percent(task)) for task in running]
+        return "\n".join(lines)
 
     @staticmethod
     def _render_project_status(project_status: Any) -> str:
@@ -881,8 +968,13 @@ class ClientControlTUI(App):
 
             task_state = heartbeat.get("task_state")
             project_status = heartbeat.get("project_status")
+            running_tasks = heartbeat.get("running_tasks")
             active_job = heartbeat.get("active_job_id")
             self.query_one("#task_status", expect_type=Static).update(f"Task state: [blue]{self._render_task_state(task_state)}[/]")
+            running_for_bars = running_tasks if isinstance(running_tasks, list) else task_state
+            task_progress = self.query_one("#task_progress", expect_type=RichLog)
+            task_progress.clear()
+            task_progress.write(self._render_running_task_bars(running_for_bars, project_status))
             self.query_one("#project_status_value", expect_type=Static).update(
                 f"Project: [blue]{self._render_project_status(project_status)}[/]"
             )
@@ -892,6 +984,9 @@ class ClientControlTUI(App):
             self.query_one("#heartbeat_status", expect_type=Static).update("[yellow]Heartbeat: no data[/]")
             self.query_one("#heartbeat_age", expect_type=Static).update("Last seen: n/a")
             self.query_one("#task_status", expect_type=Static).update("Task: no data")
+            task_progress = self.query_one("#task_progress", expect_type=RichLog)
+            task_progress.clear()
+            task_progress.write("running tasks: 0")
             self.query_one("#project_status_value", expect_type=Static).update("Project: no data")
             self.query_one("#active_job", expect_type=Static).update("Active job")
             self.query_one("#active_job_id", expect_type=Static).update("Job: -")

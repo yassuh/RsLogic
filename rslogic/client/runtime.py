@@ -259,6 +259,27 @@ class ClientRuntime:
             "aborted",
         }
 
+    @staticmethod
+    def _is_task_started(state: Any) -> bool:
+        return ClientRuntime._normalize_task_state(state) == "started"
+
+    @staticmethod
+    def _project_is_running(project_status: dict[str, Any] | None) -> bool:
+        if not project_status:
+            return False
+        process_id = project_status.get("processID", project_status.get("processId", 0))
+        try:
+            if int(process_id or 0) > 0:
+                return True
+        except Exception:
+            pass
+        progress = project_status.get("progress")
+        try:
+            progress_f = float(progress)
+        except Exception:
+            return False
+        return 0.0 < progress_f < 1.0
+
     def _init_job_task_state(self, job_id: str, session: str | None) -> None:
         self._task_state[job_id] = {
             "session": session,
@@ -305,7 +326,13 @@ class ClientRuntime:
                 "updated_at": now,
             }
 
-    def _query_task_status(self, sdk_client: object | None, job_id: str) -> list[dict[str, Any]]:
+    def _query_task_status(
+        self,
+        sdk_client: object | None,
+        job_id: str,
+        *,
+        task_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         if sdk_client is None:
             return []
         job_state = self._task_state.get(job_id)
@@ -315,27 +342,20 @@ class ClientRuntime:
         tasks = job_state.get("tasks")
         if not isinstance(tasks, dict):
             tasks = None
-        if not tasks:
-            try:
-                statuses = sdk_client.project.tasks()  # type: ignore[attr-defined]
-            except Exception as exc:
-                self._log.debug("job=%s task status poll failed (all session): %s", job_id, exc)
-                return []
-        else:
-            task_ids = list(tasks.keys())
-            if not task_ids:
-                return []
-            try:
-                statuses = sdk_client.project.tasks(task_ids=task_ids)  # type: ignore[attr-defined]
-            except Exception as exc:
-                self._log.debug(
-                    "job=%s project.tasks returned non-sequence response for ids=%s error=%s",
-                    job_id,
-                    task_ids,
-                    exc,
-                )
-                return []
-
+        if task_ids is None:
+            task_ids = list(tasks.keys()) if isinstance(tasks, dict) else []
+        if not task_ids:
+            return []
+        try:
+            statuses = sdk_client.project.tasks(task_ids=task_ids)  # type: ignore[attr-defined]
+        except Exception as exc:
+            self._log.debug(
+                "job=%s project.tasks(query task_ids=%s) failed: %s",
+                job_id,
+                task_ids,
+                exc,
+            )
+            return []
         if not isinstance(statuses, (list, tuple)):
             self._log.debug(
                 "job=%s project.tasks returned non-sequence response=%s",
@@ -343,7 +363,7 @@ class ClientRuntime:
                 self._safe_preview(statuses),
             )
             return []
-        if not tasks:
+        if tasks is None:
             tasks = {}
             self._task_state[job_id] = {"session": job_state.get("session"), "tasks": tasks}
 
@@ -400,6 +420,121 @@ class ClientRuntime:
             self._log.debug("project status poll failed: %s", exc)
             return None
         return self._to_jsonable_dict(status)
+
+    def _wait_for_step_tasks(
+        self,
+        *,
+        sdk_client: object | None,
+        job_id: str,
+        group_id: str | None,
+        step_index: int,
+        total_steps: int,
+        step_action: str,
+        step_kind: str,
+        task_ids: list[str],
+        timeout_s: int,
+    ) -> list[dict[str, Any]]:
+        if not task_ids or sdk_client is None:
+            return []
+        timeout = max(1, timeout_s)
+        deadline = time.monotonic() + timeout
+        wanted = [task_id for task_id in task_ids if task_id]
+        while True:
+            task_updates = self._query_task_status(
+                sdk_client,
+                job_id,
+                task_ids=wanted,
+            )
+            by_id: dict[str, dict[str, Any]] = {}
+            for task_update in task_updates:
+                task_id = str(task_update.get("taskID", "")).strip()
+                if task_id:
+                    by_id[task_id] = task_update
+
+            missing = [task_id for task_id in wanted if task_id not in by_id]
+            terminal_updates = [task_update for task_update in task_updates if self._is_task_terminal(task_update.get("state"))]
+            running_updates = [task_update for task_update in task_updates if self._is_task_started(task_update.get("state"))]
+            project_status = self._query_project_status(sdk_client)
+            project_running = self._project_is_running(project_status)
+            if missing:
+                self._log.debug(
+                    "job=%s step=%s/%s waiting for task status; missing=%s",
+                    job_id,
+                    step_index,
+                    total_steps,
+                    self._safe_preview(missing, max_len=300),
+                )
+            elif task_updates and len(terminal_updates) == len(task_updates) and len(task_updates) == len(wanted):
+                if project_running:
+                    self._log.debug(
+                        "job=%s step=%s/%s waiting for project to become idle; processID=%s progress=%s",
+                        job_id,
+                        step_index,
+                        total_steps,
+                        project_status.get("processID") if isinstance(project_status, dict) else None,
+                        project_status.get("progress") if isinstance(project_status, dict) else None,
+                    )
+                else:
+                    if any(
+                        int(task_update.get("errorCode", 0) or 0) != 0
+                        or str(task_update.get("state", "")).strip().lower() in {"failed", "error", "aborted", "canceled", "cancelled"}
+                        for task_update in task_updates
+                    ):
+                        error_codes = {
+                            t.get("taskID"): t.get("errorCode") for t in task_updates if int(t.get("errorCode", 0) or 0) != 0
+                        }
+                        raise RuntimeError(f"step task failed: {error_codes}")
+                    self._report_progress(
+                        job_id=job_id,
+                        group_id=group_id,
+                        progress=((step_index - 1) / max(1, total_steps)) * 100.0,
+                        status="running",
+                        message=f"step {step_index}/{total_steps} complete: {step_action}",
+                        task_state={"tasks": task_updates},
+                        project_status=project_status,
+                        result_summary={
+                            "phase": "step_task_wait",
+                            "step_index": step_index,
+                            "step_kind": step_kind,
+                            "step_action": step_action,
+                            "elapsed_seconds": round(time.monotonic() - (deadline - timeout), 2),
+                            "task_count": len(task_updates),
+                            "running_tasks": running_updates,
+                            "completed_tasks": terminal_updates,
+                            "task_state": {"tasks": task_updates},
+                            "project_status": project_status,
+                        },
+                    )
+                    return task_updates
+
+            if time.monotonic() >= deadline:
+                if task_updates:
+                    raise TimeoutError(f"step {step_index}/{total_steps} task wait timed out after {timeout}s: {self._safe_preview(task_updates, max_len=300)}")
+                raise TimeoutError(f"step {step_index}/{total_steps} task wait timed out after {timeout}s with no task status")
+
+            if task_updates:
+                self._report_progress(
+                    job_id=job_id,
+                    group_id=group_id,
+                    progress=((step_index - 1) / max(1, total_steps)) * 100.0,
+                    status="running",
+                    message=f"step {step_index}/{total_steps} waiting: {step_action}",
+                    task_state={"tasks": task_updates},
+                    project_status=project_status,
+                    result_summary={
+                        "phase": "step_task_wait",
+                        "step_index": step_index,
+                        "step_kind": step_kind,
+                        "step_action": step_action,
+                        "elapsed_seconds": round(time.monotonic() - (deadline - timeout), 2),
+                        "task_count": len(task_updates),
+                        "running_tasks": running_updates,
+                        "completed_tasks": terminal_updates,
+                        "task_state": {"tasks": task_updates},
+                        "project_status": project_status,
+                    },
+                )
+            time.sleep(self._task_heartbeat_seconds)
 
     def _sdk_client(self) -> object:
         if not _SDK_AVAILABLE:
@@ -498,7 +633,7 @@ class ClientRuntime:
                 project_status = self._query_project_status(self._active_sdk_client)
                 if task_updates:
                     task_state = {"tasks": task_updates}
-                    running_tasks = [t for t in task_updates if not t.get("is_terminal")]
+                    running_tasks = [t for t in task_updates if self._is_task_started(t.get("state"))]
                     completed_tasks = [t for t in task_updates if t.get("is_terminal")]
                     self._log.debug(
                         "client=%s active_job=%s task_count=%s running=%s completed=%s",
@@ -569,7 +704,7 @@ class ClientRuntime:
                     raw_session = job_state.get("session")
                     if isinstance(raw_session, str) and raw_session.strip():
                         session = raw_session.strip()
-                running_tasks = [t for t in task_updates if not t.get("is_terminal")]
+                running_tasks = [t for t in task_updates if self._is_task_started(t.get("state"))]
                 completed_tasks = [t for t in task_updates if t.get("is_terminal")]
                 self._log.debug(
                     "job=%s step=%s/%s heartbeat task_count=%s running=%s completed=%s session=%s",
@@ -741,6 +876,7 @@ class ClientRuntime:
                     step_started = time.monotonic()
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
                     step_task_ids = self._extract_task_ids(res)
+                    step_snapshot = None
                     if step_task_ids:
                         self._register_step_tasks(
                             job_id,
@@ -750,6 +886,19 @@ class ClientRuntime:
                             task_ids=step_task_ids,
                             session=executor.current_session(),
                         )
+                        step_snapshot = self._wait_for_step_tasks(
+                            sdk_client=sdk_client,
+                            job_id=job_id,
+                            group_id=group_id,
+                            step_index=idx,
+                            total_steps=len(steps),
+                            step_action=step.action,
+                            step_kind=step.kind,
+                            task_ids=step_task_ids,
+                            timeout_s=step.timeout_s,
+                        )
+                    else:
+                        step_snapshot = []
                     step_time = round(time.monotonic() - step_started, 3)
                     last_step_result = self._result_preview(res)
                     last_step_result["duration_seconds"] = step_time
@@ -787,7 +936,9 @@ class ClientRuntime:
                     step_time,
                     self._safe_preview(res, max_len=500),
                 )
-                task_snapshot = self._query_task_status(sdk_client, job_id)
+                task_snapshot = step_snapshot
+                if task_snapshot is None:
+                    task_snapshot = self._query_task_status(sdk_client, job_id, task_ids=step_task_ids)
                 step_project_status = self._query_project_status(sdk_client)
                 self.db.upsert_processing_job(
                     job_id=job_id,

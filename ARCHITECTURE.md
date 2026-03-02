@@ -11,7 +11,8 @@ RsLogic execution architecture
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
   - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
   - Runtime now tracks SDK task IDs returned by `TaskHandle` and performs periodic `project.tasks` polling while a step heartbeat is active.
-  - If a job-specific task registry is empty, runtime now falls back to polling `project.tasks()` for all tasks in the active session so task snapshots are still populated from session-wide status.
+  - Runtime now waits for step task sets to reach terminal states and only returns completion when both task statuses are terminal and the current project status indicates the active process has finished.
+  - Progress/task visibility (`running_tasks`) is scoped to tasks whose task state is `started`, so the progress bar is tied to currently-running work rather than completed/failed snapshots.
   - Task snapshots and project status are attached to progress messages (`task_state`, `running_tasks`, `completed_tasks`, `project_status`) so TUI/operators can observe long-running reconstruction progress before a step finishes.
   - Runtime heartbeat payload now also mirrors active job/task/project progress (`active_job_id`, `task_state`, `project_status`) every heartbeat interval so client supervision can read progress without consuming result queue traffic.
   - `_report_progress` publishes explicit task/project payloads (`task_state`, `project_status`) in addition to `result_summary` to make progress consumers (including DB orchestration) resilient to schema changes.
@@ -26,6 +27,7 @@ RsLogic execution architecture
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - status grid displays live task/project heartbeat state (`task_state`, `project_status`, `active_job_id`) for operators while long-running SDK jobs are running.
+  - task display now renders per-task loading bars only for currently-started tasks, using heartbeat `running_tasks` and project progress fallback so active task progress is visible continuously.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
   - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
   - client env contract is loaded with `python-dotenv` from `client.env` at repo root only (hardcoded location).
