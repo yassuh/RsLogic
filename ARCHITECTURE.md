@@ -15,15 +15,15 @@ RsLogic execution architecture
   - start/stop/restart/status management for `rslogic.client.rsnode_client`.
   - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
   - `start` now verifies the spawned runtime remains alive after launch; if it exits immediately, the command returns a clear failure with captured startup stderr/stdout tail.
-  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches from a deterministic root (`Path(__file__).resolve().parents[2]`) with explicit marker checks.
+  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches from a deterministic root (`Path(__file__).resolve().parent`) with explicit marker checks.
   - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
   - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
   - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
-  - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
+  - determines repo root deterministically from script location (`Path(__file__).resolve().parent`) and fails fast if expected markers are missing, rather than scanning alternate directories.
   - client env contract is loaded with `python-dotenv` from `client.env` at repo root only (hardcoded location).
   - `client.env` is the source of truth for all client settings: values are hydrated into `os.environ` before any client config import to ensure runtime/control paths are consistent.
   - `RSLOGIC_CLIENT_ENV_FILE` is not used by the client runtime path anymore; the root `client.env` file is the single source of truth.
-  - status now reports active heartbeat clients discovered from Redis (`heartbeat_clients`) to make mismatched client-id/runtime combinations obvious.
+  - runtime heartbeat includes `pid` and `host`, and control status now uses that heartbeat payload to recover and display the runtime PID when the local pid file is absent.
   - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
 - `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
   - resolves repo root from local script location (`Path(__file__).resolve().parent`) and inserts it into `PYTHONPATH` before importing package modules.

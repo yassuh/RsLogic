@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 from dotenv import dotenv_values
+import socket
 
 try:
     from realityscan_sdk.client import RealityScanClient
@@ -232,7 +233,15 @@ class ClientRuntime:
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             self._log.debug("publishing heartbeat for client_id=%s", self.client_id)
-            self.redis_bus.heartbeat(self.client_id, {"status": "alive", "service": "rslogic-client"})
+            self.redis_bus.heartbeat(
+                self.client_id,
+                {
+                    "status": "alive",
+                    "service": "rslogic-client",
+                    "pid": os.getpid(),
+                    "host": socket.gethostname(),
+                },
+            )
             with contextlib.suppress(Exception):
                 self.node_guard.ensure_running()
             time.sleep(5)

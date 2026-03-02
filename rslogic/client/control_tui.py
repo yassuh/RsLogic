@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,9 +48,16 @@ _REQUIRED_CLIENT_ENV_KEYS = {
 }
 
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if not (ROOT_DIR / "config.py").exists() or not (ROOT_DIR / "pyproject.toml").exists():
-    raise RuntimeError(f"Expected repo root at {ROOT_DIR}, but config.py/pyproject.toml were not found")
+def _resolve_repo_root() -> Path:
+    candidate = Path(__file__).resolve().parent
+    if not (candidate / "config.py").exists() or not (candidate / "pyproject.toml").exists():
+        raise RuntimeError(
+            f"Expected repo root at {candidate}, but config.py/pyproject.toml were not found"
+        )
+    return candidate
+
+
+ROOT_DIR = _resolve_repo_root()
 
 if not (ROOT_DIR / "rslogic" / "client" / "control_tui.py").exists():
     raise RuntimeError(f"Invalid repo root; control_tui.py not found in {ROOT_DIR}")
@@ -278,6 +286,17 @@ def _safe_json_loads(raw: str | None) -> dict[str, Any] | None:
         return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def _parse_pid(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
 
 
 class _LogTailer:
@@ -594,12 +613,29 @@ class ClientProcessManager:
         running, pid = self._current_client_process()
         heartbeat = self._heartbeat()
         age = self._heartbeat_age(heartbeat)
+        heartbeat_pid = _parse_pid(heartbeat.get("pid") if isinstance(heartbeat, dict) else None)
+        heartbeat_host = None
+        if isinstance(heartbeat, dict):
+            raw_host = heartbeat.get("host")
+            if isinstance(raw_host, str):
+                heartbeat_host = raw_host
+
+        host = socket.gethostname()
+        if (
+            heartbeat_host is None
+            or heartbeat_host == host
+        ) and not running and heartbeat_pid and age is not None and age <= 20 and self._is_windows_pid_alive(heartbeat_pid):
+            pid = heartbeat_pid
+            running = True
+            self._write_pid(pid)
+
         rsnode = self._rsnode_pids()
         return {
             "running": running,
             "client_pid": pid,
             "heartbeat": heartbeat,
             "heartbeat_age": age,
+            "heartbeat_host": heartbeat_host,
             "heartbeat_clients": self._active_heartbeat_clients(),
             "queued_commands": self._command_queue_depth(),
             "rsnode_running": len(rsnode) > 0,
