@@ -10,6 +10,7 @@ RsLogic execution architecture
   - Implemented with `textual` for interactive terminal controls.
 - Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
 - `installer.bat` boots a local uv + python3.14t virtual environment, installs this repo in editable mode, and lays down `client.env` from `client.env.template` plus a `start-rslogic-client.bat` launcher.
+- `start-rslogic-client.bat` is now a simple interpreter launcher that runs `rslogic.client.rsnode_client` via `%VENV%\Scripts\python.exe` with explicit `PYTHONPATH`/logging env, so it does not rely on missing `activate` scripts.
 - Job contract artifacts:
   - `job-contract.schema.json` documents the JSON payload expected by `POST /jobs` for `auto_assign`, routing, group fields, and step objects.
   - `job-action-map.json` documents executable file and sdk actions and how `rslogic.client.executor.StepExecutor` dispatches them.
