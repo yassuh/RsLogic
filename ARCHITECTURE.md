@@ -6,7 +6,7 @@ RsLogic execution architecture
   - Results consumer now normalizes and merges `task_state` / `project_status` fields from client payloads into `result_summary` by message timestamp, so `/jobs` and `/jobs/{job_id}` expose cumulative task snapshots and latest project state.
 - `rslogic/cli/upload.py` is the CLI upload entrypoint (`rslogic-upload`).
 - `rslogic/ingest.py` ingests objects from `drone-imagery-waiting` into `drone-imagery` and writes rows into `studio-db` (`rslogic-ingest`).
-- `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
+  - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
   - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
   - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
   - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
@@ -135,6 +135,7 @@ Auto-assignment:
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
   - publishes command result text from each completed step in redis `result_summary` (`result`, `result_type`, `result_preview`) so operators can see what each SDK call returned.
   - `sdk_project_create` and `sdk_project_open` are treated as session-establishing steps: when no task IDs are returned, runtime now requires a non-empty session string (from result or current executor context) before advancing, and uses that as the completion signal for the step.
+  - The session-establishing contract is explicit in `rslogic/client/executor.py` via `SDK_SESSION_ACTIONS`, so completion semantics are endpoint-driven instead of inferred from return payload shape.
   - when an SDK step returns a `TaskHandle`, runtime keeps an in-memory task registry keyed by `job_id` and keeps it updated by polling `project.tasks`; task + project status are included in heartbeat and completion payloads.
 - Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
 - Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.

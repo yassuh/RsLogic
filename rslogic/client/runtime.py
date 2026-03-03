@@ -1001,7 +1001,7 @@ class ClientRuntime:
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
                     step_snapshot = None
                     step_session = None
-                    if step.action in {"sdk_project_create", "sdk_project_open"}:
+                    if executor.is_session_action(step.action):
                         step_session = executor.current_session() or (res.strip() if isinstance(res, str) else None)
                         if not step_session:
                             raise RuntimeError(f"{step.action} must return a session for completion tracking")

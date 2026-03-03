@@ -16,6 +16,9 @@ from rslogic.common.schemas import Step
 _LOGGER = logging.getLogger("rslogic.client.executor")
 
 
+SDK_SESSION_ACTIONS = frozenset({"sdk_project_create", "sdk_project_open"})
+
+
 def _candidates_for_method(method_name: str) -> list[str]:
     stripped = method_name.strip().lower()
     camel = "".join(part.title() for part in stripped.split("_"))
@@ -143,6 +146,10 @@ class StepExecutor:
     @staticmethod
     def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]:
         return _normalize_sdk_params(method, params)
+
+    @staticmethod
+    def is_session_action(action: str) -> bool:
+        return action in SDK_SESSION_ACTIONS
 
     @staticmethod
     def _render_text_template(value: str, context: dict[str, str]) -> str:
