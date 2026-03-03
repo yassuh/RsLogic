@@ -999,15 +999,15 @@ class ClientRuntime:
                     )
                     step_started = time.monotonic()
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
-                    step_task_ids = self._extract_task_ids(res)
                     step_snapshot = None
-
-                    if not step_task_ids and step.action in {"sdk_project_create", "sdk_project_open"}:
-                        step_session = executor.current_session()
-                        if not step_session and isinstance(res, str):
-                            step_session = res.strip()
+                    step_session = None
+                    if step.action in {"sdk_project_create", "sdk_project_open"}:
+                        step_session = executor.current_session() or (res.strip() if isinstance(res, str) else None)
                         if not step_session:
                             raise RuntimeError(f"{step.action} must return a session for completion tracking")
+                        step_task_ids = []
+                    else:
+                        step_task_ids = self._extract_task_ids(res)
 
                     if step_task_ids:
                         step_timeout = 0 if self._is_unlimited_step_timeout(step) else step.timeout_s
