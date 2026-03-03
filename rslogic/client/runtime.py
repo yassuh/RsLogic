@@ -283,6 +283,24 @@ class ClientRuntime:
         }
 
     @staticmethod
+    def _is_task_failed(task_update: dict[str, Any]) -> bool:
+        if ClientRuntime._is_task_terminal(task_update.get("state")) and ClientRuntime._normalize_task_state(task_update.get("state")) in {
+            "failed",
+            "error",
+            "aborted",
+            "canceled",
+            "cancelled",
+        }:
+            return True
+        try:
+            error_code = int(task_update.get("errorCode", 0) or 0)
+        except Exception:
+            error_code = -1
+        # Temporary compatibility behavior: ignore errorCode==1 while still surfacing
+        # true errors and terminal failed states.
+        return error_code not in {0, 1}
+
+    @staticmethod
     def _is_task_started(state: Any) -> bool:
         return ClientRuntime._normalize_task_state(state) == "started"
 
@@ -558,16 +576,11 @@ class ClientRuntime:
                     )
 
                 if terminal_updates and _is_finished(task_updates):
-                    if any(
-                        int(task_update.get("errorCode", 0) or 0) != 0
-                        or str(task_update.get("state", "")).strip().lower()
-                        in {"failed", "error", "aborted", "canceled", "cancelled"}
-                        for task_update in task_updates
-                    ):
+                    failed_updates = [task_update for task_update in task_updates if ClientRuntime._is_task_failed(task_update)]
+                    if failed_updates:
                         error_codes = {
                             t.get("taskID"): t.get("errorCode")
-                            for t in task_updates
-                            if int(t.get("errorCode", 0) or 0) != 0
+                            for t in failed_updates
                         }
                         failed.append(RuntimeError(f"step task failed: {error_codes}"))
                     with state_lock:
@@ -624,16 +637,11 @@ class ClientRuntime:
                     completed_updates = list(monitor_state["completed_tasks"])  # type: ignore[arg-type]
                     completed = bool(monitor_state["completed"])
                 if completed and _is_finished(task_updates):
-                    if any(
-                        int(task_update.get("errorCode", 0) or 0) != 0
-                        or str(task_update.get("state", "")).strip().lower()
-                        in {"failed", "error", "aborted", "canceled", "cancelled"}
-                        for task_update in task_updates
-                    ):
+                    failed_updates = [task_update for task_update in task_updates if ClientRuntime._is_task_failed(task_update)]
+                    if failed_updates:
                         error_codes = {
                             t.get("taskID"): t.get("errorCode")
-                            for t in task_updates
-                            if int(t.get("errorCode", 0) or 0) != 0
+                            for t in failed_updates
                         }
                         raise RuntimeError(f"step task failed: {error_codes}")
                     self._report_progress(
