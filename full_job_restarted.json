@@ -1,0 +1,133 @@
+{
+  "client_id": "85DBDE55-3FFF-4228-9F06-CBED4003BBB8",
+  "group_id": "ef1f2c51-1b10-4cfa-8bdf-7b71c2af4da7",
+  "auto_assign": false,
+  "steps": [
+    {
+      "kind": "file",
+      "action": "file_stage",
+      "params": {},
+      "timeout_s": 0
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_node_connect_user",
+      "params": {},
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_create",
+      "params": {},
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_new_scene",
+      "params": {},
+      "timeout_s": 600
+    },
+    {
+      "kind": "file",
+      "action": "file_copy_to_session_imagery",
+      "params": {},
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["appIncSubdirs=true"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyX=0.1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyY=0.1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyZ=0.1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyYaw=1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyPitch=1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmCameraPriorAccuracyRoll=1"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "set",
+        "params": ["sfmDetectorSensitivity=Ultra"]
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_add_folder",
+      "params": {
+        "path": "Imagery"
+      },
+      "timeout_s": 600
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_command",
+      "params": {
+        "name": "align"
+      },
+      "timeout_s": 0
+    },
+    {
+      "kind": "sdk",
+      "action": "sdk_project_save",
+      "params": {
+        "path": "test_auto.rspj"
+      },
+      "timeout_s": 600
+    }
+  ]
+}

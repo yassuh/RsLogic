@@ -141,6 +141,7 @@ Auto-assignment:
 - The session-establishing contract is explicit in `rslogic/client/executor.py` via `SDK_SESSION_ACTIONS`, so completion semantics are endpoint-driven instead of inferred from return payload shape.
 - Runtime task extraction now only polls for explicit task identifiers (task handles / task payload objects); scalar UUID-like strings are no longer treated as task IDs so `project_create` session IDs are not mistaken for task IDs.
 - Added step-level logging for async-vs-sync completion decisions and timeout warnings in `rslogic/client/runtime.py` so a step that returns no task IDs is clearly marked as synchronous in logs.
+- Task completion is now compared using canonical UUID normalization so finished tasks are recognized regardless of taskID casing/format variations (e.g. uppercase UUID strings from SDK task payloads are treated the same as canonical lowercased IDs).
   - when an SDK step returns a `TaskHandle`, runtime keeps an in-memory task registry keyed by `job_id` and keeps it updated by polling `project.tasks`; task + project status are included in heartbeat and completion payloads.
 - Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
 - Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.

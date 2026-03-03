@@ -259,6 +259,18 @@ class ClientRuntime:
         return "" if value is None else str(value).strip().lower()
 
     @staticmethod
+    def _normalize_task_id(value: Any) -> str | None:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            return str(uuid.UUID(raw))
+        except ValueError:
+            return None
+
+    @staticmethod
     def _is_task_terminal(state: Any) -> bool:
         return ClientRuntime._normalize_task_state(state) in {
             "finished",
@@ -280,11 +292,18 @@ class ClientRuntime:
             return False
         by_id = {}
         for task in task_updates:
-            task_id = str(task.get("taskID", "")).strip() or str(task.get("task_id", "")).strip()
+            task_id = ClientRuntime._normalize_task_id(task.get("taskID"))
+            if task_id is None:
+                task_id = ClientRuntime._normalize_task_id(task.get("task_id"))
+            if task_id is None:
+                task_id = ClientRuntime._normalize_task_id(task.get("id"))
             if task_id:
                 by_id[task_id] = task
         for task_id in wanted_task_ids:
-            task_state = by_id.get(task_id)
+            wanted = ClientRuntime._normalize_task_id(task_id)
+            if wanted is None:
+                return False
+            task_state = by_id.get(wanted)
             if task_state is None:
                 return False
             if not ClientRuntime._is_task_terminal(task_state.get("state")):
@@ -499,14 +518,18 @@ class ClientRuntime:
                 task_updates = self._query_task_status(sdk_client, job_id, task_ids=wanted)
                 by_id: dict[str, dict[str, Any]] = {}
                 for task_update in task_updates:
-                    task_id = str(task_update.get("taskID", "")).strip()
+                    task_id = ClientRuntime._normalize_task_id(task_update.get("taskID"))
+                    if task_id is None:
+                        task_id = ClientRuntime._normalize_task_id(task_update.get("task_id"))
+                    if task_id is None:
+                        task_id = ClientRuntime._normalize_task_id(task_update.get("id"))
                     if task_id:
                         by_id[task_id] = task_update
 
                 running_updates = [task_update for task_update in task_updates if self._is_task_started(task_update.get("state"))]
                 terminal_updates = [task_update for task_update in task_updates if self._is_task_terminal(task_update.get("state"))]
                 project_status = self._query_project_status(sdk_client)
-                missing = [task_id for task_id in wanted if task_id not in by_id]
+                missing = [task_id for task_id in wanted if ClientRuntime._normalize_task_id(task_id) not in by_id]
                 elapsed = round(time.monotonic() - started_at, 2)
 
                 with state_lock:
