@@ -19,6 +19,8 @@ RsLogic execution architecture
   - Runtime heartbeat payload now also mirrors active job/task/project progress (`active_job_id`, `task_state`, `project_status`) every heartbeat interval so client supervision can read progress without consuming result queue traffic.
   - `_report_progress` publishes explicit task/project payloads (`task_state`, `project_status`) in addition to `result_summary` to make progress consumers (including DB orchestration) resilient to schema changes.
   - SDK availability is now optional at import time: the runtime starts even if `realityscan_sdk` is absent, and only fails SDK jobs with a clear error, allowing file-only jobs to execute.
+  - `file_stage` and other file steps no longer generate fake task IDs for plain path strings; task IDs are now derived only from UUID-like task handle values, so filesystem paths do not trigger long task waits.
+  - `StepExecutor.execute` now returns typed `StepExecutionResult` objects with explicit task IDs, preventing return-shape inference from deciding control flow.
 - `rslogic/client/rsnode_client.py` is the runtime bootstrap entrypoint used by the control TUI and CLI.
   - now auto-discovers the repo root at startup and injects it into `sys.path`/`PYTHONPATH` when executed directly, so `python <repo>/rslogic/client/rsnode_client.py` works even when the venv interpreter has broken package discovery.
 - `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
@@ -60,6 +62,7 @@ RsLogic execution architecture
   - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to copy staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
   - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
   - SDK execution now fails fast with a clear message when SDK actions are submitted without the SDK dependency installed.
+  - `StepExecutor.execute` now returns `StepExecutionResult` for explicit step typing (`value` + `task_ids`), making it impossible for file path returns to be mistaken as tasks.
 - `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
   - Client `file_stage` is image-only; it stages only image assets referenced in DB rows and does not download/pull sidecar objects to the local client.
   - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
@@ -134,8 +137,10 @@ Auto-assignment:
   - `kind=file` staging/mapping/move operations,
   - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
   - publishes command result text from each completed step in redis `result_summary` (`result`, `result_type`, `result_preview`) so operators can see what each SDK call returned.
-  - `sdk_project_create` and `sdk_project_open` are treated as session-establishing steps: when no task IDs are returned, runtime now requires a non-empty session string (from result or current executor context) before advancing, and uses that as the completion signal for the step.
-  - The session-establishing contract is explicit in `rslogic/client/executor.py` via `SDK_SESSION_ACTIONS`, so completion semantics are endpoint-driven instead of inferred from return payload shape.
+- `sdk_project_create` and `sdk_project_open` are treated as session-establishing steps: when no task IDs are returned, runtime now requires a non-empty session string (from result or current executor context) before advancing, and uses that as the completion signal for the step.
+- The session-establishing contract is explicit in `rslogic/client/executor.py` via `SDK_SESSION_ACTIONS`, so completion semantics are endpoint-driven instead of inferred from return payload shape.
+- Runtime task extraction now only polls for explicit task identifiers (task handles / task payload objects); scalar UUID-like strings are no longer treated as task IDs so `project_create` session IDs are not mistaken for task IDs.
+- Added step-level logging for async-vs-sync completion decisions and timeout warnings in `rslogic/client/runtime.py` so a step that returns no task IDs is clearly marked as synchronous in logs.
   - when an SDK step returns a `TaskHandle`, runtime keeps an in-memory task registry keyed by `job_id` and keeps it updated by polling `project.tasks`; task + project status are included in heartbeat and completion payloads.
 - Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
 - Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.

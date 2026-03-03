@@ -91,7 +91,7 @@ from rslogic.config import CONFIG
 from rslogic.common.db import LabelDbStore
 from rslogic.common.redis_bus import RedisBus
 from rslogic.common.schemas import Step
-from rslogic.client.executor import StepExecutor
+from rslogic.client.executor import StepExecutor, StepExecutionResult
 from rslogic.client.file_ops import FileExecutor
 from rslogic.client.process_guard import RsNodeProcess
 
@@ -229,12 +229,18 @@ class ClientRuntime:
                 if task_id is None:
                     return
             if isinstance(task_id, str):
-                task_id = task_id.strip()
+                candidate_task_id = task_id.strip()
             else:
-                task_id = str(task_id).strip()
-            task_id = str(task_id).strip()
-            if task_id and task_id not in task_ids:
-                task_ids.append(task_id)
+                candidate_task_id = str(task_id).strip()
+            if not candidate_task_id:
+                return
+            try:
+                task_uuid = uuid.UUID(candidate_task_id)
+            except ValueError:
+                return
+            normalized = str(task_uuid)
+            if normalized and normalized not in task_ids:
+                task_ids.append(normalized)
 
         if isinstance(result, (list, tuple, set)):
             for item in result:
@@ -242,6 +248,8 @@ class ClientRuntime:
             return task_ids
         if isinstance(result, dict):
             add(result)
+            return task_ids
+        if isinstance(result, str):
             return task_ids
         add(result)
         return task_ids
@@ -634,10 +642,27 @@ class ClientRuntime:
                 with state_lock:
                     timeout_state = list(monitor_state["task_updates"])  # type: ignore[arg-type]
                 if timeout_state:
+                    self._log.warning(
+                        "job=%s step=%s/%s task wait timed out after %ss without all terminals: task_ids=%s updates=%s",
+                        job_id,
+                        step_index,
+                        total_steps,
+                        timeout,
+                        wanted,
+                        self._safe_preview(timeout_state, max_len=300),
+                    )
                     raise TimeoutError(
                         f"step {step_index}/{total_steps} task wait timed out after {timeout}s: "
                         f"{self._safe_preview(timeout_state, max_len=300)}"
                     )
+                self._log.warning(
+                    "job=%s step=%s/%s task wait timed out after %ss with no task status for task_ids=%s",
+                    job_id,
+                    step_index,
+                    total_steps,
+                    timeout,
+                    wanted,
+                )
                 raise TimeoutError(f"step {step_index}/{total_steps} task wait timed out after {timeout}s with no task status")
 
             with state_lock:
@@ -999,17 +1024,39 @@ class ClientRuntime:
                     )
                     step_started = time.monotonic()
                     res = executor.execute(step, job_id=job_id, group_id=group_id)
+                    step_result = res.value if isinstance(res, StepExecutionResult) else res
                     step_snapshot = None
                     step_session = None
                     if executor.is_session_action(step.action):
-                        step_session = executor.current_session() or (res.strip() if isinstance(res, str) else None)
+                        step_session = executor.current_session() or (
+                            step_result.strip() if isinstance(step_result, str) else None
+                        )
                         if not step_session:
                             raise RuntimeError(f"{step.action} must return a session for completion tracking")
                         step_task_ids = []
+                    elif isinstance(res, StepExecutionResult):
+                        step_task_ids = res.task_ids
                     else:
                         step_task_ids = self._extract_task_ids(res)
 
+                    self._log.debug(
+                        "job=%s step=%s/%s action=%s treated_task_ids=%s result_type=%s",
+                        job_id,
+                        idx,
+                        len(steps),
+                        step.action,
+                        step_task_ids,
+                        type(step_result).__name__,
+                    )
+
                     if step_task_ids:
+                        self._log.info(
+                            "job=%s step=%s/%s waiting on async task_ids=%s",
+                            job_id,
+                            idx,
+                            len(steps),
+                            step_task_ids,
+                        )
                         step_timeout = 0 if self._is_unlimited_step_timeout(step) else step.timeout_s
                         self._register_step_tasks(
                             job_id,
@@ -1032,8 +1079,15 @@ class ClientRuntime:
                         )
                     else:
                         step_snapshot = []
+                        self._log.info(
+                            "job=%s step=%s/%s completed synchronously action=%s",
+                            job_id,
+                            idx,
+                            len(steps),
+                            step.action,
+                        )
                     step_time = round(time.monotonic() - step_started, 3)
-                    last_step_result = self._result_preview(res)
+                    last_step_result = self._result_preview(step_result)
                     last_step_result["duration_seconds"] = step_time
                     last_step_result["step_index"] = idx
                     last_step_result["step_kind"] = step.kind
@@ -1067,7 +1121,7 @@ class ClientRuntime:
                     job_id,
                     idx,
                     step_time,
-                    self._safe_preview(res, max_len=500),
+                    self._safe_preview(step_result, max_len=500),
                 )
                 task_snapshot = step_snapshot
                 if task_snapshot is None:
@@ -1081,14 +1135,14 @@ class ClientRuntime:
                     message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
                     result_summary={
                         "last_result": last_step_result["result"] if last_step_result else None,
-                        "last_result_type": last_step_result["result_type"] if last_step_result else type(res).__name__,
+                        "last_result_type": last_step_result["result_type"] if last_step_result else type(step_result).__name__,
                         "last_result_preview": last_step_result,
                         "last_step": {
                             "index": idx,
                             "kind": step.kind,
                             "action": step.action,
                             "duration_seconds": step_time,
-                            "result_type": type(res).__name__,
+                            "result_type": type(step_result).__name__,
                             "heartbeat_seconds": heartbeat_seconds,
                             "session": executor.current_session(),
                         },
@@ -1109,8 +1163,8 @@ class ClientRuntime:
                         "step_kind": step.kind,
                         "step_action": step.action,
                         "duration_seconds": step_time,
-                        "result_type": type(res).__name__,
-                        "result": self._safe_preview(res),
+                        "result_type": type(step_result).__name__,
+                        "result": self._safe_preview(step_result),
                         "session": executor.current_session(),
                         "task_state": {"tasks": task_snapshot},
                         "project_status": step_project_status,

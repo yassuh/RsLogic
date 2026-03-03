@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Callable
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from realityscan_sdk.client import RealityScanClient
@@ -17,6 +19,14 @@ _LOGGER = logging.getLogger("rslogic.client.executor")
 
 
 SDK_SESSION_ACTIONS = frozenset({"sdk_project_create", "sdk_project_open"})
+
+
+@dataclass(frozen=True)
+class StepExecutionResult:
+    """Typed step execution result used by the runtime."""
+
+    value: Any
+    task_ids: list[str]
 
 
 def _candidates_for_method(method_name: str) -> list[str]:
@@ -177,7 +187,7 @@ class StepExecutor:
         self._context = {"job_id": job_id}
         self._sync_session_context()
 
-    def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> Any:
+    def execute(self, step: Step, *, job_id: str, group_id: str | None = None) -> StepExecutionResult:
         action = step.action
         kind = step.kind
         params = self._render(dict(step.params or {}))
@@ -196,7 +206,7 @@ class StepExecutor:
                 _LOGGER.info("file_stage complete job_id=%s group_id=%s staging_dir=%s", job_id, group_id, stage_dir)
                 self._staging_dir = stage_dir
                 self._context["staging_dir"] = str(stage_dir)
-                return str(stage_dir)
+                return StepExecutionResult(value=str(stage_dir), task_ids=[])
 
             if action == "file_write_manifest":
                 if not group_id:
@@ -207,7 +217,7 @@ class StepExecutor:
                     self._staging_dir = staging
                 manifest = self.file_executor.write_manifest(job_id, staging, group_id)
                 _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
-                return str(manifest)
+                return StepExecutionResult(value=str(manifest), task_ids=[])
 
             if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working", "file_copy_to_working", "file_copy_staging_to_working"}:
                 staging = self._staging_dir
@@ -227,7 +237,7 @@ class StepExecutor:
                     staging,
                     working_dir,
                 )
-                return result
+                return StepExecutionResult(value=result, task_ids=[])
 
             if action in {
                 "file_move_to_session_imagery",
@@ -263,7 +273,7 @@ class StepExecutor:
                     session,
                     working_dir,
                 )
-                return result
+                return StepExecutionResult(value=result, task_ids=[])
 
             raise RuntimeError(f"unsupported file action {action}")
 
@@ -284,17 +294,87 @@ class StepExecutor:
         _LOGGER.debug("sdk call action=%s method=%s params=%s", action, getattr(method, "__name__", str(method)), params)
         try:
             result = method(**params)
-            _LOGGER.info("sdk call complete action=%s result=%s", action, result)
+            task_ids = self._extract_task_ids(result)
+            _LOGGER.info(
+                "sdk call complete action=%s result=%s task_ids=%s",
+                action,
+                self._short_repr(result),
+                task_ids,
+            )
             if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):
                 self._set_context_session(result)
             if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
                 self._set_context_session(None)
-            return result
+            return StepExecutionResult(value=result, task_ids=task_ids)
         except TypeError:
             if params:
                 _LOGGER.exception("sdk call type error action=%s params=%s", action, params)
                 raise
-            return method()
+            result = method()
+            task_ids = self._extract_task_ids(result)
+            _LOGGER.info(
+                "sdk call complete action=%s result=%s task_ids=%s",
+                action,
+                self._short_repr(result),
+                task_ids,
+            )
+            if action in {"sdk_project_create", "sdk_project_open"} and isinstance(result, str):
+                self._set_context_session(result)
+            if action in {"sdk_project_close", "sdk_project_disconnect", "sdk_project_delete"}:
+                self._set_context_session(None)
+            return StepExecutionResult(value=result, task_ids=task_ids)
+
+    @staticmethod
+    def _extract_task_ids(result: Any) -> list[str]:
+        task_ids: list[str] = []
+
+        def add(candidate: Any) -> None:
+            if candidate is None:
+                return
+
+            task_id = candidate
+            if isinstance(candidate, dict):
+                task_id = candidate.get("taskID") or candidate.get("taskId") or candidate.get("id")
+            else:
+                if hasattr(candidate, "taskID"):
+                    task_id = getattr(candidate, "taskID")
+                elif hasattr(candidate, "taskId"):
+                    task_id = getattr(candidate, "taskId")
+            if task_id is None:
+                return
+
+            task_id_text = str(task_id).strip()
+            if not task_id_text:
+                return
+
+            try:
+                parsed = uuid.UUID(task_id_text)
+            except ValueError:
+                return
+
+            normalized = str(parsed)
+            if normalized and normalized not in task_ids:
+                task_ids.append(normalized)
+
+        if isinstance(result, (list, tuple, set)):
+            for item in result:
+                add(item)
+            return task_ids
+        if isinstance(result, dict):
+            add(result)
+            return task_ids
+        if isinstance(result, str):
+            _LOGGER.debug("ignoring scalar string result for task extraction action may be session/result text: %s", result)
+            return task_ids
+        add(result)
+        return task_ids
+
+    @staticmethod
+    def _short_repr(value: Any, *, max_len: int = 400) -> str:
+        text = repr(value)
+        if len(text) <= max_len:
+            return text
+        return f"{text[:max_len]}…(+{len(text)-max_len} chars)"
 
     def current_session(self) -> str | None:
         return self._session
