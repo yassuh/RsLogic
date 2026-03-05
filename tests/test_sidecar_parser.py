@@ -176,7 +176,7 @@ def test_ingest_parse_payload_includes_geodata(tmp_path: Path) -> None:
 
     service.s3 = _FakeS3()
     with patch("rslogic.sidecar_parser.Image.open", return_value=_FakeImageForIngestGps()):
-    payload = service._parse_payload(image_path, [], "img/image.jpg")
+        payload = service._parse_payload(image_path, [], "img/image.jpg")
 
     assert payload["geodata"]["latitude"] == 10.5
     assert payload["geodata"]["longitude"] == -20.0

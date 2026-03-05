@@ -1,0 +1,195 @@
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+}
+
+.toolbar > * {
+  border-right: 1px solid var(--line);
+  min-height: 24px;
+  padding: 0 8px;
+}
+
+.toolbar > *:last-child {
+  border-right: 0;
+}
+
+.toolbar select {
+  min-width: 10rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.compact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-row,
+.field-block {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  align-items: center;
+  min-height: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.field-block {
+  grid-template-columns: 1fr;
+}
+
+.field-block .field-label {
+  border-bottom: 1px solid var(--line);
+}
+
+.checkbox-row {
+  grid-template-columns: 8rem auto;
+}
+
+.checkbox-row input {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line);
+  justify-self: start;
+  position: relative;
+}
+
+.checkbox-row input:checked::after {
+  content: "X";
+  position: absolute;
+  inset: -1px 0 0 2px;
+}
+
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 100%;
+  padding: 0 8px;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.field-row input,
+.field-row select,
+.field-block textarea {
+  padding: 4px 8px;
+}
+
+.list-panel,
+.console-panel {
+  min-height: 0;
+  overflow: auto;
+}
+
+.list-panel {
+  flex: 1 1 auto;
+}
+
+.console-panel {
+  border-top: 1px solid var(--line);
+  padding: 6px 8px;
+  background: #050505;
+}
+
+.compact-console {
+  min-height: 6rem;
+  max-height: 12rem;
+}
+
+.directory-entry,
+.step-entry,
+.job-row,
+.client-row {
+  width: 100%;
+  display: grid;
+  align-items: center;
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.directory-entry {
+  grid-template-columns: 1fr auto;
+}
+
+.step-entry,
+.job-row,
+.client-row {
+  grid-template-columns: 1fr auto;
+}
+
+.directory-entry:hover,
+.step-entry:hover,
+.job-row:hover,
+.client-row:hover,
+.directory-entry.is-selected,
+.step-entry.is-selected,
+.job-row.is-selected,
+.client-row.is-selected {
+  background: #111111;
+}
+
+.progress-track {
+  height: 10px;
+  border-bottom: 1px solid var(--line);
+  background: #050505;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--fg);
+}
+
+.state-badge {
+  padding: 0 8px;
+  border-left: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.state-running {
+  color: var(--yellow);
+}
+
+.state-done,
+.state-idle {
+  color: var(--green);
+}
+
+.state-error {
+  color: var(--red);
+}
+
+.state-queued {
+  color: var(--fg);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.job-row-main,
+.client-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.job-row-meta,
+.client-row-meta {
+  color: var(--muted);
+}
+
+.job-row-progress {
+  display: grid;
+  grid-template-columns: 1fr 4rem;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-row-progress .progress-track {
+  border: 1px solid var(--line);
+  height: 8px;
+}

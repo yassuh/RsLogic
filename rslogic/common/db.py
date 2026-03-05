@@ -21,7 +21,7 @@ def _load_models():
             "editable dependency path before starting services."
         ) from exc
 
-    required = ("RsLogicImageAsset", "ImageGroup", "ImageGroupItem", "RsLogicProcessingJob")
+    required = ("RsLogicImageAsset", "ImageGroup", "ImageGroupItem", "RsLogicRealityScanJob")
     missing = [name for name in required if not hasattr(studio_db, name)]
     if missing:
         raise RuntimeError(f"studio_db package missing required models: {', '.join(missing)}")
@@ -44,7 +44,7 @@ class LabelDbStore:
         self.RsLogicImageAsset = self.models.RsLogicImageAsset
         self.ImageGroup = self.models.ImageGroup
         self.ImageGroupItem = self.models.ImageGroupItem
-        self.ProcessingJob = self.models.RsLogicProcessingJob
+        self.RealityScanJob = self.models.RsLogicRealityScanJob
 
     def session(self):
         return self.session_factory()
@@ -136,29 +136,38 @@ class LabelDbStore:
         self,
         *,
         job_id: str,
+        job_name: str | None,
         image_group_id: str | None,
         status: str,
         progress: float = 0.0,
         message: str | None = None,
-        filters: dict[str, Any] | None = None,
+        job_definition: dict[str, Any] | None = None,
         result_summary: dict[str, Any] | None = None,
     ) -> None:
         with self.session() as session:
-            job = session.get(self.ProcessingJob, job_id)
+            job = session.get(self.RealityScanJob, job_id)
             if job is None:
-                job = self.ProcessingJob(id=job_id, image_group_id=image_group_id, status=status, progress=progress)
-                if filters is not None:
-                    job.filters = filters
+                job = self.RealityScanJob(
+                    id=job_id,
+                    job_name=job_name,
+                    image_group_id=image_group_id,
+                    status=status,
+                    progress=progress,
+                )
+                if job_definition is not None:
+                    job.job_definition = job_definition
                 if message is not None:
                     job.message = message
                 if result_summary is not None:
                     job.result_summary = result_summary
                 session.add(job)
             else:
+                if job_name is not None:
+                    job.job_name = job_name
                 job.status = status
                 job.progress = progress
-                if filters is not None:
-                    job.filters = filters
+                if job_definition is not None:
+                    job.job_definition = job_definition
                 if message is not None:
                     job.message = message
                 if result_summary is not None:

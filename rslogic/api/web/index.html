@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RsLogic Orchestrator</title>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="ribbon ribbon-top">
+        <div class="ribbon-block">
+          <span class="brand-mark">RSLOGIC</span>
+          <span id="system-summary">ORCHESTRATOR WEB</span>
+        </div>
+        <div class="ribbon-block ribbon-actions">
+          <button id="refresh-all-button" type="button">REFRESH ALL</button>
+          <button id="select-first-client-button" type="button">FIRST ACTIVE CLIENT</button>
+        </div>
+      </header>
+
+      <main class="workspace-grid">
+        <section class="tile tile-upload">
+          <div class="tile-header">
+            <span>UPLOAD FOLDER</span>
+            <span id="upload-state-badge" class="state-badge state-idle">IDLE</span>
+          </div>
+          <div class="tile-body">
+            <div class="toolbar">
+              <button id="upload-path-up-button" type="button">UP</button>
+              <button id="upload-path-refresh-button" type="button">REFRESH</button>
+              <button id="upload-start-button" type="button">RUN UPLOAD</button>
+            </div>
+            <label class="field-row">
+              <span class="field-label">PATH</span>
+              <input id="upload-current-path" type="text" spellcheck="false">
+            </label>
+            <div id="upload-progress" class="progress-track"><div class="progress-fill"></div></div>
+            <div id="upload-directory-list" class="list-panel directory-list"></div>
+            <pre id="upload-operation-log" class="console-panel"></pre>
+          </div>
+        </section>
+
+        <section class="tile tile-ingest">
+          <div class="tile-header">
+            <span>INGEST WAITING</span>
+            <span id="ingest-state-badge" class="state-badge state-idle">IDLE</span>
+          </div>
+          <div class="tile-body">
+            <div class="form-grid compact-grid">
+              <label class="field-row">
+                <span class="field-label">GROUP</span>
+                <input id="ingest-group-name" type="text" spellcheck="false">
+              </label>
+              <label class="field-row">
+                <span class="field-label">LIMIT</span>
+                <input id="ingest-limit" type="number" min="1">
+              </label>
+            </div>
+            <div class="toolbar">
+              <button id="ingest-start-button" type="button">RUN INGEST</button>
+            </div>
+            <div id="ingest-progress" class="progress-track"><div class="progress-fill"></div></div>
+            <pre id="ingest-operation-log" class="console-panel"></pre>
+          </div>
+        </section>
+
+        <section class="tile tile-job-builder">
+          <div class="tile-header">
+            <span>JOB BUILDER</span>
+            <span id="job-submit-state" class="state-badge state-idle">READY</span>
+          </div>
+          <div class="tile-body tile-body-builder">
+            <div class="builder-top-grid">
+              <div class="builder-column builder-column-meta">
+                <div class="form-grid">
+                  <label class="field-row">
+                    <span class="field-label">JOB NAME</span>
+                    <input id="job-name" type="text" spellcheck="false">
+                  </label>
+                  <label class="field-row checkbox-row">
+                    <span class="field-label">AUTO ASSIGN</span>
+                    <input id="job-auto-assign" type="checkbox" checked>
+                  </label>
+                  <label class="field-row">
+                    <span class="field-label">TARGET CLIENT</span>
+                    <input id="job-target-client" type="text" spellcheck="false">
+                  </label>
+                  <label class="field-row">
+                    <span class="field-label">CLIENT ID</span>
+                    <input id="job-client-id" type="text" spellcheck="false">
+                  </label>
+                  <label class="field-row">
+                    <span class="field-label">GROUP ID</span>
+                    <input id="job-group-id" type="text" spellcheck="false">
+                  </label>
+                  <label class="field-row">
+                    <span class="field-label">GROUP NAME</span>
+                    <input id="job-group-name" type="text" spellcheck="false">
+                  </label>
+                </div>
+                <label class="field-block">
+                  <span class="field-label">METADATA JSON</span>
+                  <textarea id="job-metadata-json" spellcheck="false">{}</textarea>
+                </label>
+                <label class="field-block">
+                  <span class="field-label">IMPORT WORKFLOW JSON / PATH</span>
+                  <textarea id="job-workflow-source" spellcheck="false"></textarea>
+                </label>
+                <div class="toolbar">
+                  <button id="job-import-button" type="button">IMPORT</button>
+                  <button id="job-clear-button" type="button">CLEAR</button>
+                </div>
+              </div>
+
+              <div class="builder-column builder-column-steps">
+                <div class="toolbar">
+                  <select id="job-fragment-select"></select>
+                  <button id="job-fragment-append-button" type="button">APPEND CHAIN</button>
+                  <button id="job-fragment-replace-button" type="button">REPLACE CHAIN</button>
+                </div>
+                <div class="builder-split">
+                  <div class="step-list-panel">
+                    <div class="sub-header">CURRENT STEPS</div>
+                    <div id="job-step-list" class="list-panel step-list"></div>
+                    <div class="toolbar">
+                      <button id="job-step-up-button" type="button">MOVE UP</button>
+                      <button id="job-step-down-button" type="button">MOVE DOWN</button>
+                      <button id="job-step-remove-button" type="button">REMOVE</button>
+                    </div>
+                  </div>
+                  <div class="step-editor-panel">
+                    <div class="sub-header">STEP EDITOR</div>
+                    <div class="form-grid compact-grid">
+                      <label class="field-row">
+                        <span class="field-label">KIND</span>
+                        <select id="job-step-kind">
+                          <option value="sdk">sdk</option>
+                          <option value="file">file</option>
+                        </select>
+                      </label>
+                      <label class="field-row">
+                        <span class="field-label">ACTION PALETTE</span>
+                        <select id="job-action-select"></select>
+                      </label>
+                      <label class="field-row">
+                        <span class="field-label">ACTION</span>
+                        <input id="job-step-action" type="text" spellcheck="false">
+                      </label>
+                      <label class="field-row">
+                        <span class="field-label">DISPLAY</span>
+                        <input id="job-step-display-name" type="text" spellcheck="false">
+                      </label>
+                      <label class="field-row">
+                        <span class="field-label">TIMEOUT</span>
+                        <input id="job-step-timeout" type="number" min="0" value="600">
+                      </label>
+                    </div>
+                    <label class="field-block">
+                      <span class="field-label">PARAMS JSON</span>
+                      <textarea id="job-step-params" spellcheck="false">{}</textarea>
+                    </label>
+                    <pre id="job-builder-help" class="console-panel compact-console"></pre>
+                    <div class="toolbar">
+                      <button id="job-step-add-button" type="button">ADD TO END</button>
+                      <button id="job-step-insert-button" type="button">INSERT BEFORE</button>
+                      <button id="job-step-update-button" type="button">UPDATE SELECTED</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="builder-bottom-grid">
+              <div>
+                <div class="sub-header">REQUEST PREVIEW</div>
+                <pre id="job-preview" class="console-panel"></pre>
+              </div>
+              <div>
+                <div class="sub-header">SUBMIT</div>
+                <div class="toolbar">
+                  <button id="job-submit-button" type="button">DISPATCH JOB</button>
+                </div>
+                <pre id="job-submit-log" class="console-panel compact-console"></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tile tile-jobs">
+          <div class="tile-header">
+            <span>JOBS</span>
+            <span id="jobs-state-badge" class="state-badge state-idle">READY</span>
+          </div>
+          <div class="tile-body">
+            <div class="toolbar">
+              <button id="jobs-refresh-button" type="button">REFRESH JOBS</button>
+              <button id="job-detail-refresh-button" type="button">LOAD DETAIL</button>
+            </div>
+            <label class="field-row">
+              <span class="field-label">JOB ID</span>
+              <input id="job-detail-id" type="text" spellcheck="false">
+            </label>
+            <div id="jobs-list" class="list-panel jobs-list"></div>
+            <pre id="job-detail" class="console-panel"></pre>
+          </div>
+        </section>
+
+        <section class="tile tile-clients">
+          <div class="tile-header">
+            <span>CLIENTS</span>
+            <span id="clients-state-badge" class="state-badge state-idle">READY</span>
+          </div>
+          <div class="tile-body">
+            <div class="toolbar">
+              <button id="clients-refresh-button" type="button">REFRESH CLIENTS</button>
+              <button id="client-clear-queues-button" type="button">CLEAR QUEUES</button>
+            </div>
+            <label class="field-row">
+              <span class="field-label">CLIENT ID</span>
+              <input id="client-detail-id" type="text" spellcheck="false">
+            </label>
+            <div id="clients-list" class="list-panel clients-list"></div>
+            <pre id="client-detail" class="console-panel"></pre>
+          </div>
+        </section>
+      </main>
+
+      <footer class="ribbon ribbon-bottom">
+        <div class="ribbon-block">
+          <span id="bottom-status-text">READY</span>
+        </div>
+        <div class="ribbon-block ribbon-summary">
+          <span id="bottom-upload-status">UPLOAD:IDLE</span>
+          <span id="bottom-ingest-status">INGEST:IDLE</span>
+          <span id="bottom-clock">--:--:--</span>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="/static/js/app.js"></script>
+  </body>
+</html>

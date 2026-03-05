@@ -39,6 +39,7 @@ class Step(BaseModel):
 class JobRequest(BaseModel):
     """Input contract accepted by orchestrator API."""
 
+    job_name: str | None = None
     client_id: str | None = None
     target_client: str | None = None
     auto_assign: bool = False

@@ -790,10 +790,12 @@ class ClientRuntime:
                 )
                 self.db.upsert_processing_job(
                     job_id=job_id,
+                    job_name=str(payload.get("job_name", "")).strip() or None,
                     image_group_id=group_id,
                     status="rejected",
                     progress=0.0,
                     message="client is already busy",
+                    job_definition=None,
                 )
                 self._log.warning("client busy; rejected job_id=%s group_id=%s", job_id, group_id)
                 continue
@@ -965,6 +967,7 @@ class ClientRuntime:
 
     def _run_job(self, payload: dict) -> None:
         job_id = str(payload.get("job_id"))
+        job_name = str(payload.get("job_name", "")).strip() or None
         group_id = self._ensure_group_id(payload.get("group_id"))
         steps = payload.get("steps", [])
         last_step_result: dict[str, Any] | None = None
@@ -990,11 +993,12 @@ class ClientRuntime:
             self._log.debug("node guard started for job_id=%s", job_id)
             self.db.upsert_processing_job(
                 job_id=job_id,
+                job_name=job_name,
                 image_group_id=group_id,
                 status="running",
                 progress=0.0,
                 message=f"started by {self.client_id}",
-                filters={"steps": steps},
+                job_definition=None,
             )
             self._report_progress(
                 job_id=job_id,
@@ -1160,10 +1164,12 @@ class ClientRuntime:
                 step_project_status = self._query_project_status(sdk_client)
                 self.db.upsert_processing_job(
                     job_id=job_id,
+                    job_name=job_name,
                     image_group_id=group_id,
                     status="running",
                     progress=progress,
                     message=f"step {idx}/{len(steps)} ok: {step.action} ({step_time}s)",
+                    job_definition=None,
                     result_summary={
                         "last_result": last_step_result["result"] if last_step_result else None,
                         "last_result_type": last_step_result["result_type"] if last_step_result else type(step_result).__name__,
@@ -1224,10 +1230,12 @@ class ClientRuntime:
                 completion_payload["project_status"] = project_status
             self.db.upsert_processing_job(
                 job_id=job_id,
+                job_name=job_name,
                 image_group_id=group_id,
                 status="completed",
                 progress=100,
                 message="completed",
+                job_definition=None,
                 result_summary=completion_payload.get("result_summary"),
             )
             self.redis_bus.publish_result(self.client_id, completion_payload)
@@ -1236,10 +1244,12 @@ class ClientRuntime:
             failure_project_status = self._query_project_status(sdk_client)
             self.db.upsert_processing_job(
                 job_id=job_id,
+                job_name=job_name,
                 image_group_id=group_id,
                 status="failed",
                 progress=0,
                 message=str(exc),
+                job_definition=None,
             )
             self._report_progress(
                 job_id=job_id,

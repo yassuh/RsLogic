@@ -29,10 +29,12 @@ def _load_base():
 def upgrade() -> None:
     Base = _load_base()
     bind = op.get_bind()
-    Base.metadata.create_all(bind=bind, checkfirst=True)
+    tables = [table for table in Base.metadata.sorted_tables if table.name != "realityscan_jobs"]
+    Base.metadata.create_all(bind=bind, tables=tables, checkfirst=True)
 
 
 def downgrade() -> None:
     Base = _load_base()
     bind = op.get_bind()
-    Base.metadata.drop_all(bind=bind, checkfirst=True)
+    tables = [table for table in reversed(Base.metadata.sorted_tables) if table.name != "realityscan_jobs"]
+    Base.metadata.drop_all(bind=bind, tables=tables, checkfirst=True)

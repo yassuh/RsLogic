@@ -865,7 +865,7 @@ class ImageGroup(TimestampMixin, Base):
         back_populates="group",
         cascade="all, delete-orphan",
     )
-    processing_jobs: Mapped[list["RsLogicProcessingJob"]] = relationship(back_populates="image_group")
+    realityscan_jobs: Mapped[list["RsLogicRealityScanJob"]] = relationship(back_populates="image_group")
 
 
 class ImageGroupItem(Base):
@@ -903,28 +903,34 @@ class ImageGroupItem(Base):
     image: Mapped[RsLogicImageAsset] = relationship(back_populates="group_items")
 
 
-class RsLogicProcessingJob(TimestampMixin, Base):
-    __tablename__ = "processing_jobs"
+class RsLogicRealityScanJob(TimestampMixin, Base):
+    __tablename__ = "realityscan_jobs"
     __table_args__ = (
-        CheckConstraint("progress >= 0 AND progress <= 100", name="ck_processing_jobs_progress_range"),
+        CheckConstraint("progress >= 0 AND progress <= 100", name="ck_realityscan_jobs_progress_range"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     image_group_id: Mapped[str | None] = mapped_column(
         ForeignKey("image_groups.id", ondelete="SET NULL"),
         nullable=True,
     )
     status: Mapped[str] = mapped_column(String(50), index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
-    filters: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    job_definition: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    image_group: Mapped[ImageGroup | None] = relationship(back_populates="processing_jobs")
+    image_group: Mapped[ImageGroup | None] = relationship(back_populates="realityscan_jobs")
 
 
 ImageAsset = RsLogicImageAsset
-ProcessingJob = RsLogicProcessingJob
+RealityScanJob = RsLogicRealityScanJob
 
 
 Index("ix_accounts_name", Account.name)
@@ -1000,5 +1006,5 @@ Index("ix_rslogic_image_assets_location_gist", RsLogicImageAsset.location, postg
 Index("ix_rslogic_image_assets_drone_model", RsLogicImageAsset.drone_model)
 Index("ix_rslogic_image_assets_created_at", RsLogicImageAsset.created_at)
 Index("ix_image_group_items_image_id", ImageGroupItem.image_id)
-Index("ix_rslogic_processing_jobs_image_group_id", RsLogicProcessingJob.image_group_id)
-Index("ix_rslogic_processing_jobs_status", RsLogicProcessingJob.status)
+Index("ix_rslogic_realityscan_jobs_image_group_id", RsLogicRealityScanJob.image_group_id)
+Index("ix_rslogic_realityscan_jobs_status", RsLogicRealityScanJob.status)

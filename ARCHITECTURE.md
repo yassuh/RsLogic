@@ -1,181 +1,469 @@
-RsLogic execution architecture
+# RsLogic Codebase Architecture
 
-## Top-level packages
+## 1. System purpose
 
-- `rslogic/api/server.py` is the orchestrator control plane entrypoint (`rslogic-api`).
-  - Results consumer now normalizes and merges `task_state` / `project_status` fields from client payloads into `result_summary` by message timestamp, so `/jobs` and `/jobs/{job_id}` expose cumulative task snapshots and latest project state.
-- `rslogic/cli/upload.py` is the CLI upload entrypoint (`rslogic-upload`).
-- `rslogic/ingest.py` ingests objects from `drone-imagery-waiting` into `drone-imagery` and writes rows into `studio-db` (`rslogic-ingest`).
-  - `rslogic/client/runtime.py` is the standalone client worker (`rslogic-client`, `rslogic-worker`).
-  - Added per-step heartbeat result messages (default every 3s) while a long-running step is executing so Redis users and operators can see active progress with `step_index`, `step_action`, and elapsed time.
-  - Added structured runtime logs to stdout/stderr (job_id, step index/action, params preview, and per-step durations) for high-frequency local diagnosis.
-  - Step result payloads are now surfaced in Redis progress events (`result_summary`) so `sdk_project_status`, `sdk_project_command`, `align`, etc. return visible output in consumer logs without needing to inspect logs separately.
-  - Runtime now tracks SDK task IDs returned by `TaskHandle` and performs periodic `project.tasks` polling while a step heartbeat is active.
-  - Runtime now waits for the requested task IDs to become terminal (instead of requiring the poll payload length to match exactly), so polling responses that include unrelated tasks no longer block completion.
-  - SDK task completion checks now tolerate mixed payload shapes (`taskID` or `task_id`) and only fail when any requested task reports terminal error/errorCode.
-  - Progress/task visibility (`running_tasks`) is scoped to tasks whose task state is `started`, so the progress bar is tied to currently-running work rather than completed/failed snapshots.
-  - Scene creation commands (`sdk_new_scene`, `sdk_project_new_scene`) and `sdk_project_command` align are treated as long-running and are not bounded by the default 600s wait.
-  - Task snapshots and project status are attached to progress messages (`task_state`, `running_tasks`, `completed_tasks`, `project_status`) so TUI/operators can observe long-running reconstruction progress before a step finishes.
-  - Runtime heartbeat payload now also mirrors active job/task/project progress (`active_job_id`, `task_state`, `project_status`) every heartbeat interval so client supervision can read progress without consuming result queue traffic.
-  - `_report_progress` publishes explicit task/project payloads (`task_state`, `project_status`) in addition to `result_summary` to make progress consumers (including DB orchestration) resilient to schema changes.
-  - SDK availability is now optional at import time: the runtime starts even if `realityscan_sdk` is absent, and only fails SDK jobs with a clear error, allowing file-only jobs to execute.
-  - `file_stage` and other file steps no longer generate fake task IDs for plain path strings; task IDs are now derived only from UUID-like task handle values, so filesystem paths do not trigger long task waits.
-  - `StepExecutor.execute` now returns typed `StepExecutionResult` objects with explicit task IDs, preventing return-shape inference from deciding control flow.
-- `rslogic/client/rsnode_client.py` is the runtime bootstrap entrypoint used by the control TUI and CLI.
-  - now auto-discovers the repo root at startup and injects it into `sys.path`/`PYTHONPATH` when executed directly, so `python <repo>/rslogic/client/rsnode_client.py` works even when the venv interpreter has broken package discovery.
-- `rslogic/client/control_tui.py` is the new Python/Textual client control app (`rslogic-clientctl`):
-  - start/stop/restart/status management for `rslogic.client.rsnode_client`.
-  - auto-bootstrap mode: creates `.venv` with `uv venv` (fallback to stdlib `venv`) and installs `-e .` if missing/broken.
-  - `start` now verifies the spawned runtime remains alive after launch; if it exits immediately, the command returns a clear failure with captured startup stderr/stdout tail.
-  - bootstrap import verification is strict; runtime check now validates only the required base config modules and then launches from a deterministic root (`Path(__file__).resolve().parents[2]`) with explicit marker checks.
-  - live status cards for client process, rsnode process presence, heartbeat age/state, and per-client redis queue depth.
-  - live log tail panels from `logs/client/rslogic-client-stdout.log` and `logs/client/rslogic-client-stderr.log`.
-  - status grid displays live task/project heartbeat state (`task_state`, `project_status`, `active_job_id`) for operators while long-running SDK jobs are running.
-  - task display now renders per-task loading bars only for currently-started tasks, using heartbeat `running_tasks` and project progress fallback so active task progress is visible continuously.
-  - command actions: `tui` (default), `start`, `stop`, `restart`, `status` (for scripting/automation).
-  - determines repo root deterministically from script location (`Path(__file__).resolve().parents[2]`) and fails fast if expected markers are missing, rather than scanning alternate directories.
-  - client env contract is loaded with `python-dotenv` from `client.env` at repo root only (hardcoded location).
-  - `client.env` is the source of truth for all client settings: values are hydrated into `os.environ` before any client config import to ensure runtime/control paths are consistent.
-  - `RSLOGIC_CLIENT_ENV_FILE` is not used by the client runtime path anymore; the root `client.env` file is the single source of truth.
-  - runtime heartbeat includes `pid` and `host`, and control status now uses that heartbeat payload to recover and display the runtime PID when the local pid file is absent.
-  - status now clears a stale `logs/client/rslogic-client.pid` when the process does not exist and immediately relaunches a fresh client process, replacing the stale PID in the pid file.
-  - status output now includes `orphaned_pid_recovered`, `orphaned_pid`, and `auto_restarted` for visibility into this pid self-heal path.
-  - CLI `start`/`restart` run detached and close parent-side subprocess handles to avoid deallocator warnings.
-- `rslogic_clientctl.py` is the top-level launcher used by `rslogic-clientctl` script:
-  - resolves repo root from local script location (`Path(__file__).resolve().parent`) and inserts it into `PYTHONPATH` before importing package modules.
-  - fails fast with explicit errors when markers are missing instead of trying alternate source-layout fallbacks.
-  - imports `rslogic.client.control_tui` by fully-qualified module name and no longer depends on `from rslogic.client import control_tui` to avoid `ImportError` on nested installs.
-- Added canonical config ownership in `rslogic/config.py` (full config logic now lives in-package) and a tiny compatibility top-level `config.py` shim so legacy imports still work.
-- bootstrap checks in `rslogic.client.control_tui` focus on core runtime dependencies (`rslogic.config` and optionally `textual`) and can run without `RSLOGIC_ROOT`.
-- `rslogic/tui/app.py` provides the operator UX path (`rslogic-tui`).
-  - Implemented with `textual` for interactive terminal controls.
-  - Added status-panel action `Clear queued jobs` that clears Redis command/result queue entries for a configured client id directly through `RedisBus`, without calling orchestrator API endpoints.
-- Upload workflow uses a directory tree widget so operators select folders (directories only), avoiding large in-folder file listings.
-- `installer.bat` now boots a local uv + python3.14t virtual environment, installs this repo in editable mode, and points operators to `rslogic-clientctl` for process control.
-- Job contract artifacts:
-  - `job-contract.schema.json` documents the JSON payload expected by `POST /jobs` for `auto_assign`, routing, group fields, and step objects.
-  - `job-action-map.json` documents executable file and sdk actions and how `rslogic.client.executor.StepExecutor` dispatches them.
-  - Upload directory picker is initialized at the current workspace directory (`Path.cwd()`), which is typically the launched repository root.
-- `rslogic/common/*` contains shared Redis, S3, DB, and workflow schemas used by orchestrator and client.
-- `rslogic/client/executor.py` translates step actions into realityscan-sdk calls and file operations.
-  - New context-aware behavior now tracks `session` after `sdk_project_create/open` and supports placeholder expansion in step params (`{session}`, `{session_data_dir}`, `{job_id}`, `{staging_dir}`, etc.).
-  - Added file action for session imagery placement (`file_move_to_session_imagery`, `file_move_staging_to_session_imagery`, `file_move_to_session_folder`) to copy staged assets into `<working_root>/sessions/<session>/_data/Imagery` before project import.
-  - SDK parameter compatibility now normalizes `path` → `folder_path` for `add_folder`-style commands, so jobs using legacy job JSON keys continue to execute instead of failing on unexpected keyword arguments.
-  - SDK execution now fails fast with a clear message when SDK actions are submitted without the SDK dependency installed.
-  - `StepExecutor.execute` now returns `StepExecutionResult` for explicit step typing (`value` + `task_ids`), making it impossible for file path returns to be mistaken as tasks.
-- `rslogic/client/file_ops.py` handles staging/working directory movement for job-local assets.
-  - Client `file_stage` is image-only; it stages only image assets referenced in DB rows and does not download/pull sidecar objects to the local client.
-  - `file_stage` writes staged files directly into `staging_root` (no per-job/job-group subfolders), using DB asset IDs for stable unique filenames.
-  - `file_stage` now downloads assets in parallel with a thread pool (`CONFIG.s3.multipart_concurrency`, defaulting to CPU count) for faster staging throughput.
-  - staging is cache-first: existing files in `staging_root` are reused across jobs and skipped if already present; `file_stage` only fetches missing assets.
-  - `file_move_*` operations now copy from `stage-map.json` (if present) so only files touched by the most recent stage action are copied into working directories, while shared cache files remain in staging for future jobs.
-  - File copy steps (`file_move_staging_to_working`, `file_move_to_working`, `file_import_to_working`, `file_move_to_session_imagery`, and session imagery variants) default to `staging_root` when `working_dir` is not explicitly provided, and never to `staging_root/<job_id>`.
-- `rslogic/client/process_guard.py` keeps the local RealityScan process running when configured.
+RsLogic is a photogrammetry workflow stack built around five persistent boundaries:
 
-Auto-assignment:
-- `POST /jobs` accepts `target_client` or `client_id` for explicit routing.
-- If `auto_assign=true` and no explicit client is set, orchestrator selects the first active heartbeat client.
-- `GET /clients` lists heartbeat-active clients via `rslogic:clients:*:heartbeat`.
-- `rslogic/tui/app.py` can also dispatch workflow JSON directly to `POST /jobs`.
-- Ingest UX behavior:
-  - The TUI ingest action now logs a useful preflight state when no assets are inserted:
-    - number of ready images found in `drone-imagery-waiting`,
-    - number of unmatched objects in the bucket.
+1. Local operator filesystem
+2. S3-compatible object storage
+3. Postgres/PostGIS (`studio-db`)
+4. Redis command/result queues
+5. RealityScan / RSNode HTTP API
 
-## In/out contracts
+The codebase turns a local image folder into:
 
-### Upload
-- Input: local folder path.
-- Output: uploads only image files and sidecar files (`.xmp`, `.xml`, `.json`) to `CONFIG.s3.bucket_name` (`drone-imagery-waiting`).
-- Keying:
-  - image keys are `hash.extension`, where hash is the SHA-256 of image bytes.
-  - sidecar keys are the same base hash as its paired image, with the sidecar extension.
-  - if no matching sidecar file is found, the uploader generates a synthetic `*.json` sidecar from parsed image metadata so ingest still receives sidecar-style payloads.
-  - there is a single upload record per image so image and its sidecars are always uploaded together; duplicates were removed to avoid malformed payloads that dropped the whole upload batch.
-- No folder-like keys (no `/` path segments) are written to S3; organization happens in Postgres (`image_groups`, links, metadata).
-- Behavior:
-  - multi-threaded upload with configurable workers (defaults to `os.cpu_count()`),
-  - callback hook (`on_progress`) to drive UI loading bars,
-  - artifact pairing is directory + stem based,
-  - sidecar stem matching accepts both `image.ext` and `image.ext.sidecar` style file names (e.g. `image.jpg.xmp`) so these are treated as the same asset group and uploaded as sidecars.
-  - manifest file is written to `CONFIG.s3.manifest_dir`.
+1. Flat-keyed S3 objects in the waiting bucket
+2. Parsed image records in Postgres
+3. Image groups that can be targeted by jobs
+4. Redis-dispatched workflow jobs
+5. Client-side RealityScan execution with status fed back into Postgres and the FastAPI web UI at `/ui` plus client-local `rslogic-clientctl`
 
-### Ingest
-- Input: objects currently in waiting bucket.
-- Pairing: directory + stem anchor is used to match image↔sidecar.
-- If an image has no sidecar object, ingest synthesizes a `*.json` sidecar payload from parsed image EXIF/XMP so `metadata['sidecars']` is still populated.
-- Execution: multi-threaded image ingest workers (from `CONFIG.s3.multipart_concurrency`), with optional per-run `on_progress` callback.
-- Observability: ingest now emits explicit preflight/status messages (`Scanning waiting bucket...`, pair counts, worker count, and queue phase) so UI can show why startup is paused before the first rows appear.
-- Output:
-  - downloads each matched image and parses EXIF/sidecar,
-  - EXIF parser normalizes non-JSON values (for example IFDRational) into JSON-safe primitives and strips null bytes from text before writing metadata,
-  - complete EXIF is preserved under `metadata['exif']`, with:
-    - camera/make/model/focal length/size/software fields extracted into `RsLogicImageAsset` columns (`drone_model`, `camera_make`, `camera_model`, `focal_length_mm`, `image_width`, `image_height`, `software`, `captured_at`),
-    - GPS EXIF fields are extracted during ingest and mapped into `RsLogicImageAsset` geospatial columns:
-    - `latitude`
-    - `longitude`
-    - `altitude_m`
-    - `location` (`POINT` geometry, SRID 4326)
-  - creates `image_assets` rows and attaches optional `image_group`,
-  - moves images and sidecars into `drone-imagery` bucket using flat keys (no folder paths),
-  - each image is moved independently as soon as its worker completes, so assets appear in `drone-imagery` incrementally instead of waiting for batch completion,
-  - writes source/parsed metadata into the row metadata.
+The repo is split into three code layers:
 
-### Job orchestration
-- Orchestrator receives `JobRequest`:
-  - `client_id` or `target_client` route explicitly,
-  - `auto_assign` optional routing fallback to active clients,
-  - `group_id` or `group_name` attach images by group.
-- Each job is persisted in `RsLogicProcessingJob`, serialized, and pushed to target Redis command queue.
-- `GET /jobs`, `GET /jobs/{job_id}`, and `GET /clients` expose progress/state.
+- `rslogic/*`: the application layer
+- `rslogic/internal_tools/label-db/studio-db/*`: the database package RsLogic installs and imports as `studio_db`
+- `rslogic/internal_tools/rstool-sdk/*`: the RealityScan SDK wrapper RsLogic installs and imports as `realityscan_sdk`
 
-### Client runtime
-- Reads `RSLOGIC_CLIENT_ID` and waits for job envelopes from Redis.
-- Loads client environment from `client.env` at repo root by default; if `RSLOGIC_CLIENT_ENV_FILE` is set, that path is used instead.
-- Client startup is env-file authoritative: values are injected into process env before import-time config resolution, so shell-level env overrides are intentionally ignored for client semantics.
-  - Creates/maintains `RealityScanClient` and executes ordered steps:
-  - `kind=file` staging/mapping/move operations,
-  - `kind=sdk` sdk calls such as `sdk_node_connect_user`, `sdk_project_create`, `sdk_new_scene`, and command/project methods.
-  - publishes command result text from each completed step in redis `result_summary` (`result`, `result_type`, `result_preview`) so operators can see what each SDK call returned.
-- `sdk_project_create` and `sdk_project_open` are treated as session-establishing steps: when no task IDs are returned, runtime now requires a non-empty session string (from result or current executor context) before advancing, and uses that as the completion signal for the step.
-- The session-establishing contract is explicit in `rslogic/client/executor.py` via `SDK_SESSION_ACTIONS`, so completion semantics are endpoint-driven instead of inferred from return payload shape.
-- Runtime task extraction now only polls for explicit task identifiers (task handles / task payload objects); scalar UUID-like strings are no longer treated as task IDs so `project_create` session IDs are not mistaken for task IDs.
-- Added step-level logging for async-vs-sync completion decisions and timeout warnings in `rslogic/client/runtime.py` so a step that returns no task IDs is clearly marked as synchronous in logs.
-- Task completion is now compared using canonical UUID normalization so finished tasks are recognized regardless of taskID casing/format variations (e.g. uppercase UUID strings from SDK task payloads are treated the same as canonical lowercased IDs).
-  - when an SDK step returns a `TaskHandle`, runtime keeps an in-memory task registry keyed by `job_id` and keeps it updated by polling `project.tasks`; task + project status are included in heartbeat and completion payloads.
-- SDK task failure criteria now ignore `errorCode == 1` as a terminal non-fatal code; task failure is treated as:
-  - explicit terminal error states (`failed`, `error`, `aborted`, `canceled`, `cancelled`), or
-  - terminal task state with `errorCode` not in `{0,1}`.
-- Client SDK identity is normalized per runtime: if `RSLOGIC_RSTOOLS_SDK_CLIENT_ID` is missing or not a UUID, the client derives a stable UUID (`uuid5`) from it to satisfy RealityScan node client-id authorization.
-- Job `group_id` input is normalized before DB writes in the client: UUID-like IDs are used as-is, otherwise the value is treated as a group name and auto-created in `image_groups`.
-- Publishes heartbeat and result updates.
-- Rejects work when already busy with another job and reports `rejected`.
+## 2. End-to-end pipelines
 
-## Data objects
+### 2.1 Upload pipeline
 
-- `JobRequest` (`rslogic/common/schemas.py`):
-  - optional `client_id` / `target_client`,
-  - optional `auto_assign`,
-  - optional `group_id` or `group_name`,
-  - ordered `steps` (`action`, `kind`, `params`, `timeout_s`).
-- `Step` validates action/kind strings and is validated before execution.
+1. `rslogic.cli.upload` or `POST /ui/api/upload` in `rslogic.api.server` starts an `rslogic.api.web_ops.OperationRegistry` upload job.
+2. `OperationRegistry` runs `rslogic.upload_service.FolderUploader`.
+3. `FolderUploader` scans a local folder, groups images with sidecars by anchor/stem, hashes image bytes, and creates one `UploadRecord` per image.
+4. Images are uploaded to the waiting bucket with flat keys of the form `sha256.ext`.
+5. Matching sidecars are uploaded with the same hash stem.
+6. If no sidecar exists, `rslogic.sidecar_parser.parse_exif` is used to synthesize a JSON sidecar payload and upload that instead.
+7. A local upload manifest is written under `CONFIG.s3.manifest_dir`.
 
-## Process boundaries
+### 2.2 Ingest pipeline
 
-- Upload + ingest remain operator-driven entry points from TUI/CLI.
-- Orchestrator handles only queueing, routing, and status recording.
-- Client is responsible for filesystem + RealityScan SDK execution and reporting.
+1. `rslogic.ingest.IngestService` or `POST /ui/api/ingest` in `rslogic.api.server` starts ingest work.
+2. `IngestService` lists objects in the waiting bucket with `rslogic.common.s3.s3_object_keys`.
+3. It pairs flat image keys and flat sidecar keys into `IngestItem` objects.
+4. Each image is downloaded to a temp file.
+5. `rslogic.sidecar_parser.parse_exif`, `parse_sidecar`, and `extract_gps_from_exif` build the metadata payload.
+6. `rslogic.common.db.LabelDbStore.create_image_asset` inserts an `RsLogicImageAsset` row.
+7. If a group name was supplied, `LabelDbStore.get_or_create_group` and `attach_asset_to_group` connect the asset to an `ImageGroup`.
+8. The image and any sidecars are moved from the waiting bucket to the processed bucket.
+9. `LabelDbStore.update_asset_state` records move/completion metadata in the asset's `extra` JSON.
 
-## Operational notes
+Important current behavior:
 
-- `config.py` labels:
-  - waiting bucket: `LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"`
-  - processed bucket: `LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"`
-  - label DB path is resolved from the installed `studio_db` package and points at that package root.
-- `studio-db` is consumed as an installed dependency (`studio-db>=0.1.0`), so DB models are imported via the `studio_db` module instead of repository file-path probing.
-- Heartbeats are written to redis key `rslogic:clients:{client_id}:heartbeat`.
-- `rslogic-clientctl` is the preferred control entrypoint on remote clients and replaces direct `start-rslogic-client.bat`/`stop-rslogic-client.bat` usage.
-- Client shutdown path:
-  - signal handlers in `ClientRuntime`,
-  - best-effort stop for tracked rsnode process,
-  - active loop exits when `stop_event` is set.
+- S3 object keys stay flat. Grouping happens in Postgres, not in bucket prefixes.
+- Ingest computes camera-derived values and stores them inside `metadata_json["derived"]`.
+- The `RsLogicImageAsset` table has dedicated camera columns, but current ingest code does not populate those columns directly.
+
+### 2.3 Job dispatch pipeline
+
+1. `rslogic.api.server` exposes `POST /jobs`.
+2. The request body is validated as `rslogic.common.schemas.JobRequest`.
+3. If `group_name` is provided, the API resolves or creates the corresponding `ImageGroup`.
+4. The API persists a `RsLogicRealityScanJob` row with status `queued`.
+5. The API publishes a Redis job envelope through `rslogic.common.redis_bus.RedisBus`.
+6. A target client pulls the job from its Redis command queue.
+
+### 2.4 Client execution pipeline
+
+1. `rslogic.client.runtime.ClientRuntime` loads `client.env` at import time and becomes the long-running worker.
+2. It ensures RSNode is running through `rslogic.client.process_guard.RsNodeProcess`.
+3. It creates:
+   - a `RedisBus`
+   - a `LabelDbStore`
+   - a `FileExecutor`
+   - optionally a `RealityScanClient`
+4. For each incoming job it builds a `StepExecutor`.
+5. `StepExecutor` executes each `Step`:
+   - `kind="file"` routes to `FileExecutor`
+   - `kind="sdk"` routes to `RealityScanClient.node` or `RealityScanClient.project`
+6. If an SDK step returns task handles, `ClientRuntime` polls `project.tasks()` and `project.status()` until the requested task IDs are terminal.
+7. Progress, task state, project state, and final results are published back to Redis.
+8. The client also updates the `RsLogicRealityScanJob` row in Postgres.
+
+### 2.5 Result consumption and operator visibility
+
+1. `rslogic.api.server` runs a background Redis result consumer.
+2. Incoming client updates are merged into `RsLogicRealityScanJob.result_summary`.
+3. `GET /jobs` and `GET /jobs/{job_id}` expose merged task/project state.
+4. `rslogic.api.server` also serves `/ui`, the static web assets, upload/ingest operation endpoints, job-builder metadata/import endpoints, and client queue/status endpoints consumed by the browser UI.
+5. The browser web UI is the primary operator surface for upload, ingest, job building, job status, and orchestrator-side client monitoring.
+6. The job builder intentionally gives the `CURRENT STEPS` rail more horizontal space than the step editor so longer chained workflows remain readable without collapsing into the preview pane.
+7. `rslogic.client.control_tui.ClientControlTUI` remains a client-local supervisor by reading:
+   - process PID/log files
+   - Redis heartbeat
+   - client queue depth
+
+## 3. Runtime boundaries and owned state
+
+| Boundary | Owner modules | State stored there |
+| --- | --- | --- |
+| Local upload folder | `rslogic.upload_service`, `rslogic.api.server`, `rslogic.api.web/*` | Source images and optional sidecars |
+| Waiting bucket | `rslogic.upload_service`, `rslogic.ingest` | Raw uploaded image and sidecar objects |
+| Processed bucket | `rslogic.ingest`, `rslogic.client.file_ops` | Ingested image payloads used for staging |
+| Postgres/PostGIS | `rslogic.common.db`, `studio_db.models` | Image assets, groups, RealityScan jobs, plus labeling domain tables |
+| Redis | `rslogic.common.redis_bus`, `rslogic.api.server`, `rslogic.client.runtime`, `rslogic.client.control_tui` | Job command queues, result queues, client heartbeats |
+| Client working root | `rslogic.client.file_ops`, `rslogic.client.runtime` | `staging/`, `working/`, `sessions/<session>/_data/`, session state JSON |
+| RealityScan/RSNode HTTP API | `realityscan_sdk` | Project session lifecycle, async task execution, project progress |
+
+## 4. Repository map
+
+### 4.1 Top-level files
+
+| Path | Role |
+| --- | --- |
+| `pyproject.toml` | Package definition, editable internal dependencies, CLI entry points |
+| `config.py` | Backward-compatible shim exporting `rslogic.config.CONFIG` |
+| `rslogic_clientctl.py` | Top-level bootstrap launcher for the client control TUI |
+| `ARCHITECTURE.md` | This document |
+| `installer.bat` | Windows bootstrap/install helper for client machines |
+| `job-contract.schema.json` | JSON Schema for external job payloads |
+| `job-action-map.json` | Human-readable map of supported job step names/actions |
+| `job-example.json` | Minimal sample job |
+| `full_job_restarted.json` | Larger end-to-end example job |
+
+### 4.2 Application packages
+
+| Path | Role |
+| --- | --- |
+| `rslogic/config.py` | Canonical runtime configuration loader |
+| `rslogic/common/schemas.py` | Shared workflow/job models |
+| `rslogic/common/db.py` | Postgres access wrapper around `studio_db` models |
+| `rslogic/common/redis_bus.py` | Redis queue, heartbeat, and client queue-depth abstraction |
+| `rslogic/common/s3.py` | Thin S3 helpers used by upload/ingest/staging |
+| `rslogic/sidecar_parser.py` | EXIF/XMP/XML/JSON metadata parsing |
+| `rslogic/upload_service.py` | Local-folder-to-waiting-bucket uploader |
+| `rslogic/ingest.py` | Waiting-bucket-to-DB-and-processed-bucket ingester |
+| `rslogic/api/server.py` | FastAPI orchestrator, `/ui` web app, static asset host, upload/ingest op API, job/client API, and Redis result consumer |
+| `rslogic/api/web_models.py` | Pydantic request models for the web UI upload/ingest/workflow-import endpoints |
+| `rslogic/api/web_ops.py` | Background upload/ingest operation tracking for the web UI |
+| `rslogic/api/web/index.html` | Operator web UI document shell |
+| `rslogic/api/web/static/css/*` | Web UI visual system, layout, and dense tile styling |
+| `rslogic/api/web/static/js/*` | Browser-side upload, ingest, jobs, clients, and job-builder behavior |
+| `rslogic/client/executor.py` | Per-step dispatcher for file and SDK steps |
+| `rslogic/client/file_ops.py` | Group staging and file copy operations |
+| `rslogic/client/process_guard.py` | RSNode process supervision |
+| `rslogic/client/runtime.py` | Long-running client worker |
+| `rslogic/client/control_tui.py` | Client supervisor TUI and non-interactive commands |
+| `rslogic/client/status_render.py` | Shared task/project/heartbeat render helpers used by client control surfaces |
+| `rslogic/client/rsnode_client.py` | Runtime bootstrap entry point |
+| `rslogic/tui/app.py` | Deprecated shim that forwards legacy orchestrator TUI entry paths to the web launcher |
+| `rslogic/tui/launcher.py` | `rslogic-tui` bootstrap that re-execs with `PYTHON_GIL=0` / `-X gil=0` and launches the FastAPI web UI |
+| `rslogic/tui/job_builder.py` | RealityScan job-draft presets, validation, and step editing helpers |
+| `rslogic/cli/upload.py` | CLI wrapper around `FolderUploader` |
+| `rslogic/db/migrate.py` | Alembic wrapper for `studio-db` migrations |
+| `rslogic/jobs/worker.py` | Alias entry point to the client runtime |
+
+### 4.3 Internal editable dependencies
+
+| Path | Role |
+| --- | --- |
+| `rslogic/internal_tools/label-db/studio-db/*` | SQLAlchemy/PostGIS schema package imported as `studio_db` |
+| `rslogic/internal_tools/rstool-sdk/*` | HTTP SDK package imported as `realityscan_sdk` |
+
+### 4.4 Tests
+
+| Path | Role |
+| --- | --- |
+| `tests/test_upload_service.py` | Upload keying, sidecar pairing, progress callback, synthetic sidecar coverage |
+| `tests/test_ingest_service.py` | Ingest progress callback and S3 move/DB wiring coverage |
+| `tests/test_sidecar_parser.py` | EXIF/XMP normalization and GPS extraction coverage |
+| `tests/test_api_web.py` | FastAPI `/ui` shell, workflow import, directory listing, and client endpoint coverage |
+| `tests/test_web_ops.py` | `OperationRegistry` success/error state transition coverage |
+| `tests/test_status_render.py` | Client task/project status formatting coverage |
+| `tests/test_redis_bus.py` | RedisBus heartbeat and queue-depth helper coverage |
+| `tests/test_tui_launcher.py` | `rslogic-tui` GIL bootstrap and web-launch delegation coverage |
+| `rslogic/internal_tools/rstool-sdk/tests/*` | SDK public API and resource exposure smoke tests |
+
+## 5. Application class catalog (`rslogic/*`)
+
+### 5.1 Configuration classes (`rslogic/config.py`)
+
+| Class | Type | Role | Consumed by |
+| --- | --- | --- | --- |
+| `S3Config` | dataclass | Waiting/processed bucket names, endpoint, concurrency, manifest settings | Upload, ingest, file staging |
+| `QueueConfig` | dataclass | Redis queue config and polling defaults | API, runtime, client control |
+| `ControlConfig` | dataclass | Command/result queue keys and timeouts | API, runtime, client control |
+| `RsToolsConfig` | dataclass | RSNode executable and RealityScan SDK connection settings | Runtime, client control |
+| `LabelDbConfig` | dataclass | DB URL and Alembic location for `studio_db` | API, ingest, runtime, migrate |
+| `ApiConfig` | dataclass | Base URL for local web/API callers | Web UI launcher, API callers |
+| `LogConfig` | dataclass | Shared log formatting/level defaults | Service startup |
+| `AppConfig` | dataclass | Typed aggregate of all config sections | Entire application via `CONFIG` |
+
+### 5.2 Shared contract and infrastructure classes
+
+| File | Class | Type | Role | Main callers |
+| --- | --- | --- | --- | --- |
+| `rslogic/common/schemas.py` | `Step` | Pydantic model | Normalized workflow step (`kind`, `action`, `params`, `timeout_s`) | API, runtime |
+| `rslogic/common/schemas.py` | `JobRequest` | Pydantic model | External job submission contract | API, web job-builder submit flow |
+| `rslogic/common/schemas.py` | `JobProgress` | dataclass | Lightweight progress container; not central to current orchestration path | Shared utilities / future progress handling |
+| `rslogic/api/web_models.py` | `UploadStartRequest` | Pydantic model | Validates `POST /ui/api/upload` input | Web upload flow |
+| `rslogic/api/web_models.py` | `IngestStartRequest` | Pydantic model | Validates `POST /ui/api/ingest` input | Web ingest flow |
+| `rslogic/api/web_models.py` | `WorkflowImportRequest` | Pydantic model | Validates server-side workflow import input | Web job-builder import flow |
+| `rslogic/common/db.py` | `LabelDbStore` | dataclass-backed service object | Imports `studio_db`, opens SQLAlchemy sessions, and encapsulates RsLogic DB operations | API, ingest, file staging, runtime |
+| `rslogic/common/redis_bus.py` | `RedisBus` | service object | Publishes/pops command and result payloads, heartbeats, and client queue-depth lookups | API, runtime, client control |
+
+`LabelDbStore` is the main seam between `rslogic/*` and the database package. Its explicit RsLogic operations are:
+
+- `get_or_create_group`
+- `create_image_asset`
+- `attach_asset_to_group`
+- `update_asset_state`
+- `upsert_processing_job`
+- `image_assets_for_group`
+
+### 5.3 Upload and ingest classes
+
+| File | Class | Type | Role | Upstream -> downstream |
+| --- | --- | --- | --- | --- |
+| `rslogic/upload_service.py` | `UploadRecord` | dataclass | One image plus its resolved sidecars and target S3 keys | `FolderUploader` -> S3 uploads |
+| `rslogic/upload_service.py` | `FolderUploader` | service object | Scans folders, hashes images, pairs sidecars, uploads files, writes manifest | Web UI/CLI -> waiting bucket |
+| `rslogic/ingest.py` | `IngestItem` | dataclass | One waiting-bucket image plus its matched sidecar keys | `_pair_objects` -> `_ingest_one` |
+| `rslogic/ingest.py` | `IngestService` | service object | Pairs waiting objects, parses metadata, inserts DB rows, moves objects to processed bucket | Web UI/CLI -> DB + processed bucket |
+| `rslogic/tui/job_builder.py` | `RealityScanJobDraft` | dataclass | In-memory RealityScan job builder with chainable workflow fragments, action catalog helpers, step editing, request validation, and preview formatting | Web job-builder inputs -> API job payload |
+
+Important helper modules that these classes depend on:
+
+- `rslogic.common.s3`: `make_client`, `s3_object_keys`, `copy_object`, `move_object`
+- `rslogic.sidecar_parser`: `_to_json_value`, `parse_exif`, `parse_sidecar`, `extract_gps_from_exif`
+
+### 5.4 Orchestrator and client execution classes
+
+| File | Class | Type | Role | Main connections |
+| --- | --- | --- | --- | --- |
+| `rslogic/client/executor.py` | `StepExecutionResult` | dataclass | Typed step result with raw value plus extracted task IDs | `StepExecutor` -> `ClientRuntime` |
+| `rslogic/client/executor.py` | `StepExecutor` | service object | Dispatches one `Step` to file or SDK handlers and maintains session-aware string templating context | `ClientRuntime` -> `FileExecutor` / `RealityScanClient` |
+| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets from processed storage into staging and copies staged files into working/session directories | `StepExecutor` -> filesystem + S3 + DB |
+| `rslogic/client/process_guard.py` | `RsNodeProcess` | service object | Ensures RSNode is running, reuses external process if present, stops managed process on shutdown | `ClientRuntime` |
+| `rslogic/client/runtime.py` | `ClientRuntime` | service object | Long-running client: queue polling, job locking, step execution, task polling, heartbeat publishing, DB/result updates | Redis + DB + filesystem + RSNode + RealityScan SDK |
+
+How these classes are piped together:
+
+1. `ClientRuntime` receives a Redis job envelope.
+2. `ClientRuntime` builds `Step` objects.
+3. `ClientRuntime` creates one `StepExecutor`.
+4. `StepExecutor` calls `FileExecutor` for `kind="file"` work.
+5. `StepExecutor` calls `RealityScanClient.node` or `.project` for `kind="sdk"` work.
+6. `ClientRuntime` interprets `StepExecutionResult.task_ids` and polls async SDK tasks until terminal.
+
+### 5.5 Web UI and process-control classes
+
+| File | Class | Type | Role | Talks to |
+| --- | --- | --- | --- | --- |
+| `rslogic/api/web_ops.py` | `OperationState` | dataclass | In-memory status record for one background upload/ingest request | `OperationRegistry` -> `/ui/api/operations/*` |
+| `rslogic/api/web_ops.py` | `OperationRegistry` | service object | Starts upload/ingest background threads and exposes recent operation snapshots to the web UI | `FolderUploader`, `IngestService`, `rslogic.api.server` |
+| `rslogic/tui/app.py` | module shim | compatibility module | Deprecated legacy orchestrator entry path that forwards to the web launcher | `rslogic.tui.launcher` |
+| `rslogic/tui/launcher.py` | module functions | bootstrap module | Re-execs the web launcher process with `PYTHON_GIL=0` so SQLAlchemy C extensions do not silently re-enable the GIL on free-threaded Python | `rslogic-tui` entry point |
+| `rslogic/client/control_tui.py` | `_LogTailer` | helper class | Incremental log-file tail reader for client stdout/stderr panels | Client log files |
+| `rslogic/client/control_tui.py` | `ClientProcessManager` | service object | Starts/stops/restarts the runtime, tracks PID file, reads Redis heartbeat, inspects queue depth and logs | Runtime process, Redis, local logs |
+| `rslogic/client/control_tui.py` | `ClientControlTUI` | Textual app | Supervisory UI for one client machine | `ClientProcessManager` |
+
+### 5.6 Modules without classes but with important ownership
+
+| File | Main role |
+| --- | --- |
+| `rslogic/api/server.py` | FastAPI app, `/ui` shell, static asset serving, upload/ingest operation endpoints, job-builder metadata/import endpoints, job/client routes, and background result consumer |
+| `rslogic/client/rsnode_client.py` | Ensures repo root on `sys.path`, then calls runtime `main()` |
+| `rslogic/cli/upload.py` | Minimal argparse upload wrapper |
+| `rslogic/db/migrate.py` | Minimal Alembic wrapper |
+| `rslogic/jobs/worker.py` | Alias worker entry point to runtime `main()` |
+| `config.py` | Compatibility export for `CONFIG` |
+| `rslogic_clientctl.py` | Standalone launcher that imports `rslogic.client.control_tui` |
+
+## 6. Database package model catalog (`studio_db`)
+
+### 6.1 Package shape
+
+- `rslogic/internal_tools/label-db/studio-db/models.py` contains the schema.
+- `rslogic/internal_tools/label-db/studio-db/studio_db.py` re-exports `models.py` so the installed package can be imported as `studio_db`.
+- `rslogic/internal_tools/label-db/studio-db/migrations/*` contains Alembic history.
+- Clean-db bootstrap relies on the migrations themselves, not the current ORM state: `b7912b7a0663_create_model_tables.py` creates the shared DPC model tables but intentionally leaves `realityscan_jobs` to later revisions, and `a2d4f6e9b8c1_add_rslogic_job_and_image_tables.py` explicitly creates historical `processing_jobs` plus the legacy `image_assets.dataset_id` column expected by follow-on revisions.
+- `models.py` also exposes compatibility alias `ImageAsset = RsLogicImageAsset`.
+
+### 6.2 Base classes and enums
+
+| Class | Kind | Role |
+| --- | --- | --- |
+| `Base` | SQLAlchemy declarative base | Root base class for all ORM models |
+| `TimestampMixin` | mixin | Shared `created_at` and `updated_at` columns |
+| `LayerSelectionMode` | enum | Project-layer selection policy |
+| `LayerSourceType` | enum | Raster/layer source origin |
+| `WorkOrderStatus` | enum | Lifecycle state for work orders |
+| `WorkOrderSubmissionStatus` | enum | Lifecycle state for work-order submissions |
+| `LabelGeometryStyle` | enum | Label geometry representation type |
+| `CurveType` | enum | Edge curve interpolation type |
+| `CoordinateSpace` | enum | Distinguishes geographic vs pixel-space AOI/geometry |
+
+### 6.3 Studio domain models
+
+These are the generic labeling/project models that exist alongside RsLogic's image/job tables.
+
+| Model | Role | Key relationships |
+| --- | --- | --- |
+| `Account` | Top-level owner/account record | Has many `Profile`, `Project`, `ProjectLayer`, `WorkOrder`, `Label`, `WorkOrderSubmission` |
+| `Profile` | User/profile inside an account | Belongs to `Account`; referenced as creator/submitted-by on other models |
+| `Project` | Labeling/annotation project | Belongs to `Account`; optional creator `Profile`; has many `ProjectLayer`, `WorkOrder`, `Label` |
+| `ProjectLayer` | A visual/source layer inside a project | Belongs to `Project` and `Account`; optional `created_by_profile`; optional FK to `RsLogicImageAsset` through `image_asset_id`; has many `WorkOrder` and `Label` |
+| `WorkOrder` | Work unit tied to a project tile/layer | Belongs to `Project`, `ProjectLayer`, `Account`; has many `WorkOrderSubmission` and `WorkOrderLabel` |
+| `WorkOrderSubmission` | One submission attempt for a work order | Belongs to `WorkOrder`, `Project`, `ProjectLayer`, `Account`; has many `Label` via `origin_submission` |
+| `Label` | Label geometry record | Belongs to `Project`, `ProjectLayer`, `Account`; optional `origin_submission`; has many `LabelNode`, `LabelEdge`, `WorkOrderLabel` |
+| `LabelNode` | Node/point inside a label geometry graph | Belongs to `Label` |
+| `LabelEdge` | Edge between two `LabelNode` records | Belongs to `Label`; links `from_node` and `to_node` |
+| `WorkOrderLabel` | Join table between `WorkOrder` and `Label` with overlap metadata | Belongs to `WorkOrder` and `Label` |
+
+Current RsLogic usage of the studio domain models:
+
+- `ProjectLayer` is the only generic studio model that directly references an RsLogic table (`RsLogicImageAsset`).
+- The main RsLogic runtime does not currently create or update `Account`, `Profile`, `Project`, `WorkOrder`, `WorkOrderSubmission`, `Label`, `LabelNode`, `LabelEdge`, or `WorkOrderLabel`.
+- Those models are present because `studio_db` is a broader labeling schema package that RsLogic shares.
+
+### 6.4 RsLogic-specific database models
+
+| Model | Role | Key relationships | Explicit RsLogic callers |
+| --- | --- | --- | --- |
+| `RsLogicImageAsset` | Canonical ingested image record | Has many `ProjectLayer` and `ImageGroupItem`; stores object locator, metadata JSON, geo columns, and extra state | `LabelDbStore.create_image_asset`, `update_asset_state`; `FileExecutor.stage_group`; ingest pipeline |
+| `ImageGroup` | Named collection of image assets used as workflow input | Has many `ImageGroupItem` and `RsLogicRealityScanJob` | `LabelDbStore.get_or_create_group`; API job creation; ingest; client runtime group normalization |
+| `ImageGroupItem` | Join table between `ImageGroup` and `RsLogicImageAsset` | Belongs to one group and one image | `LabelDbStore.attach_asset_to_group`; `image_assets_for_group`; file staging |
+| `RsLogicRealityScanJob` | Persisted RealityScan workflow/job status record | Optional FK to `ImageGroup`; stores `job_name`, explicit `job_definition`, status, progress, message, and result summary | API create/list/status/result consumer; client runtime status updates |
+
+How the RsLogic-specific models are piped:
+
+1. `IngestService` inserts `RsLogicImageAsset`.
+2. Optional ingest grouping creates/looks up `ImageGroup`.
+3. `attach_asset_to_group` inserts `ImageGroupItem`.
+4. API submission creates `RsLogicRealityScanJob`.
+5. Runtime and API result-consumer continuously update `RsLogicRealityScanJob`.
+6. `FileExecutor.stage_group` reads `ImageGroupItem` -> `RsLogicImageAsset` to download assets for job execution.
+
+## 7. RealityScan SDK package catalog (`realityscan_sdk`)
+
+### 7.1 Package shape
+
+- Package-root public export is only `RealityScanClient`.
+- `realityscan_sdk/client.py` contains the HTTP client object.
+- `realityscan_sdk/resources/node.py` and `resources/project.py` expose the two API groups RsLogic uses.
+- `realityscan_sdk/models/*` contains the parsed response dataclasses.
+
+### 7.2 Classes
+
+| Class | Kind | Role | Used by RsLogic |
+| --- | --- | --- | --- |
+| `ClientConfig` | dataclass | Stores base URL, client ID, app token, timeout, TLS, user agent | Built inside `RealityScanClient` |
+| `RealityScanClient` | service object | Owns `httpx.Client`, session header management, request helper, and resource groups | Instantiated by `ClientRuntime`; called through `StepExecutor` |
+| `NodeAPI` | resource object | Wraps `/node/*` endpoints such as `connect_user`, `disconnect_user`, `status`, and `projects` | `StepExecutor` resolves `sdk_node_*` actions here |
+| `ProjectAPI` | resource object | Wraps `/project/*` lifecycle, status, tasks, generic command calls, file endpoints, and many convenience methods | `StepExecutor` resolves `sdk_project_*` and `sdk_*` actions here |
+| `RSNodeConnectionInfo` | dataclass | Parsed `/node/connection` payload | Available to node calls; not central to current runtime loop |
+| `RSProjectInformation` | dataclass | Parsed project listing entry | Available to node/project discovery |
+| `RSNodeStatus` | dataclass | Parsed node status payload | Available to status calls |
+| `RSProjectStatus` | dataclass | Parsed project progress payload | Polled by `ClientRuntime` for heartbeats and task waits |
+| `TaskHandle` | dataclass | Minimal async task handle containing `taskID` | Returned by many `ProjectAPI` command methods; converted into task polling |
+| `TaskStatus` | dataclass | Parsed task status payload | Polled by `ClientRuntime` through `project.tasks()` |
+
+### 7.3 What RsLogic actually uses from the SDK
+
+The RsLogic runtime mainly depends on these `ProjectAPI` and `NodeAPI` capabilities:
+
+- `node.connect_user()`
+- `node.disconnect_user()`
+- `project.create()`
+- `project.open()`
+- `project.close()`
+- `project.disconnect()`
+- `project.save()`
+- `project.new_scene()`
+- `project.status()`
+- `project.tasks()`
+- `project.command(...)`
+- dynamic method resolution for other `sdk_project_*` commands such as `sdk_project_add_folder`
+
+`ProjectAPI` exposes many more command wrappers than RsLogic currently hard-codes. `StepExecutor` intentionally supports dynamic `sdk_project_*` and `sdk_node_*` action names so new SDK methods can be reached without adding a new dispatcher branch for each one.
+
+## 8. Wiring and dependency tree
+
+### 8.1 Upstream-to-downstream ownership
+
+| Upstream | Downstream | Why |
+| --- | --- | --- |
+| Browser web UI at `/ui` | `rslogic.api.server` | Drive upload, ingest, job building, job status, and orchestrator-side client monitoring |
+| `rslogic.api.server` | `OperationRegistry` | Run background upload and ingest work for the web UI |
+| `OperationRegistry` | `FolderUploader` | Upload local folders into the waiting bucket |
+| `OperationRegistry` | `IngestService` | Move waiting-bucket objects into processed storage and DB |
+| `rslogic.api.server` | `LabelDbStore` | Persist `RsLogicRealityScanJob` records and resolve groups |
+| `rslogic.api.server` | `RedisBus` | Dispatch job envelopes and consume result updates |
+| `ClientRuntime` | `RsNodeProcess` | Ensure RSNode is available before/while executing jobs |
+| `ClientRuntime` | `StepExecutor` | Execute validated workflow steps |
+| `StepExecutor` | `FileExecutor` | Resolve/stage/copy image files for file steps |
+| `StepExecutor` | `RealityScanClient` | Execute SDK/node/project commands |
+| `FileExecutor` | `LabelDbStore.image_assets_for_group` | Resolve group assets to download |
+| `FileExecutor` | `common.s3.make_client` | Download processed objects to local staging |
+| `IngestService` | `sidecar_parser` | Build parsed metadata payloads |
+| `ClientControlTUI` | `ClientProcessManager` | Process lifecycle, heartbeat, logs, queue visibility |
+
+### 8.2 Storage flow summary
+
+```text
+local folder
+  -> FolderUploader
+  -> waiting bucket
+  -> IngestService
+  -> RsLogicImageAsset / ImageGroup / ImageGroupItem
+  -> processed bucket
+  -> API job submission
+  -> Redis command queue
+  -> ClientRuntime
+  -> FileExecutor staging + RealityScan SDK execution
+  -> Redis result queue + Redis heartbeat
+  -> API result consumer
+  -> RsLogicRealityScanJob.result_summary
+  -> FastAPI `/ui` web UI / client control TUI / API clients
+```
+
+## 9. Entry points and scripts
+
+| Script name | Target | Purpose |
+| --- | --- | --- |
+| `rslogic-upload` | `rslogic.cli.upload:main` | Upload a local folder to the waiting bucket |
+| `rslogic-ingest` | `rslogic.ingest:main` | Ingest waiting-bucket objects into DB and processed bucket |
+| `rslogic-api` | `rslogic.api.server:main` | Run the orchestrator API and `/ui` web app |
+| `rslogic-client` | `rslogic.client.rsnode_client:main` | Run the client runtime |
+| `rslogic-worker` | `rslogic.jobs.worker:main` | Alias for the client runtime |
+| `rslogic-clientctl` | `rslogic_clientctl:main` | Run the client control TUI or client process commands |
+| `rslogic-tui` | `rslogic.tui.launcher:main` | Run the FastAPI-backed operator web launcher with `PYTHON_GIL=0`; serves `/ui` |
+| `rslogic-migrate` | `rslogic.db.migrate:main` | Apply `studio_db` migrations |
+
+## 10. Test-only helper classes
+
+These are not production architecture, but they are part of the repo and explain the test scaffolding.
+
+| File | Class | Purpose |
+| --- | --- | --- |
+| `tests/test_upload_service.py` | `_FakeS3` | Captures upload calls for upload-service tests |
+| `tests/test_ingest_service.py` | `_FakeS3` | Captures temp downloads for ingest tests |
+| `tests/test_ingest_service.py` | `_FakeDb` | Minimal DB stub for ingest tests |
+| `tests/test_sidecar_parser.py` | `_FakeImage` | Simulates EXIF payloads for parser normalization tests |
+| `tests/test_sidecar_parser.py` | `_FakeImageForIngest` | Simulates image EXIF for ingest payload tests |
+| `tests/test_sidecar_parser.py` | `_FakeImageForIngestGps` | Simulates GPS EXIF payloads for geodata tests |
+
+## 11. Current architectural center of gravity
+
+If you need to understand the codebase quickly, these are the most important files in dependency order:
+
+1. `rslogic/config.py`
+2. `rslogic/common/schemas.py`
+3. `rslogic/common/db.py`
+4. `rslogic/upload_service.py`
+5. `rslogic/ingest.py`
+6. `rslogic/api/server.py`
+7. `rslogic/client/runtime.py`
+8. `rslogic/client/executor.py`
+9. `rslogic/client/file_ops.py`
+10. `rslogic/internal_tools/label-db/studio-db/models.py`
+11. `rslogic/internal_tools/rstool-sdk/src/realityscan_sdk/client.py`
+12. `rslogic/internal_tools/rstool-sdk/src/realityscan_sdk/resources/project.py`
+
+That chain is the actual pipe:
+
+```text
+config -> contracts -> DB/Redis adapters -> upload/ingest -> API dispatch
+-> client runtime -> step executor -> file executor / RealityScan SDK
+-> DB + Redis status -> FastAPI /ui web UI + client-local control TUI
+```

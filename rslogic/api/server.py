@@ -2,27 +2,39 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
+from pathlib import Path
 import threading
 import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-import uvicorn
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from rslogic.config import CONFIG
 
+from rslogic.api.web_models import IngestStartRequest, UploadStartRequest, WorkflowImportRequest
+from rslogic.api.web_ops import OperationRegistry
 from rslogic.common.db import LabelDbStore
 from rslogic.common.redis_bus import RedisBus
 from rslogic.common.schemas import JobRequest
+from rslogic.tui.job_builder import action_catalog, fragment_catalog, read_workflow_path_or_inline
 
 
 app = FastAPI(title="rslogic-orchestrator", version="0.2.0")
 
 _bus = RedisBus(CONFIG.queue.redis_url, CONFIG.control.command_queue_key, CONFIG.control.result_queue_key)
 _db = LabelDbStore(CONFIG.label_db.database_url, CONFIG.label_db.migration_root)
+_operations = OperationRegistry()
 _result_threads: dict[str, threading.Thread] = {}
+_WEB_ROOT = Path(__file__).resolve().parent / "web"
+_WEB_INDEX = _WEB_ROOT / "index.html"
+_WEB_STATIC = _WEB_ROOT / "static"
+
+app.mount("/static", StaticFiles(directory=str(_WEB_STATIC)), name="static")
 
 
 def _as_float(value: Any) -> float | None:
@@ -190,7 +202,7 @@ def _merge_project_status(
 
 def _read_existing_result_summary(job_id: str) -> dict[str, Any] | None:
     with _db.session() as session:
-        job = session.get(_db.ProcessingJob, job_id)
+        job = session.get(_db.RealityScanJob, job_id)
         if job is None:
             return None
         if isinstance(job.result_summary, dict):
@@ -212,14 +224,159 @@ def _resolve_client(request: JobRequest) -> str:
     raise RuntimeError("requested client is required unless auto_assign is true")
 
 
+def _client_status_payload(client_id: str) -> dict[str, Any]:
+    heartbeat = _bus.get_client_heartbeat(client_id)
+    heartbeat_age = None
+    if isinstance(heartbeat, dict):
+        heartbeat_ts = _as_float(heartbeat.get("ts"))
+        heartbeat_age = (_as_float(time.time()) - heartbeat_ts) if heartbeat_ts is not None else None
+    return {
+        "client_id": client_id,
+        "queue_depth": _bus.command_queue_depth(client_id),
+        "heartbeat": heartbeat,
+        "heartbeat_age": round(heartbeat_age, 2) if heartbeat_age is not None else None,
+        "task_status": _extract_task_status(heartbeat if isinstance(heartbeat, dict) else None),
+        "project_status": _extract_project_status(heartbeat if isinstance(heartbeat, dict) else None),
+    }
+
+
+def _has_subdirectories(path: Path) -> bool:
+    try:
+        return any(child.is_dir() for child in path.iterdir())
+    except OSError:
+        return False
+
+
+def _directory_listing(path_value: str | None) -> dict[str, Any]:
+    path = Path(path_value).expanduser() if path_value else Path.cwd()
+    path = path.resolve()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"path not found: {path}")
+    if not path.is_dir():
+        raise HTTPException(status_code=400, detail=f"path is not a directory: {path}")
+
+    try:
+        entries = sorted((child for child in path.iterdir() if child.is_dir()), key=lambda item: item.name.lower())
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to list directory: {exc}")
+
+    return {
+        "path": str(path),
+        "parent": str(path.parent) if path.parent != path else None,
+        "directories": [
+            {
+                "name": child.name,
+                "path": str(child),
+                "has_children": _has_subdirectories(child),
+            }
+            for child in entries
+        ],
+    }
+
+
+def _raise_service_unavailable(exc: Exception) -> None:
+    raise HTTPException(status_code=503, detail=str(exc))
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/ui")
+
+
+@app.get("/ui", include_in_schema=False)
+def ui_index() -> FileResponse:
+    return FileResponse(_WEB_INDEX)
+
+
+@app.get("/ui/api/job-builder/metadata")
+def web_job_builder_metadata() -> dict[str, Any]:
+    return {
+        "fragments": fragment_catalog(),
+        "actions": action_catalog(),
+    }
+
+
+@app.post("/ui/api/job-builder/import")
+def web_job_builder_import(payload: WorkflowImportRequest) -> dict[str, Any]:
+    try:
+        steps = read_workflow_path_or_inline(payload.source)
+    except (OSError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"failed to load workflow: {exc}")
+    return {"step_count": len(steps), "steps": steps}
+
+
+@app.get("/ui/api/upload/directories")
+def web_upload_directories(path: str | None = Query(default=None)) -> dict[str, Any]:
+    return _directory_listing(path)
+
+
+@app.get("/ui/api/operations")
+def web_operation_list() -> dict[str, Any]:
+    return {"operations": _operations.list_recent()}
+
+
+@app.get("/ui/api/operations/{operation_id}")
+def web_operation_status(operation_id: str) -> dict[str, Any]:
+    operation = _operations.get(operation_id)
+    if operation is None:
+        raise HTTPException(status_code=404, detail=f"operation {operation_id} not found")
+    return operation
+
+
+@app.post("/ui/api/upload")
+def web_start_upload(payload: UploadStartRequest) -> dict[str, Any]:
+    operation = _operations.start_upload(payload.path)
+    return operation.snapshot()
+
+
+@app.post("/ui/api/ingest")
+def web_start_ingest(payload: IngestStartRequest) -> dict[str, Any]:
+    operation = _operations.start_ingest(group_name=payload.group_name, limit=payload.limit)
+    return operation.snapshot()
+
+
+@app.get("/ui/api/clients")
+def web_clients() -> dict[str, Any]:
+    try:
+        client_ids = _bus.list_active_clients()
+        return {
+            "clients": [_client_status_payload(client_id) for client_id in client_ids],
+        }
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.get("/ui/api/clients/{client_id}")
+def web_client_status(client_id: str) -> dict[str, Any]:
+    try:
+        return _client_status_payload(client_id)
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.post("/ui/api/clients/{client_id}/clear-queues")
+def web_client_clear_queues(client_id: str) -> dict[str, Any]:
+    try:
+        deleted = _bus.clear_client_queues(client_id)
+        return {
+            "client_id": client_id,
+            "deleted_keys": deleted,
+        }
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
 @app.get("/clients")
 def active_clients() -> dict[str, list[str]]:
-    return {"clients": _bus.list_active_clients()}
+    try:
+        return {"clients": _bus.list_active_clients()}
+    except Exception as exc:
+        _raise_service_unavailable(exc)
 
 
 @app.post("/jobs")
@@ -232,21 +389,27 @@ def create_job(payload: JobRequest) -> dict[str, Any]:
     if payload.group_name and not payload.group_id:
         group, _ = _db.get_or_create_group(payload.group_name)
         payload.group_id = group.id
+    job_definition = payload.model_dump(exclude_none=True)
 
     _db.upsert_processing_job(
         job_id=job_id,
+        job_name=payload.job_name,
         image_group_id=payload.group_id,
         status="queued",
         progress=0.0,
         message="queued",
-        filters={"steps": [s.model_dump() for s in payload.steps], "metadata": payload.metadata},
+        job_definition=job_definition,
     )
 
     envelope = {
         "type": "job",
         "job_id": job_id,
+        "job_name": payload.job_name,
         "client_id": client_id,
         "group_id": payload.group_id,
+        "group_name": payload.group_name,
+        "target_client": payload.target_client,
+        "auto_assign": payload.auto_assign,
         "steps": [s.model_dump() for s in payload.steps],
         "created_at": time.time(),
         "metadata": payload.metadata,
@@ -254,27 +417,30 @@ def create_job(payload: JobRequest) -> dict[str, Any]:
     _bus.publish_command(client_id, envelope)
     _db.upsert_processing_job(
         job_id=job_id,
+        job_name=payload.job_name,
         image_group_id=payload.group_id,
         status="dispatched",
         progress=1.0,
         message=f"dispatched to {client_id}",
+        job_definition=job_definition,
     )
-    return {"job_id": job_id, "client_id": client_id, "status": "dispatched"}
+    return {"job_id": job_id, "job_name": payload.job_name, "client_id": client_id, "status": "dispatched"}
 
 
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str) -> dict[str, Any]:
     with _db.session() as session:
-        job = session.get(_db.ProcessingJob, job_id)
+        job = session.get(_db.RealityScanJob, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail=f"job {job_id} not found")
         result_summary = job.result_summary if isinstance(job.result_summary, dict) else None
         return {
             "job_id": job.id,
+            "job_name": job.job_name,
             "status": job.status,
             "progress": job.progress,
             "message": job.message,
-            "filters": job.filters,
+            "job_definition": job.job_definition,
             "result_summary": job.result_summary,
             "task_status": _extract_task_status(result_summary),
             "project_status": _extract_project_status(result_summary),
@@ -284,10 +450,11 @@ def job_status(job_id: str) -> dict[str, Any]:
 @app.get("/jobs")
 def list_jobs() -> list[dict[str, Any]]:
     with _db.session() as session:
-        jobs = session.query(_db.ProcessingJob).order_by(_db.ProcessingJob.created_at.desc()).limit(100).all()
+        jobs = session.query(_db.RealityScanJob).order_by(_db.RealityScanJob.created_at.desc()).limit(100).all()
         return [
             {
                 "job_id": job.id,
+                "job_name": job.job_name,
                 "status": job.status,
                 "progress": job.progress,
                 "message": job.message,
@@ -372,12 +539,13 @@ def _consume_results() -> None:
                 )
         _db.upsert_processing_job(
             job_id=job_id,
+            job_name=str(payload.get("job_name", "")).strip() or None,
             image_group_id=payload.get("group_id"),
             status=status,
             progress=progress,
             message=message,
             result_summary=merged_result_summary,
-            filters=None,
+            job_definition=None,
         )
 
 
@@ -388,5 +556,21 @@ def _startup() -> None:
     _result_threads["consumer"] = th
 
 
-def main() -> None:
-    uvicorn.run("rslogic.api.server:app", host="0.0.0.0", port=8000, log_level="info")
+def main(argv: list[str] | None = None) -> None:
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="RsLogic operator web server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--log-level", default="info")
+    args = parser.parse_args(argv)
+    display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    print(f"rslogic web ui: http://{display_host}:{args.port}/ui", flush=True)
+    uvicorn.run(
+        "rslogic.api.server:app",
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        reload=args.reload,
+    )

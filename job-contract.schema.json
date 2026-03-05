@@ -7,6 +7,9 @@
     "steps"
   ],
   "properties": {
+    "job_name": {
+      "type": ["string", "null"]
+    },
     "client_id": {
       "type": "string"
     },
@@ -86,7 +89,7 @@
         },
         "timeout_s": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "default": 600
         },
         "display_name": {

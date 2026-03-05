@@ -65,6 +65,19 @@ class RedisBus:
         clients.sort()
         return clients
 
+    def command_queue_depth(self, client_id: str) -> int | None:
+        try:
+            return int(self._redis.llen(self._command_key(client_id)))
+        except Exception:
+            return None
+
+    def get_client_heartbeat(self, client_id: str) -> dict[str, Any] | None:
+        raw = self._redis.get(self._heartbeat_key(client_id))
+        if not raw:
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+
     def publish_command(self, client_id: str, payload: dict[str, Any]) -> None:
         _LOGGER.debug("publish_command client_id=%s queue=%s payload=%s", client_id, self._command_key(client_id), payload)
         self._redis.lpush(self._command_key(client_id), json.dumps(payload, default=str))

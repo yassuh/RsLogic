@@ -1,4 +1,5 @@
 {
+  "job_name": "sample-session-build",
   "auto_assign": true,
   "group_name": "sample-drone-flight",
   "metadata": {
