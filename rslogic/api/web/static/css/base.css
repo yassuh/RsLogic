@@ -18,7 +18,7 @@ body {
   min-height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: Consolas, "IBM Plex Mono", "SFMono-Regular", "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   line-height: 1.3;
 }

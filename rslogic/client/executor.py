@@ -59,9 +59,8 @@ def _sdk_method(client: RealityScanClient, action: str):
             encoded=kwargs.get("encoded"),
             post_body=kwargs.get("post_body"),
         ),
-        "sdk_project_commandgroup": lambda **kwargs: client.project.command_group(kwargs.get("command_calls", {})),
+        "sdk_project_command_group": lambda **kwargs: client.project.command_group(kwargs.get("command_calls", {})),
         "sdk_project_new_scene": lambda **_: client.project.new_scene(),
-        "sdk_new_scene": lambda **_: client.project.new_scene(),
         "sdk_project_status": lambda **_: client.project.status(),
     }
     if action in mapping:
@@ -81,16 +80,25 @@ def _sdk_method(client: RealityScanClient, action: str):
             if hasattr(client.node, candidate):
                 return getattr(client.node, candidate)
         return None
-    if body.startswith("new_scene"):
-        return client.project.new_scene
     return None
 
 
 def _normalize_sdk_params(method: Any, params: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(params)
-    if method.__name__ == "add_folder" and "path" in normalized and "folder_path" not in normalized:
-        normalized["folder_path"] = normalized.pop("path")
-    return normalized
+    return dict(params)
+
+
+def _relative_target_path(base_dir: Path, relative_dir: Any) -> Path:
+    if relative_dir is None:
+        return base_dir
+    text = str(relative_dir).strip()
+    if not text:
+        return base_dir
+    target = Path(text)
+    if target.is_absolute():
+        raise RuntimeError("relative_dir must be a relative path beneath the session data root")
+    if any(part == ".." for part in target.parts):
+        raise RuntimeError("relative_dir must not escape the session data root")
+    return base_dir / target
 
 
 class StepExecutor:
@@ -199,11 +207,11 @@ class StepExecutor:
             if self.file_executor is None:
                 raise RuntimeError("file executor not configured")
 
-            if action in {"stage", "file_stage", "file_stage_group"}:
+            if action == "stage":
                 if not group_id:
-                    raise RuntimeError("group_id required for file_stage action")
+                    raise RuntimeError("group_id required for stage action")
                 stage_dir = self.file_executor.stage_group(group_id, job_id)
-                _LOGGER.info("file_stage complete job_id=%s group_id=%s staging_dir=%s", job_id, group_id, stage_dir)
+                _LOGGER.info("stage complete job_id=%s group_id=%s staging_dir=%s", job_id, group_id, stage_dir)
                 self._staging_dir = stage_dir
                 self._context["staging_dir"] = str(stage_dir)
                 return StepExecutionResult(value=str(stage_dir), task_ids=[])
@@ -219,58 +227,21 @@ class StepExecutor:
                 _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
                 return StepExecutionResult(value=str(manifest), task_ids=[])
 
-            if action in {"file_move_staging_to_working", "file_move_to_working", "file_import_to_working", "file_copy_to_working", "file_copy_staging_to_working"}:
+            if action == "file_copy_staging_to_working":
                 staging = self._staging_dir
                 if staging is None:
                     staging = self.file_executor.staging_root
                 if not staging.exists():
                     raise RuntimeError(f"staging directory does not exist: {staging}")
-                working_dir = params.get("working_dir")
-                if working_dir is None:
-                    working_dir = self.file_executor.working_projects_root / str(job_id)
-                else:
-                    working_dir = Path(str(working_dir))
+                base_dir = self._context.get("session_data_dir")
+                if not base_dir:
+                    raise RuntimeError("session data directory not known; run sdk_project_create before copying staged files")
+                working_dir = _relative_target_path(Path(base_dir), params.get("relative_dir"))
                 result = str(self.file_executor.copy_staging_to_working(job_id, staging, working_dir))
                 _LOGGER.info(
-                    "file_copy_to_working complete job_id=%s staging=%s destination=%s",
+                    "file_copy_staging_to_working complete job_id=%s staging=%s destination=%s",
                     job_id,
                     staging,
-                    working_dir,
-                )
-                return StepExecutionResult(value=result, task_ids=[])
-
-            if action in {
-                "file_move_to_session_imagery",
-                "file_move_staging_to_session_imagery",
-                "file_move_to_session_folder",
-                "file_copy_to_session_imagery",
-                "file_copy_staging_to_session_imagery",
-                "file_copy_to_session_folder",
-            }:
-                staging = self._staging_dir
-                if staging is None:
-                    staging = self.file_executor.staging_root
-                if not staging.exists():
-                    raise RuntimeError(f"staging directory does not exist: {staging}")
-
-                session = self._context.get("session")
-                if not session:
-                    raise RuntimeError("session is not available; run sdk_project_create before moving files into session imagery")
-
-                working_dir = params.get("working_dir")
-                if working_dir is None:
-                    base_dir = self._context.get("session_data_dir")
-                    if not base_dir:
-                        raise RuntimeError("session data directory not known")
-                    working_dir = Path(base_dir) / "Imagery"
-                else:
-                    working_dir = Path(str(working_dir))
-                result = str(self.file_executor.copy_staging_to_working(job_id, staging, working_dir))
-                _LOGGER.info(
-                    "file_copy_to_session_imagery complete job_id=%s group_id=%s session=%s destination=%s",
-                    job_id,
-                    group_id,
-                    session,
                     working_dir,
                 )
                 return StepExecutionResult(value=result, task_ids=[])

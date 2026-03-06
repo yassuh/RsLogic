@@ -16,12 +16,17 @@ from fastapi.staticfiles import StaticFiles
 
 from rslogic.config import CONFIG
 
-from rslogic.api.web_models import IngestStartRequest, UploadStartRequest, WorkflowImportRequest
+from rslogic.api.web_models import (
+    ImageGroupCreateRequest,
+    ImageGroupMembershipRequest,
+    IngestStartRequest,
+    UploadStartRequest,
+)
 from rslogic.api.web_ops import OperationRegistry
 from rslogic.common.db import LabelDbStore
 from rslogic.common.redis_bus import RedisBus
 from rslogic.common.schemas import JobRequest
-from rslogic.tui.job_builder import action_catalog, fragment_catalog, read_workflow_path_or_inline
+from rslogic.tui.job_builder import action_catalog, fragment_catalog
 
 
 app = FastAPI(title="rslogic-orchestrator", version="0.2.0")
@@ -301,15 +306,6 @@ def web_job_builder_metadata() -> dict[str, Any]:
     }
 
 
-@app.post("/ui/api/job-builder/import")
-def web_job_builder_import(payload: WorkflowImportRequest) -> dict[str, Any]:
-    try:
-        steps = read_workflow_path_or_inline(payload.source)
-    except (OSError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=f"failed to load workflow: {exc}")
-    return {"step_count": len(steps), "steps": steps}
-
-
 @app.get("/ui/api/upload/directories")
 def web_upload_directories(path: str | None = Query(default=None)) -> dict[str, Any]:
     return _directory_listing(path)
@@ -367,6 +363,79 @@ def web_client_clear_queues(client_id: str) -> dict[str, Any]:
             "client_id": client_id,
             "deleted_keys": deleted,
         }
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.get("/ui/api/images/assets")
+def web_image_assets() -> dict[str, Any]:
+    try:
+        return {"assets": _db.list_image_assets(require_coordinates=True)}
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.get("/ui/api/images/groups")
+def web_image_groups() -> dict[str, Any]:
+    try:
+        return {"groups": _db.list_image_groups()}
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.get("/ui/api/images/groups/{group_id}")
+def web_image_group_detail(group_id: str) -> dict[str, Any]:
+    try:
+        payload = _db.get_image_group_detail(group_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail=f"group not found: {group_id}")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.post("/ui/api/images/groups")
+def web_create_image_group(payload: ImageGroupCreateRequest) -> dict[str, Any]:
+    try:
+        return _db.create_image_group(
+            name=payload.name,
+            description=payload.description,
+            image_ids=payload.image_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.post("/ui/api/images/groups/{group_id}/membership")
+def web_update_image_group_membership(group_id: str, payload: ImageGroupMembershipRequest) -> dict[str, Any]:
+    try:
+        return _db.update_image_group_membership(
+            group_id=group_id,
+            image_ids=payload.image_ids,
+            mode=payload.mode,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if message.startswith("group not found:"):
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.delete("/ui/api/images/groups/{group_id}")
+def web_delete_image_group(group_id: str) -> dict[str, Any]:
+    try:
+        deleted = _db.delete_image_group(group_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"group not found: {group_id}")
+        return {"group_id": group_id, "deleted": True}
+    except HTTPException:
+        raise
     except Exception as exc:
         _raise_service_unavailable(exc)
 

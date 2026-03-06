@@ -1,79 +1,14 @@
 import { clampPercent, formatClock, getJSON, postJSON, prettyJSON } from "./api.js";
 import { createJobBuilder } from "./job-builder.js";
+import { createImagesView } from "./images-view.js";
+import { buildDashboard } from "./ui-layout.js";
+import { element, listRowButton, textStack } from "./ui-components.js";
 
-const elements = {
-  bottomStatusText: document.querySelector("#bottom-status-text"),
-  bottomUploadStatus: document.querySelector("#bottom-upload-status"),
-  bottomIngestStatus: document.querySelector("#bottom-ingest-status"),
-  bottomClock: document.querySelector("#bottom-clock"),
-  systemSummary: document.querySelector("#system-summary"),
-  refreshAllButton: document.querySelector("#refresh-all-button"),
-  selectFirstClientButton: document.querySelector("#select-first-client-button"),
-
-  uploadStateBadge: document.querySelector("#upload-state-badge"),
-  uploadCurrentPath: document.querySelector("#upload-current-path"),
-  uploadPathUpButton: document.querySelector("#upload-path-up-button"),
-  uploadPathRefreshButton: document.querySelector("#upload-path-refresh-button"),
-  uploadStartButton: document.querySelector("#upload-start-button"),
-  uploadDirectoryList: document.querySelector("#upload-directory-list"),
-  uploadOperationLog: document.querySelector("#upload-operation-log"),
-  uploadProgress: document.querySelector("#upload-progress .progress-fill"),
-
-  ingestStateBadge: document.querySelector("#ingest-state-badge"),
-  ingestGroupName: document.querySelector("#ingest-group-name"),
-  ingestLimit: document.querySelector("#ingest-limit"),
-  ingestStartButton: document.querySelector("#ingest-start-button"),
-  ingestOperationLog: document.querySelector("#ingest-operation-log"),
-  ingestProgress: document.querySelector("#ingest-progress .progress-fill"),
-
-  jobsStateBadge: document.querySelector("#jobs-state-badge"),
-  jobsRefreshButton: document.querySelector("#jobs-refresh-button"),
-  jobDetailRefreshButton: document.querySelector("#job-detail-refresh-button"),
-  jobsList: document.querySelector("#jobs-list"),
-  jobDetailId: document.querySelector("#job-detail-id"),
-  jobDetail: document.querySelector("#job-detail"),
-
-  clientsStateBadge: document.querySelector("#clients-state-badge"),
-  clientsRefreshButton: document.querySelector("#clients-refresh-button"),
-  clientClearQueuesButton: document.querySelector("#client-clear-queues-button"),
-  clientsList: document.querySelector("#clients-list"),
-  clientDetailId: document.querySelector("#client-detail-id"),
-  clientDetail: document.querySelector("#client-detail"),
-
-  jobName: document.querySelector("#job-name"),
-  jobAutoAssign: document.querySelector("#job-auto-assign"),
-  jobTargetClient: document.querySelector("#job-target-client"),
-  jobClientId: document.querySelector("#job-client-id"),
-  jobGroupId: document.querySelector("#job-group-id"),
-  jobGroupName: document.querySelector("#job-group-name"),
-  jobMetadataJson: document.querySelector("#job-metadata-json"),
-  jobWorkflowSource: document.querySelector("#job-workflow-source"),
-  jobFragmentSelect: document.querySelector("#job-fragment-select"),
-  jobFragmentAppendButton: document.querySelector("#job-fragment-append-button"),
-  jobFragmentReplaceButton: document.querySelector("#job-fragment-replace-button"),
-  jobImportButton: document.querySelector("#job-import-button"),
-  jobClearButton: document.querySelector("#job-clear-button"),
-  jobStepList: document.querySelector("#job-step-list"),
-  jobStepUpButton: document.querySelector("#job-step-up-button"),
-  jobStepDownButton: document.querySelector("#job-step-down-button"),
-  jobStepRemoveButton: document.querySelector("#job-step-remove-button"),
-  jobStepKind: document.querySelector("#job-step-kind"),
-  jobActionSelect: document.querySelector("#job-action-select"),
-  jobStepAction: document.querySelector("#job-step-action"),
-  jobStepDisplayName: document.querySelector("#job-step-display-name"),
-  jobStepTimeout: document.querySelector("#job-step-timeout"),
-  jobStepParams: document.querySelector("#job-step-params"),
-  jobBuilderHelp: document.querySelector("#job-builder-help"),
-  jobStepAddButton: document.querySelector("#job-step-add-button"),
-  jobStepInsertButton: document.querySelector("#job-step-insert-button"),
-  jobStepUpdateButton: document.querySelector("#job-step-update-button"),
-  jobPreview: document.querySelector("#job-preview"),
-  jobSubmitButton: document.querySelector("#job-submit-button"),
-  jobSubmitLog: document.querySelector("#job-submit-log"),
-  jobSubmitState: document.querySelector("#job-submit-state"),
-};
+const root = document.querySelector("#app-root");
+const elements = buildDashboard(root);
 
 const state = {
+  activeWorkflow: "upload",
   uploadOperationId: null,
   ingestOperationId: null,
   selectedJobId: "",
@@ -82,19 +17,48 @@ const state = {
   clients: [],
 };
 
+const workflowLabels = {
+  upload: "UPLOAD",
+  build: "BUILD",
+  jobs: "JOBS",
+  clients: "CLIENTS",
+  images: "IMAGES",
+};
+
 let builder = {
   setTargetClient() {},
+};
+let imagesView = {
+  activate() {},
+  refresh: async () => {},
 };
 
 function setStatus(message, level = "idle") {
   elements.bottomStatusText.textContent = message;
-  elements.systemSummary.textContent = `ORCHESTRATOR WEB | ${message}`;
+  elements.systemSummary.textContent = `ORCHESTRATOR WEB | ${workflowLabels[state.activeWorkflow]} | ${message}`;
   elements.bottomStatusText.className = `state-${level}`;
 }
 
-function setBadge(element, status, label) {
-  element.className = `state-badge state-${status}`;
-  element.textContent = label;
+function setBadge(elementNode, status, label) {
+  elementNode.className = `state-badge state-${status}`;
+  elementNode.textContent = label;
+}
+
+function setActiveWorkflow(workflow) {
+  if (!elements.workflowViews?.[workflow] || !elements.workflowButtons?.[workflow]) {
+    throw new Error(`unknown workflow ${workflow}`);
+  }
+  state.activeWorkflow = workflow;
+  for (const [key, panel] of Object.entries(elements.workflowViews)) {
+    panel.classList.toggle("is-active", key === workflow);
+  }
+  for (const [key, button] of Object.entries(elements.workflowButtons)) {
+    button.classList.toggle("is-active", key === workflow);
+  }
+  elements.workflowSummary.textContent = `WORKFLOW:${workflowLabels[workflow]}`;
+  if (workflow === "images") {
+    imagesView.activate();
+  }
 }
 
 function renderOperation(operation, badge, progressFill, logPanel, bottomStatusLabel) {
@@ -122,21 +86,28 @@ async function pollOperation(operationId, render) {
   }
 }
 
+function createDirectoryRow(item) {
+  const button = listRowButton({
+    className: "directory-entry",
+    children: [
+      element("span", { text: item.name }),
+      element("span", { className: "muted", text: item.has_children ? "DIR+" : "DIR" }),
+    ],
+  });
+  button.addEventListener("click", () => {
+    elements.uploadCurrentPath.value = item.path;
+    loadDirectories(item.path).catch((error) => setStatus(String(error), "error"));
+  });
+  return button;
+}
+
 async function loadDirectories(path = elements.uploadCurrentPath.value) {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   const payload = await getJSON(`/ui/api/upload/directories${query}`);
   elements.uploadCurrentPath.value = payload.path;
   elements.uploadDirectoryList.replaceChildren();
   for (const item of payload.directories) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "directory-entry";
-    button.innerHTML = `<span>${item.name}</span><span class="muted">${item.has_children ? "DIR+" : "DIR"}</span>`;
-    button.addEventListener("click", () => {
-      elements.uploadCurrentPath.value = item.path;
-      loadDirectories(item.path).catch((error) => setStatus(String(error), "error"));
-    });
-    elements.uploadDirectoryList.append(button);
+    elements.uploadDirectoryList.append(createDirectoryRow(item));
   }
   elements.uploadPathUpButton.dataset.parent = payload.parent || "";
 }
@@ -165,30 +136,38 @@ async function startIngest() {
   );
 }
 
+function createJobRow(job) {
+  const percent = clampPercent(job.progress || 0);
+  const button = listRowButton({
+    className: "job-row",
+    selected: job.job_id === state.selectedJobId,
+    children: [
+      textStack(job.job_name || job.job_id, `${job.status} | ${job.message || "-"}`, "job-row-main", "job-row-meta"),
+      element("div", {
+        className: "job-row-progress",
+        children: [
+          element("div", {
+            className: "progress-track",
+            children: [element("div", { className: "progress-fill", attrs: { style: `width:${percent}%` } })],
+          }),
+          element("span", { text: `${percent.toFixed(0)}%` }),
+        ],
+      }),
+    ],
+  });
+  button.addEventListener("click", () => {
+    state.selectedJobId = job.job_id;
+    elements.jobDetailId.value = job.job_id;
+    renderJobs();
+    loadJobDetail(job.job_id).catch((error) => setStatus(String(error), "error"));
+  });
+  return button;
+}
+
 function renderJobs() {
   elements.jobsList.replaceChildren();
   for (const job of state.jobs) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `job-row${job.job_id === state.selectedJobId ? " is-selected" : ""}`;
-    const percent = clampPercent(job.progress || 0);
-    button.innerHTML = `
-      <div class="job-row-main">
-        <span>${job.job_name || job.job_id}</span>
-        <span class="job-row-meta">${job.status} | ${job.message || "-"}</span>
-      </div>
-      <div class="job-row-progress">
-        <div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>
-        <span>${percent.toFixed(0)}%</span>
-      </div>
-    `;
-    button.addEventListener("click", () => {
-      state.selectedJobId = job.job_id;
-      elements.jobDetailId.value = job.job_id;
-      renderJobs();
-      loadJobDetail(job.job_id).catch((error) => setStatus(String(error), "error"));
-    });
-    elements.jobsList.append(button);
+    elements.jobsList.append(createJobRow(job));
   }
 }
 
@@ -208,28 +187,30 @@ async function loadJobDetail(jobId = elements.jobDetailId.value.trim()) {
   renderJobs();
 }
 
+function createClientRow(client) {
+  const age = client.heartbeat_age == null ? "n/a" : `${client.heartbeat_age}s`;
+  const button = listRowButton({
+    className: "client-row",
+    selected: client.client_id === state.selectedClientId,
+    children: [
+      textStack(client.client_id, `queue=${client.queue_depth ?? "n/a"} | age=${age}`, "client-row-main", "client-row-meta"),
+      element("span", { text: client.heartbeat?.status || "no-heartbeat" }),
+    ],
+  });
+  button.addEventListener("click", () => {
+    state.selectedClientId = client.client_id;
+    elements.clientDetailId.value = client.client_id;
+    builder.setTargetClient(client.client_id);
+    renderClients();
+    loadClientDetail(client.client_id).catch((error) => setStatus(String(error), "error"));
+  });
+  return button;
+}
+
 function renderClients() {
   elements.clientsList.replaceChildren();
   for (const client of state.clients) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `client-row${client.client_id === state.selectedClientId ? " is-selected" : ""}`;
-    const age = client.heartbeat_age == null ? "n/a" : `${client.heartbeat_age}s`;
-    button.innerHTML = `
-      <div class="client-row-main">
-        <span>${client.client_id}</span>
-        <span class="client-row-meta">queue=${client.queue_depth ?? "n/a"} | age=${age}</span>
-      </div>
-      <span>${client.heartbeat?.status || "no-heartbeat"}</span>
-    `;
-    button.addEventListener("click", () => {
-      state.selectedClientId = client.client_id;
-      elements.clientDetailId.value = client.client_id;
-      builder.setTargetClient(client.client_id);
-      renderClients();
-      loadClientDetail(client.client_id).catch((error) => setStatus(String(error), "error"));
-    });
-    elements.clientsList.append(button);
+    elements.clientsList.append(createClientRow(client));
   }
 }
 
@@ -285,6 +266,7 @@ async function bootstrap() {
       setBadge(elements.jobSubmitState, status, label);
     },
     onJobSubmitted(job) {
+      setActiveWorkflow("jobs");
       setStatus(`Dispatched ${job.job_id}`, "done");
       elements.jobDetailId.value = job.job_id;
       state.selectedJobId = job.job_id;
@@ -292,9 +274,17 @@ async function bootstrap() {
       loadJobDetail(job.job_id).catch((error) => setStatus(String(error), "error"));
     },
   });
+  imagesView = createImagesView(elements, { setStatus });
+
+  for (const [workflow, button] of Object.entries(elements.workflowButtons)) {
+    button.addEventListener("click", () => {
+      setActiveWorkflow(workflow);
+      setStatus(`${workflowLabels[workflow]} workflow active`, "done");
+    });
+  }
 
   elements.refreshAllButton.addEventListener("click", () => {
-    Promise.all([refreshJobs(), refreshClients(), loadDirectories(elements.uploadCurrentPath.value), refreshSelectedDetail()])
+    Promise.all([refreshJobs(), refreshClients(), imagesView.refresh(), loadDirectories(elements.uploadCurrentPath.value), refreshSelectedDetail()])
       .then(() => setStatus("Refreshed all panels", "done"))
       .catch((error) => setStatus(String(error), "error"));
   });
@@ -336,8 +326,9 @@ async function bootstrap() {
   });
 
   refreshClock();
+  setActiveWorkflow(state.activeWorkflow);
   window.setInterval(refreshClock, 1000);
-  await Promise.all([loadDirectories(), refreshJobs(), refreshClients()]);
+  await Promise.all([loadDirectories(), refreshJobs(), refreshClients(), imagesView.refresh()]);
   window.setInterval(() => {
     refreshJobs().catch(() => {});
     refreshClients().catch(() => {});

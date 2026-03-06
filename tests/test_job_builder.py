@@ -6,6 +6,7 @@ import pytest
 
 from rslogic.tui.job_builder import (
     RealityScanJobDraft,
+    action_catalog,
     action_options,
     build_step_payload,
     fragment_steps,
@@ -45,6 +46,8 @@ def test_draft_build_request_includes_job_name_and_steps() -> None:
     assert request.job_name == "align-imagery"
     assert request.group_name == "flight-a"
     assert request.steps[-1].action == "sdk_project_save"
+    assert request.steps[4].action == "file_copy_staging_to_working"
+    assert request.steps[4].params["relative_dir"] == "Imagery"
 
 
 def test_read_workflow_path_or_inline_accepts_object_with_steps(tmp_path) -> None:
@@ -78,6 +81,19 @@ def test_action_options_include_known_sdk_actions() -> None:
     options = action_options("sdk")
 
     assert any(value == "sdk_project_command" for _, value in options)
+    assert any(value == "sdk_project_add_folder" for _, value in options)
+
+
+def test_action_catalog_includes_sdk_surface_entries() -> None:
+    catalog = action_catalog()
+
+    assert "sdk_project_add_folder" in catalog["sdk_steps"]
+    assert catalog["sdk_steps"]["sdk_project_add_folder"]["params"]["folder_path"] == "str"
+    assert "sdk_node_status" in catalog["sdk_steps"]
+    assert "sdk_new_scene" not in catalog["sdk_steps"]
+    assert "sdk_project_commandgroup" not in catalog["sdk_steps"]
+    assert "file_copy_staging_to_session_imagery" not in catalog["file_steps"]
+    assert catalog["file_steps"]["file_copy_staging_to_working"]["optional_params"] == ["relative_dir"]
 
 
 def test_draft_insert_and_move_steps() -> None:

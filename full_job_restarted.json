@@ -6,7 +6,7 @@
   "steps": [
     {
       "kind": "file",
-      "action": "file_stage",
+      "action": "stage",
       "params": {},
       "timeout_s": 0
     },
@@ -24,14 +24,16 @@
     },
     {
       "kind": "sdk",
-      "action": "sdk_new_scene",
+      "action": "sdk_project_new_scene",
       "params": {},
       "timeout_s": 600
     },
     {
       "kind": "file",
-      "action": "file_copy_to_session_imagery",
-      "params": {},
+      "action": "file_copy_staging_to_working",
+      "params": {
+        "relative_dir": "Imagery"
+      },
       "timeout_s": 600
     },
     {
@@ -110,7 +112,7 @@
       "kind": "sdk",
       "action": "sdk_project_add_folder",
       "params": {
-        "path": "Imagery"
+        "folder_path": "Imagery"
       },
       "timeout_s": 600
     },

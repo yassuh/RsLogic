@@ -23,6 +23,18 @@ export async function postJSON(url, payload) {
   return response.json();
 }
 
+export async function deleteJSON(url) {
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export function prettyJSON(value) {
   return JSON.stringify(value, null, 2);
 }

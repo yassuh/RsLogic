@@ -28,14 +28,14 @@
     },
     {
       "kind": "sdk",
-      "action": "sdk_new_scene",
+      "action": "sdk_project_new_scene",
       "params": {}
     },
     {
       "kind": "file",
-      "action": "file_move_staging_to_working",
+      "action": "file_copy_staging_to_working",
       "params": {
-        "working_dir": "<absolute-working-dir>"
+        "relative_dir": "Imagery"
       }
     }
   ]

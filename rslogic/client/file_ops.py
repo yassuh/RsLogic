@@ -272,7 +272,3 @@ class FileExecutor:
             shutil.copy2(str(source), str(target))
         _LOGGER.info("copy_staging_to_working done job_id=%s moved=%s target=%s", job_id, moved, working_dir)
         return working_dir
-
-    def move_staging_to_working(self, job_id: str, staging_dir: Path | None = None, working_dir: Path | None = None) -> Path:
-        """Backward-compatible alias for copy-based staging transfer."""
-        return self.copy_staging_to_working(job_id, staging_dir=staging_dir, working_dir=working_dir)

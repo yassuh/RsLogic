@@ -1,4 +1,5 @@
 import { postJSON, prettyJSON } from "./api.js";
+import { element, listRowButton, moveStack } from "./ui-components.js";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -21,7 +22,7 @@ function usesFileStage(steps) {
   return steps.some(
     (step) =>
       String(step.kind || "").toLowerCase() === "file" &&
-      ["stage", "file_stage", "file_stage_group"].includes(String(step.action || "").toLowerCase()),
+      String(step.action || "").toLowerCase() === "stage",
   );
 }
 
@@ -53,8 +54,12 @@ function actionEntries(metadata, kind) {
   return Object.entries(kind === "file" ? metadata.actions.file_steps || {} : metadata.actions.sdk_steps || {});
 }
 
+function actionEntry(metadata, kind, action) {
+  return (kind === "file" ? metadata.actions.file_steps : metadata.actions.sdk_steps)?.[action];
+}
+
 function actionDetails(metadata, kind, action) {
-  const entry = (kind === "file" ? metadata.actions.file_steps : metadata.actions.sdk_steps)?.[action];
+  const entry = actionEntry(metadata, kind, action);
   if (!entry) {
     return [`kind=${kind}`, `action=${action || "<blank>"}`, "catalog=custom or dynamic action"];
   }
@@ -130,11 +135,11 @@ export function createJobBuilder(elements, metadata, hooks) {
 
   function syncActionSelect() {
     const kind = elements.jobStepKind.value || "sdk";
-    const entries = actionEntries(metadata, kind);
+    const entries = actionEntries(metadata, kind).sort(([left], [right]) => left.localeCompare(right));
     elements.jobActionSelect.replaceChildren();
     const blank = document.createElement("option");
     blank.value = "";
-    blank.textContent = "custom";
+    blank.textContent = "select action";
     elements.jobActionSelect.append(blank);
     for (const [action, entry] of entries) {
       const option = document.createElement("option");
@@ -146,6 +151,17 @@ export function createJobBuilder(elements, metadata, hooks) {
       elements.jobActionSelect.value = elements.jobStepAction.value.trim();
     } else {
       elements.jobActionSelect.value = "";
+    }
+  }
+
+  function maybeApplyActionTemplate(kind, action, previousAction = "") {
+    const entry = actionEntry(metadata, kind, action);
+    if (!entry || !entry.params || typeof entry.params !== "object") {
+      return;
+    }
+    const currentText = elements.jobStepParams.value.trim();
+    if (!currentText || currentText === "{}" || previousAction !== action) {
+      elements.jobStepParams.value = prettyJSON(entry.params);
     }
   }
 
@@ -161,16 +177,52 @@ export function createJobBuilder(elements, metadata, hooks) {
   function renderStepList() {
     elements.jobStepList.replaceChildren();
     state.draft.steps.forEach((step, index) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `step-entry${index === state.selectedStepIndex ? " is-selected" : ""}`;
-      button.innerHTML = `<span>${index + 1}. ${step.kind}:${step.action}${step.display_name ? ` [${step.display_name}]` : ""}</span><span class="muted">${step.timeout_s ?? 600}s</span>`;
+      const row = element("div", {
+        className: `step-row${index === state.selectedStepIndex ? " is-selected" : ""}`,
+      });
+
+      const stack = moveStack({
+        upDisabled: index === 0,
+        downDisabled: index >= state.draft.steps.length - 1,
+        onUp(event) {
+          event.stopPropagation();
+          if (index === 0) {
+            return;
+          }
+          const [moved] = state.draft.steps.splice(index, 1);
+          state.selectedStepIndex = index - 1;
+          state.draft.steps.splice(state.selectedStepIndex, 0, moved);
+          render();
+        },
+        onDown(event) {
+          event.stopPropagation();
+          if (index >= state.draft.steps.length - 1) {
+            return;
+          }
+          const [moved] = state.draft.steps.splice(index, 1);
+          state.selectedStepIndex = index + 1;
+          state.draft.steps.splice(state.selectedStepIndex, 0, moved);
+          render();
+        },
+      });
+
+      const button = listRowButton({
+        className: "step-entry",
+        selected: index === state.selectedStepIndex,
+        children: [
+          element("span", {
+            text: `${index + 1}. ${step.kind}:${step.action}${step.display_name ? ` [${step.display_name}]` : ""}`,
+          }),
+          element("span", { className: "muted", text: `${step.timeout_s ?? 600}s` }),
+        ],
+      });
       button.addEventListener("click", () => {
         state.selectedStepIndex = index;
         loadEditorFromSelected();
         render();
       });
-      elements.jobStepList.append(button);
+      row.append(stack, button);
+      elements.jobStepList.append(row);
     });
   }
 
@@ -255,7 +307,7 @@ export function createJobBuilder(elements, metadata, hooks) {
       throw new Error("target_client or client_id is required when auto_assign is false");
     }
     if (usesFileStage(steps) && !state.draft.group_id && !state.draft.group_name) {
-      throw new Error("file stage workflows require group_id or group_name");
+      throw new Error("stage workflows require group_id or group_name");
     }
     return {
       job_name: state.draft.job_name || undefined,
@@ -293,23 +345,9 @@ export function createJobBuilder(elements, metadata, hooks) {
   elements.jobFragmentAppendButton.addEventListener("click", withStatus(() => applyFragment({ replace: false })));
   elements.jobFragmentReplaceButton.addEventListener("click", withStatus(() => applyFragment({ replace: true })));
 
-  elements.jobImportButton.addEventListener("click", withStatus(async () => {
-    const text = elements.jobWorkflowSource.value.trim();
-    if (!text) {
-      throw new Error("workflow JSON or path is required");
-    }
-    const payload = await postJSON("/ui/api/job-builder/import", { source: text });
-    state.draft.steps = payload.steps.map(normalizeStep);
-    state.selectedStepIndex = 0;
-    loadEditorFromSelected();
-    render();
-    hooks.setStatus(`Imported ${state.draft.steps.length} steps`);
-  }));
-
   elements.jobClearButton.addEventListener("click", withStatus(() => {
     state.draft = createEmptyDraft();
     state.selectedStepIndex = 0;
-    elements.jobWorkflowSource.value = "";
     loadEditorFromSelected();
     render();
     hooks.setStatus("Cleared job draft");
@@ -320,8 +358,10 @@ export function createJobBuilder(elements, metadata, hooks) {
     renderHelp();
   });
   elements.jobActionSelect.addEventListener("change", () => {
+    const previousAction = elements.jobStepAction.value.trim();
     if (elements.jobActionSelect.value) {
       elements.jobStepAction.value = elements.jobActionSelect.value;
+      maybeApplyActionTemplate(elements.jobStepKind.value || "sdk", elements.jobActionSelect.value, previousAction);
     }
     renderHelp();
   });

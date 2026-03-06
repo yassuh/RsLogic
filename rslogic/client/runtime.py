@@ -708,7 +708,7 @@ class ClientRuntime:
 
     @staticmethod
     def _is_unlimited_step_timeout(step: Step) -> bool:
-        if step.action in {"sdk_new_scene", "sdk_project_new_scene"}:
+        if step.action == "sdk_project_new_scene":
             return True
         if step.action == "sdk_project_command":
             command = str(step.params.get("name", "")).strip().lower()

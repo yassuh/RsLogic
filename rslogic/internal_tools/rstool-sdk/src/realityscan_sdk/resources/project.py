@@ -199,18 +199,9 @@ class ProjectAPI:
         """Import one or more images from a specified file path or .imagelist."""
         return self.command("add", params=[image_path])
 
-    def add_folder(self, folder_path: str | None = None, *, path: str | None = None) -> TaskHandle:
-        """Add all images in the specified folder.
-
-        Accepts both ``folder_path`` and legacy alias ``path`` to make
-        command payloads from the orchestrator resilient.
-        """
-        target = folder_path if folder_path is not None else path
-        if not target:
-            raise TypeError(
-                "add_folder() missing required argument: expected `folder_path` or `path`."
-            )
-        return self.command("addFolder", params=[target])
+    def add_folder(self, folder_path: str) -> TaskHandle:
+        """Add all images in the specified folder."""
+        return self.command("addFolder", params=[folder_path])
 
     def import_video(self, video_path: str, extracted_frames_path: str, jump_length: float) -> TaskHandle:
         """Import frames extracted from a video."""

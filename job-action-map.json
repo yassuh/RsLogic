@@ -9,114 +9,22 @@
         "executor_state": "staging_dir"
       }
     },
-    "file_stage": {
-      "kind": "file",
-      "description": "Alias for stage.",
-      "required_params": [],
-      "optional_params": []
-    },
-    "file_stage_group": {
-      "kind": "file",
-      "description": "Alias for stage.",
-      "required_params": [],
-      "optional_params": []
-    },
     "file_write_manifest": {
       "kind": "file",
       "description": "Writes `<staging>/<job_id>-manifest.json` listing resolved files.",
       "required_params": [],
       "optional_params": []
     },
-    "file_move_staging_to_working": {
+    "file_copy_staging_to_working": {
       "kind": "file",
-      "description": "Copies staged files into working directory for session.",
+      "description": "Copies staged files into <working_root>/sessions/<session>/_data or a deeper relative subdirectory.",
       "required_params": [],
       "optional_params": [
-        "working_dir"
+        "relative_dir"
       ],
       "updates_state": {
         "executor_state": "returns_working_dir"
       }
-    },
-    "file_move_to_working": {
-      "kind": "file",
-      "description": "Alias for file_copy_staging_to_working.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_import_to_working": {
-      "kind": "file",
-      "description": "Alias for file_copy_staging_to_working.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_copy_staging_to_working": {
-      "kind": "file",
-      "description": "Copies staged files into working directory for session.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_copy_to_working": {
-      "kind": "file",
-      "description": "Alias for file_copy_staging_to_working.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_move_staging_to_session_imagery": {
-      "kind": "file",
-      "description": "Copies staged files into <working_root>/sessions/<session>/_data/Imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_move_to_session_imagery": {
-      "kind": "file",
-      "description": "Alias for file_move_staging_to_session_imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_move_to_session_folder": {
-      "kind": "file",
-      "description": "Alias for file_move_staging_to_session_imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_copy_staging_to_session_imagery": {
-      "kind": "file",
-      "description": "Copies staged files into <working_root>/sessions/<session>/_data/Imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_copy_to_session_imagery": {
-      "kind": "file",
-      "description": "Alias for file_copy_staging_to_session_imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
-    },
-    "file_copy_to_session_folder": {
-      "kind": "file",
-      "description": "Alias for file_copy_staging_to_session_imagery.",
-      "required_params": [],
-      "optional_params": [
-        "working_dir"
-      ]
     }
   },
   "sdk_steps": {
@@ -173,7 +81,7 @@
         "post_body": "dict"
       }
     },
-    "sdk_project_commandgroup": {
+    "sdk_project_command_group": {
       "kind": "sdk",
       "method": "client.project.command_group(command_calls)",
       "params": {
@@ -181,11 +89,6 @@
       }
     },
     "sdk_project_new_scene": {
-      "kind": "sdk",
-      "method": "client.project.new_scene()",
-      "requires_params": []
-    },
-    "sdk_new_scene": {
       "kind": "sdk",
       "method": "client.project.new_scene()",
       "requires_params": []
@@ -204,10 +107,6 @@
     {
       "action_regex": "^sdk_project_[a-z_]+$",
       "description": "Any action starting with sdk_project_ is resolved to client.project.<method> using underscore and camelCase fallbacks."
-    },
-    {
-      "action_regex": "^sdk_[a-z_]+$",
-      "description": "Generic sdk_* actions are also accepted and resolved against available client sdk methods."
     }
   ],
   "dispatcher": {
@@ -215,6 +114,6 @@
     "class": "StepExecutor.execute",
     "mapping_file": "rslogic/client/executor.py",
     "file_step_prefix": "if kind == \"file\"",
-    "sdk_fallback": "if action not in explicit mapping and action starts with sdk_"
+    "sdk_fallback": "if action starts with sdk_project_ or sdk_node_"
   }
 }

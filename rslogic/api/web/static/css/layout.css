@@ -40,47 +40,69 @@
   font-weight: 700;
 }
 
-.workspace-grid {
-  display: grid;
-  grid-template-columns: 26rem 1fr 30rem;
-  grid-template-rows: 1fr 1fr;
-  gap: 0;
+.ribbon-workflows {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+
+.workflow-ribbon-button {
+  min-width: 7rem;
+  justify-content: center;
+}
+
+.workflow-ribbon-button.is-active {
+  background: #111111;
+}
+
+.workflow-stage {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workflow-view {
+  display: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   min-height: 0;
 }
 
+.workflow-view.is-active {
+  display: grid;
+}
+
+.workflow-view-upload {
+  grid-template-columns: minmax(0, 1fr) 24rem;
+}
+
+.workflow-view-build,
+.workflow-view-jobs,
+.workflow-view-clients,
+.workflow-view-images {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .tile {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
 
-.tile-upload {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.tile-ingest {
-  grid-column: 1;
-  grid-row: 2;
+.workflow-view-upload .tile-upload {
   border-bottom: 0;
 }
 
-.tile-job-builder {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  border-bottom: 0;
-}
-
-.tile-jobs {
-  grid-column: 3;
-  grid-row: 1;
-  border-right: 0;
-}
-
-.tile-clients {
-  grid-column: 3;
-  grid-row: 2;
+.workflow-view-upload .tile-ingest,
+.workflow-view-build .tile-job-builder,
+.workflow-view-jobs .tile-jobs,
+.workflow-view-clients .tile-clients,
+.workflow-view-images .tile-images {
   border-right: 0;
   border-bottom: 0;
 }
@@ -98,13 +120,16 @@
 .tile-body {
   display: flex;
   flex-direction: column;
-  min-height: calc(100% - 24px);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 .tile-body-builder {
   display: grid;
   grid-template-rows: 1fr 12rem;
-  min-height: calc(100% - 24px);
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .builder-top-grid {
@@ -126,7 +151,7 @@
 .builder-split {
   display: grid;
   grid-template-columns: 28rem minmax(0, 1fr);
-  min-height: calc(100% - 25px);
+  min-height: 0;
 }
 
 .step-list-panel {
@@ -151,9 +176,70 @@
   border-right: 1px solid var(--line);
 }
 
+.images-layout {
+  display: grid;
+  grid-template-columns: 22rem minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.images-groups-panel,
+.images-map-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.images-groups-panel {
+  border-right: 1px solid var(--line);
+}
+
+.images-map-summary {
+  min-height: 24px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.images-map-surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  background: #000;
+}
+
+.images-globe {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.images-globe .leaflet-container {
+  width: 100%;
+  height: 100%;
+}
+
+.images-selection-rect {
+  position: absolute;
+  display: none;
+  z-index: 10;
+  border: 1px solid var(--yellow);
+  background: rgba(255, 255, 0, 0.08);
+  pointer-events: none;
+}
+
 @media (max-width: 1400px) {
-  .workspace-grid {
-    grid-template-columns: 22rem 1fr 24rem;
+  .workflow-ribbon-button {
+    min-width: 5.5rem;
+  }
+
+  .workflow-view-upload {
+    grid-template-columns: minmax(0, 1fr) 20rem;
   }
 
   .builder-top-grid {
@@ -162,5 +248,9 @@
 
   .builder-split {
     grid-template-columns: 22rem minmax(0, 1fr);
+  }
+
+  .images-layout {
+    grid-template-columns: 18rem minmax(0, 1fr);
   }
 }

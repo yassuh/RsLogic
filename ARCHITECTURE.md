@@ -85,10 +85,17 @@ Important current behavior:
 1. `rslogic.api.server` runs a background Redis result consumer.
 2. Incoming client updates are merged into `RsLogicRealityScanJob.result_summary`.
 3. `GET /jobs` and `GET /jobs/{job_id}` expose merged task/project state.
-4. `rslogic.api.server` also serves `/ui`, the static web assets, upload/ingest operation endpoints, job-builder metadata/import endpoints, and client queue/status endpoints consumed by the browser UI.
-5. The browser web UI is the primary operator surface for upload, ingest, job building, job status, and orchestrator-side client monitoring.
+4. `rslogic.api.server` also serves `/ui`, the static web assets, upload/ingest operation endpoints, job-builder metadata endpoint, image/group map endpoints, and client queue/status endpoints consumed by the browser UI.
+5. The browser web UI is the primary operator surface for upload, ingest, job building, image grouping, job status, and orchestrator-side client monitoring.
 6. The job builder intentionally gives the `CURRENT STEPS` rail more horizontal space than the step editor so longer chained workflows remain readable without collapsing into the preview pane.
-7. `rslogic.client.control_tui.ClientControlTUI` remains a client-local supervisor by reading:
+7. The right-side jobs and clients rail is hard-contained with `minmax(0, ...)`, `min-width: 0`, and text truncation on list rows so live job updates and large detail payloads wrap or scroll inside the rail instead of widening the whole page.
+8. The job builder step list includes per-row micro move controls on the left edge so long chains can be reordered directly in-place without moving focus to the global toolbar.
+9. The `/ui` page is now assembled from reusable browser-side components: `index.html` only provides the root mount point, `ui-components.js` defines the shared ribbon/tile/form/list primitives, `ui-layout.js` composes the operator dashboard from those primitives, and `app.js` binds the live upload/ingest/job/client behavior to the generated nodes.
+10. The browser UI now behaves as a workflow-driven SPA with top-ribbon workflow buttons and isolated `UPLOAD`, `BUILD`, `JOBS`, `CLIENTS`, and `IMAGES` views so the entire working region swaps in place without changing URL and upload/ingest, job authoring, job monitoring, client control, and image grouping do not compete in one shared screen.
+11. Shared CSS primitives now collapse adjacent borders in stacked builder sections and treat single-column JSON blocks as full-width label rows so the UI keeps the Qt-style single-line separator look instead of showing partial or doubled borders.
+12. The `JOBS` and `CLIENTS` detail panes now use fixed-height selectable lists above a flexing detail console, and each tile/body is explicitly height-constrained, so large JSON payloads scroll inside the detail pane instead of expanding the tile.
+13. The `IMAGES` workflow uses real image geometry from Postgres, preferring `image_assets.latitude/longitude` and deriving coordinates from `image_assets.location` when needed; it now uses a basic Leaflet slippy map with OpenStreetMap raster tiles instead of the previous vector-renderer stack. Image assets are drawn as DOM markers on top of that map, `FIT TO MAP` uses Leaflet bounds fitting, `Shift`-drag selection uses the map’s `latLngToContainerPoint` projection against the screen-space selection rectangle, and the lower `IMAGES` console panel carries live Leaflet diagnostics (tile loads/errors, container size, marker counts) for debugging.
+14. `rslogic.client.control_tui.ClientControlTUI` remains a client-local supervisor by reading:
    - process PID/log files
    - Redis heartbeat
    - client queue depth
@@ -133,14 +140,17 @@ Important current behavior:
 | `rslogic/sidecar_parser.py` | EXIF/XMP/XML/JSON metadata parsing |
 | `rslogic/upload_service.py` | Local-folder-to-waiting-bucket uploader |
 | `rslogic/ingest.py` | Waiting-bucket-to-DB-and-processed-bucket ingester |
-| `rslogic/api/server.py` | FastAPI orchestrator, `/ui` web app, static asset host, upload/ingest op API, job/client API, and Redis result consumer |
-| `rslogic/api/web_models.py` | Pydantic request models for the web UI upload/ingest/workflow-import endpoints |
+| `rslogic/api/server.py` | FastAPI orchestrator, `/ui` web app, static asset host, upload/ingest op API, job/client API, Redis result consumer, and web job-builder metadata source |
+| `rslogic/api/web_models.py` | Pydantic request models for the web UI upload/ingest/image-group endpoints |
 | `rslogic/api/web_ops.py` | Background upload/ingest operation tracking for the web UI |
-| `rslogic/api/web/index.html` | Operator web UI document shell |
+| `rslogic/api/web/index.html` | Minimal operator web mount document; page structure is composed client-side |
 | `rslogic/api/web/static/css/*` | Web UI visual system, layout, and dense tile styling |
-| `rslogic/api/web/static/js/*` | Browser-side upload, ingest, jobs, clients, and job-builder behavior |
+| `rslogic/api/web/static/js/ui-components.js` | Reusable DOM primitives for ribbons, workflow navigation, tiles, forms, list rows, and step move controls |
+| `rslogic/api/web/static/js/ui-layout.js` | Composes the `/ui` workflow SPA from shared UI primitives and returns stable element refs |
+| `rslogic/api/web/static/js/images-view.js` | Browser-side image asset map, drag selection, and image-group CRUD/membership controller |
+| `rslogic/api/web/static/js/*` | Browser-side upload, ingest, jobs, clients, images, job-builder behavior, and dashboard assembly |
 | `rslogic/client/executor.py` | Per-step dispatcher for file and SDK steps |
-| `rslogic/client/file_ops.py` | Group staging and file copy operations |
+| `rslogic/client/file_ops.py` | Group staging and file copy operations, including session `_data` copy targets |
 | `rslogic/client/process_guard.py` | RSNode process supervision |
 | `rslogic/client/runtime.py` | Long-running client worker |
 | `rslogic/client/control_tui.py` | Client supervisor TUI and non-interactive commands |
@@ -148,7 +158,7 @@ Important current behavior:
 | `rslogic/client/rsnode_client.py` | Runtime bootstrap entry point |
 | `rslogic/tui/app.py` | Deprecated shim that forwards legacy orchestrator TUI entry paths to the web launcher |
 | `rslogic/tui/launcher.py` | `rslogic-tui` bootstrap that re-execs with `PYTHON_GIL=0` / `-X gil=0` and launches the FastAPI web UI |
-| `rslogic/tui/job_builder.py` | RealityScan job-draft presets, validation, and step editing helpers |
+| `rslogic/tui/job_builder.py` | RealityScan job-draft presets, validation, SDK-surface action catalog generation, and step editing helpers |
 | `rslogic/cli/upload.py` | CLI wrapper around `FolderUploader` |
 | `rslogic/db/migrate.py` | Alembic wrapper for `studio-db` migrations |
 | `rslogic/jobs/worker.py` | Alias entry point to the client runtime |
@@ -167,7 +177,7 @@ Important current behavior:
 | `tests/test_upload_service.py` | Upload keying, sidecar pairing, progress callback, synthetic sidecar coverage |
 | `tests/test_ingest_service.py` | Ingest progress callback and S3 move/DB wiring coverage |
 | `tests/test_sidecar_parser.py` | EXIF/XMP normalization and GPS extraction coverage |
-| `tests/test_api_web.py` | FastAPI `/ui` shell, workflow import, directory listing, and client endpoint coverage |
+| `tests/test_api_web.py` | FastAPI `/ui` shell, directory listing, client endpoint coverage, and image endpoint coverage |
 | `tests/test_web_ops.py` | `OperationRegistry` success/error state transition coverage |
 | `tests/test_status_render.py` | Client task/project status formatting coverage |
 | `tests/test_redis_bus.py` | RedisBus heartbeat and queue-depth helper coverage |
@@ -198,7 +208,6 @@ Important current behavior:
 | `rslogic/common/schemas.py` | `JobProgress` | dataclass | Lightweight progress container; not central to current orchestration path | Shared utilities / future progress handling |
 | `rslogic/api/web_models.py` | `UploadStartRequest` | Pydantic model | Validates `POST /ui/api/upload` input | Web upload flow |
 | `rslogic/api/web_models.py` | `IngestStartRequest` | Pydantic model | Validates `POST /ui/api/ingest` input | Web ingest flow |
-| `rslogic/api/web_models.py` | `WorkflowImportRequest` | Pydantic model | Validates server-side workflow import input | Web job-builder import flow |
 | `rslogic/common/db.py` | `LabelDbStore` | dataclass-backed service object | Imports `studio_db`, opens SQLAlchemy sessions, and encapsulates RsLogic DB operations | API, ingest, file staging, runtime |
 | `rslogic/common/redis_bus.py` | `RedisBus` | service object | Publishes/pops command and result payloads, heartbeats, and client queue-depth lookups | API, runtime, client control |
 
@@ -232,7 +241,7 @@ Important helper modules that these classes depend on:
 | --- | --- | --- | --- | --- |
 | `rslogic/client/executor.py` | `StepExecutionResult` | dataclass | Typed step result with raw value plus extracted task IDs | `StepExecutor` -> `ClientRuntime` |
 | `rslogic/client/executor.py` | `StepExecutor` | service object | Dispatches one `Step` to file or SDK handlers and maintains session-aware string templating context | `ClientRuntime` -> `FileExecutor` / `RealityScanClient` |
-| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets from processed storage into staging and copies staged files into working/session directories | `StepExecutor` -> filesystem + S3 + DB |
+| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets from processed storage into staging and copies staged files into session `_data` roots or deeper relative subdirectories | `StepExecutor` -> filesystem + S3 + DB |
 | `rslogic/client/process_guard.py` | `RsNodeProcess` | service object | Ensures RSNode is running, reuses external process if present, stops managed process on shutdown | `ClientRuntime` |
 | `rslogic/client/runtime.py` | `ClientRuntime` | service object | Long-running client: queue polling, job locking, step execution, task polling, heartbeat publishing, DB/result updates | Redis + DB + filesystem + RSNode + RealityScan SDK |
 
@@ -261,7 +270,7 @@ How these classes are piped together:
 
 | File | Main role |
 | --- | --- |
-| `rslogic/api/server.py` | FastAPI app, `/ui` shell, static asset serving, upload/ingest operation endpoints, job-builder metadata/import endpoints, job/client routes, and background result consumer |
+| `rslogic/api/server.py` | FastAPI app, `/ui` shell, static asset serving, upload/ingest operation endpoints, job-builder metadata endpoint, job/client routes, and background result consumer |
 | `rslogic/client/rsnode_client.py` | Ensures repo root on `sys.path`, then calls runtime `main()` |
 | `rslogic/cli/upload.py` | Minimal argparse upload wrapper |
 | `rslogic/db/migrate.py` | Minimal Alembic wrapper |
@@ -374,6 +383,7 @@ The RsLogic runtime mainly depends on these `ProjectAPI` and `NodeAPI` capabilit
 - `project.tasks()`
 - `project.command(...)`
 - dynamic method resolution for other `sdk_project_*` commands such as `sdk_project_add_folder`
+- action names are canonical only; alias step names have been removed so each executor path has one published name
 
 `ProjectAPI` exposes many more command wrappers than RsLogic currently hard-codes. `StepExecutor` intentionally supports dynamic `sdk_project_*` and `sdk_node_*` action names so new SDK methods can be reached without adding a new dispatcher branch for each one.
 

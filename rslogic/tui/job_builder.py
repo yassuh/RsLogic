@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -14,13 +15,13 @@ DEFAULT_REALITYSCAN_SESSION_STEPS: list[dict[str, Any]] = [
     {"kind": "file", "action": "stage", "params": {}},
     {"kind": "sdk", "action": "sdk_node_connect_user", "params": {}},
     {"kind": "sdk", "action": "sdk_project_create", "params": {}},
-    {"kind": "sdk", "action": "sdk_new_scene", "params": {}},
-    {"kind": "file", "action": "file_copy_to_session_imagery", "params": {}},
+    {"kind": "sdk", "action": "sdk_project_new_scene", "params": {}},
+    {"kind": "file", "action": "file_copy_staging_to_working", "params": {"relative_dir": "Imagery"}},
 ]
 
 ALIGN_REALITYSCAN_STEPS: list[dict[str, Any]] = [
     *DEFAULT_REALITYSCAN_SESSION_STEPS,
-    {"kind": "sdk", "action": "sdk_project_add_folder", "params": {"path": "Imagery"}},
+    {"kind": "sdk", "action": "sdk_project_add_folder", "params": {"folder_path": "Imagery"}},
     {"kind": "sdk", "action": "sdk_project_command", "params": {"name": "align"}, "timeout_s": 0},
     {"kind": "sdk", "action": "sdk_project_save", "params": {"path": "realityscan-job.rspj"}},
 ]
@@ -34,11 +35,80 @@ PROJECT_STATUS_STEPS: list[dict[str, Any]] = [
 ]
 
 ALIGN_ONLY_STEPS: list[dict[str, Any]] = [
-    {"kind": "sdk", "action": "sdk_project_add_folder", "params": {"path": "Imagery"}},
+    {"kind": "sdk", "action": "sdk_project_add_folder", "params": {"folder_path": "Imagery"}},
     {"kind": "sdk", "action": "sdk_project_command", "params": {"name": "align"}, "timeout_s": 0},
 ]
 
 _ACTION_MAP = json.loads((Path(__file__).resolve().parents[2] / "job-action-map.json").read_text(encoding="utf-8"))
+
+
+def _annotation_label(annotation: Any) -> str:
+    if annotation is inspect.Signature.empty:
+        return "value"
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _sdk_action_entry(method: Any) -> dict[str, Any]:
+    signature = inspect.signature(method)
+    params: dict[str, str] = {}
+    required: list[str] = []
+    optional: list[str] = []
+
+    for parameter in signature.parameters.values():
+        if parameter.name == "self":
+            continue
+        if parameter.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
+            continue
+        params[parameter.name] = _annotation_label(parameter.annotation)
+        if parameter.default is inspect.Signature.empty:
+            required.append(parameter.name)
+        else:
+            optional.append(parameter.name)
+
+    entry: dict[str, Any] = {}
+    doc = (inspect.getdoc(method) or "").strip().splitlines()
+    if doc:
+        entry["description"] = doc[0].strip()
+    if params:
+        entry["params"] = params
+    if required:
+        entry["required_params"] = required
+    if optional:
+        entry["optional_params"] = optional
+    return entry
+
+
+def _sdk_resource_entries() -> dict[str, dict[str, Any]]:
+    try:
+        from realityscan_sdk.resources.node import NodeAPI
+        from realityscan_sdk.resources.project import ProjectAPI
+    except ImportError:
+        return {}
+
+    entries: dict[str, dict[str, Any]] = {}
+    for prefix, resource in (("sdk_node_", NodeAPI), ("sdk_project_", ProjectAPI)):
+        seen: set[int] = set()
+        for name, method in inspect.getmembers(resource, inspect.isfunction):
+            if name.startswith("_") or name == "__init__":
+                continue
+            identity = id(method)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            entries[f"{prefix}{name}"] = _sdk_action_entry(method)
+    return entries
+
+
+def _merged_action_entries(kind: str) -> dict[str, dict[str, Any]]:
+    normalized = kind.strip().lower()
+    if normalized == "file":
+        return dict(_ACTION_MAP.get("file_steps", {}))
+
+    merged = _sdk_resource_entries()
+    merged.update(dict(_ACTION_MAP.get("sdk_steps", {})))
+    return merged
 
 
 @dataclass(frozen=True)
@@ -171,10 +241,7 @@ def fragment_details(key: str) -> list[str]:
 
 
 def _action_entries(kind: str) -> dict[str, dict[str, Any]]:
-    normalized = kind.strip().lower()
-    if normalized == "file":
-        return dict(_ACTION_MAP.get("file_steps", {}))
-    return dict(_ACTION_MAP.get("sdk_steps", {}))
+    return _merged_action_entries(kind)
 
 
 def action_options(kind: str) -> list[tuple[str, str]]:
@@ -236,7 +303,7 @@ def fragment_catalog() -> list[dict[str, Any]]:
 def action_catalog() -> dict[str, Any]:
     return {
         "file_steps": dict(_ACTION_MAP.get("file_steps", {})),
-        "sdk_steps": dict(_ACTION_MAP.get("sdk_steps", {})),
+        "sdk_steps": _merged_action_entries("sdk"),
         "dynamic_rules": list(_ACTION_MAP.get("dynamic_rules", [])),
     }
 
@@ -328,14 +395,14 @@ class RealityScanJobDraft:
             raise ValueError("job must contain at least one step")
         if not request.auto_assign and not request.requested_client:
             raise ValueError("target_client or client_id is required when auto_assign is false")
-        if self.uses_file_stage() and not (request.group_id or request.group_name):
-            raise ValueError("file stage workflows require group_id or group_name")
+        if self.uses_stage_step() and not (request.group_id or request.group_name):
+            raise ValueError("stage workflows require group_id or group_name")
         return request
 
-    def uses_file_stage(self) -> bool:
+    def uses_stage_step(self) -> bool:
         return any(
             str(step.get("kind", "")).strip().lower() == "file"
-            and str(step.get("action", "")).strip().lower() in {"stage", "file_stage", "file_stage_group"}
+            and str(step.get("action", "")).strip().lower() == "stage"
             for step in self.steps
         )
 
