@@ -111,7 +111,7 @@ Important current behavior:
 | Processed bucket | `rslogic.ingest`, `rslogic.client.file_ops` | Ingested image payloads used for staging |
 | Postgres/PostGIS | `rslogic.common.db`, `studio_db.models` | Image assets, groups, RealityScan jobs, plus labeling domain tables |
 | Redis | `rslogic.common.redis_bus`, `rslogic.api.server`, `rslogic.client.runtime`, `rslogic.client.control_tui` | Job command queues, result queues, client heartbeats |
-| Client working root | `rslogic.client.file_ops`, `rslogic.client.runtime` | shared staged asset cache under `staging/`, per-job stage manifests under `staging/.jobs/<job_id>/`, `sessions/<session>/_data/`, session state JSON |
+| Client working root | `rslogic.client.file_ops`, `rslogic.client.runtime` | shared staged asset cache under `staging/`, `sessions/<session>/_data/`, session state JSON |
 | RealityScan/RSNode HTTP API | `realityscan_sdk` | Project session lifecycle, async task execution, project progress |
 
 ## 4. Repository map
@@ -243,7 +243,7 @@ Important helper modules that these classes depend on:
 | --- | --- | --- | --- | --- |
 | `rslogic/client/executor.py` | `StepExecutionResult` | dataclass | Typed step result with raw value plus extracted task IDs | `StepExecutor` -> `ClientRuntime` |
 | `rslogic/client/executor.py` | `StepExecutor` | service object | Dispatches one `Step` to file or SDK handlers, maintains session-aware string templating context, and hard-fails if `file_write_manifest` or `file_copy_staging_to_session` runs before an explicit `stage` step or before the session `_data` path is known | `ClientRuntime` -> `FileExecutor` / `RealityScanClient` |
-| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets into the shared staged-file cache under `staging/`, writes the current job's selected-file manifest under `staging/.jobs/<job_id>/stage-map.json`, and replaces the target session import directory before copying only the manifest-listed files into `<working_root>/sessions/<session>/_data[/relative_dir]` | `StepExecutor` -> filesystem + S3 + DB |
+| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets into the shared staged-file cache under `staging/`, derives the selected copy set directly from `ImageGroupItem` membership in Postgres, and replaces the target session import directory before copying only those cached group files into `<working_root>/sessions/<session>/_data[/relative_dir]` using the configured multipart concurrency as the local file-copy worker count | `StepExecutor` -> filesystem + S3 + DB |
 | `rslogic/client/process_guard.py` | `RsNodeProcess` | service object | Ensures RSNode is running, reuses external process if present, stops managed process on shutdown | `ClientRuntime` |
 | `rslogic/client/runtime.py` | `ClientRuntime` | service object | Long-running client: queue polling, job locking, step execution, task polling, heartbeat publishing, DB/result updates | Redis + DB + filesystem + RSNode + RealityScan SDK |
 

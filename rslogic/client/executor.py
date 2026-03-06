@@ -226,6 +226,8 @@ class StepExecutor:
                 return StepExecutionResult(value=str(manifest), task_ids=[])
 
             if action == "file_copy_staging_to_session":
+                if not group_id:
+                    raise RuntimeError("group_id required for file_copy_staging_to_session")
                 staging = self._staging_dir
                 if staging is None:
                     raise RuntimeError("staging directory not known; run stage before file_copy_staging_to_session")
@@ -235,7 +237,7 @@ class StepExecutor:
                 if not base_dir:
                     raise RuntimeError("session data directory not known; run sdk_project_create before copying staged files")
                 session_dir = _relative_target_path(Path(base_dir), params.get("relative_dir"))
-                result = str(self.file_executor.copy_staging_to_session(job_id, staging, session_dir))
+                result = str(self.file_executor.copy_staging_to_session(job_id, staging, session_dir, group_id))
                 _LOGGER.info(
                     "file_copy_staging_to_session complete job_id=%s staging=%s destination=%s",
                     job_id,
