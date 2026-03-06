@@ -80,6 +80,25 @@
   padding: 4px 8px;
 }
 
+.job-step-param-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.job-step-param-empty {
+  padding: 6px 8px;
+  min-height: 24px;
+  color: var(--muted);
+}
+
+.job-step-param-type {
+  color: var(--muted);
+}
+
+.job-step-param-fields textarea {
+  min-height: 3.5rem;
+}
+
 .inline-field-row {
   grid-template-columns: 4rem minmax(0, 1fr);
   min-width: 0;

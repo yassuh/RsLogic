@@ -19,7 +19,6 @@ class FileExecutor:
         self.s3 = make_client(endpoint_url=CONFIG.s3.endpoint_url, region_name=CONFIG.s3.region)
         self.working_root = working_root
         self.staging_root = self.working_root / "staging"
-        self.working_projects_root = self.working_root / "working"
 
     @staticmethod
     def _coerce_storage_location(bucket_hint: str | None, object_hint: str | None, default_bucket: str) -> tuple[str, str]:
@@ -240,19 +239,15 @@ class FileExecutor:
         _LOGGER.debug("write_manifest wrote %s", manifest_path)
         return manifest_path
 
-    def copy_staging_to_working(
+    def copy_staging_to_session(
         self,
         job_id: str,
-        staging_dir: Path | None = None,
-        working_dir: Path | None = None,
+        staging_dir: Path,
+        session_dir: Path,
     ) -> Path:
-        """Copy staged assets into a working destination."""
-        if staging_dir is None:
-            staging_dir = self.staging_root
-        if working_dir is None:
-            working_dir = self.working_projects_root / str(job_id)
-        working_dir.mkdir(parents=True, exist_ok=True)
-        _LOGGER.info("copy_staging_to_working start job_id=%s staging_dir=%s working_dir=%s", job_id, staging_dir, working_dir)
+        """Copy staged assets into a RealityScan session data directory."""
+        session_dir.mkdir(parents=True, exist_ok=True)
+        _LOGGER.info("copy_staging_to_session start job_id=%s staging_dir=%s session_dir=%s", job_id, staging_dir, session_dir)
         moved = 0
 
         manifest_files = self._manifested_staging_files(staging_dir)
@@ -265,10 +260,10 @@ class FileExecutor:
                 continue
             moved += 1
             rel = source.relative_to(staging_dir)
-            target = working_dir / rel
+            target = session_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 target.unlink()
             shutil.copy2(str(source), str(target))
-        _LOGGER.info("copy_staging_to_working done job_id=%s moved=%s target=%s", job_id, moved, working_dir)
-        return working_dir
+        _LOGGER.info("copy_staging_to_session done job_id=%s moved=%s target=%s", job_id, moved, session_dir)
+        return session_dir

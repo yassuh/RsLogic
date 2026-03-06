@@ -107,7 +107,7 @@
               "enum": [
                 "stage",
                 "file_write_manifest",
-                "file_copy_staging_to_working"
+                "file_copy_staging_to_session"
               ]
             }
           },
@@ -116,7 +116,7 @@
               "if": {
                 "properties": {
                   "action": {
-                    "const": "file_copy_staging_to_working"
+                    "const": "file_copy_staging_to_session"
                   }
                 }
               },

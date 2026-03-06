@@ -33,7 +33,7 @@
     },
     {
       "kind": "file",
-      "action": "file_copy_staging_to_working",
+      "action": "file_copy_staging_to_session",
       "params": {
         "relative_dir": "Imagery"
       }

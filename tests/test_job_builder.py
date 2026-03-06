@@ -46,7 +46,7 @@ def test_draft_build_request_includes_job_name_and_steps() -> None:
     assert request.job_name == "align-imagery"
     assert request.group_name == "flight-a"
     assert request.steps[-1].action == "sdk_project_save"
-    assert request.steps[4].action == "file_copy_staging_to_working"
+    assert request.steps[4].action == "file_copy_staging_to_session"
     assert request.steps[4].params["relative_dir"] == "Imagery"
 
 
@@ -93,7 +93,7 @@ def test_action_catalog_includes_sdk_surface_entries() -> None:
     assert "sdk_new_scene" not in catalog["sdk_steps"]
     assert "sdk_project_commandgroup" not in catalog["sdk_steps"]
     assert "file_copy_staging_to_session_imagery" not in catalog["file_steps"]
-    assert catalog["file_steps"]["file_copy_staging_to_working"]["optional_params"] == ["relative_dir"]
+    assert catalog["file_steps"]["file_copy_staging_to_session"]["optional_params"] == ["relative_dir"]
 
 
 def test_draft_insert_and_move_steps() -> None:

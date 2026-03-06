@@ -29,7 +29,7 @@ def test_job_builder_metadata_exposes_sdk_action_catalog() -> None:
     assert "sdk_project_add_folder" in payload["actions"]["sdk_steps"]
     assert "sdk_node_status" in payload["actions"]["sdk_steps"]
     assert "file_copy_staging_to_session_imagery" not in payload["actions"]["file_steps"]
-    assert payload["actions"]["file_steps"]["file_copy_staging_to_working"]["optional_params"] == ["relative_dir"]
+    assert payload["actions"]["file_steps"]["file_copy_staging_to_session"]["optional_params"] == ["relative_dir"]
 
 
 def test_upload_directories_lists_child_directories(web_client: TestClient, tmp_path) -> None:

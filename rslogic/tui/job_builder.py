@@ -16,7 +16,7 @@ DEFAULT_REALITYSCAN_SESSION_STEPS: list[dict[str, Any]] = [
     {"kind": "sdk", "action": "sdk_node_connect_user", "params": {}},
     {"kind": "sdk", "action": "sdk_project_create", "params": {}},
     {"kind": "sdk", "action": "sdk_project_new_scene", "params": {}},
-    {"kind": "file", "action": "file_copy_staging_to_working", "params": {"relative_dir": "Imagery"}},
+    {"kind": "file", "action": "file_copy_staging_to_session", "params": {"relative_dir": "Imagery"}},
 ]
 
 ALIGN_REALITYSCAN_STEPS: list[dict[str, Any]] = [

@@ -90,12 +90,13 @@ Important current behavior:
 6. The job builder intentionally gives the `CURRENT STEPS` rail more horizontal space than the step editor so longer chained workflows remain readable without collapsing into the preview pane.
 7. The right-side jobs and clients rail is hard-contained with `minmax(0, ...)`, `min-width: 0`, and text truncation on list rows so live job updates and large detail payloads wrap or scroll inside the rail instead of widening the whole page.
 8. The job builder step list includes per-row micro move controls on the left edge so long chains can be reordered directly in-place without moving focus to the global toolbar.
-9. The `/ui` page is now assembled from reusable browser-side components: `index.html` only provides the root mount point, `ui-components.js` defines the shared ribbon/tile/form/list primitives, `ui-layout.js` composes the operator dashboard from those primitives, and `app.js` binds the live upload/ingest/job/client behavior to the generated nodes.
-10. The browser UI now behaves as a workflow-driven SPA with top-ribbon workflow buttons and isolated `UPLOAD`, `BUILD`, `JOBS`, `CLIENTS`, and `IMAGES` views so the entire working region swaps in place without changing URL and upload/ingest, job authoring, job monitoring, client control, and image grouping do not compete in one shared screen.
-11. Shared CSS primitives now collapse adjacent borders in stacked builder sections and treat single-column JSON blocks as full-width label rows so the UI keeps the Qt-style single-line separator look instead of showing partial or doubled borders.
-12. The `JOBS` and `CLIENTS` detail panes now use fixed-height selectable lists above a flexing detail console, and each tile/body is explicitly height-constrained, so large JSON payloads scroll inside the detail pane instead of expanding the tile.
-13. The `IMAGES` workflow uses real image geometry from Postgres, preferring `image_assets.latitude/longitude` and deriving coordinates from `image_assets.location` when needed; it now uses a basic Leaflet slippy map with OpenStreetMap raster tiles instead of the previous vector-renderer stack. Image assets are drawn as DOM markers on top of that map, `FIT TO MAP` uses Leaflet bounds fitting, `Shift`-drag selection uses the map’s `latLngToContainerPoint` projection against the screen-space selection rectangle, and the lower `IMAGES` console panel carries live Leaflet diagnostics (tile loads/errors, container size, marker counts) for debugging.
-14. `rslogic.client.control_tui.ClientControlTUI` remains a client-local supervisor by reading:
+9. The web job-builder step editor now parses cataloged action parameters into editable form fields and keeps those fields synchronized with the fallback `PARAMS JSON` textarea, so common SDK/file step parameters can be filled without hand-writing raw JSON while still allowing custom keys in the JSON panel.
+10. The `/ui` page is now assembled from reusable browser-side components: `index.html` only provides the root mount point, `ui-components.js` defines the shared ribbon/tile/form/list primitives, `ui-layout.js` composes the operator dashboard from those primitives, and `app.js` binds the live upload/ingest/job/client behavior to the generated nodes.
+11. The browser UI now behaves as a workflow-driven SPA with top-ribbon workflow buttons and isolated `UPLOAD`, `BUILD`, `JOBS`, `CLIENTS`, and `IMAGES` views so the entire working region swaps in place without changing URL and upload/ingest, job authoring, job monitoring, client control, and image grouping do not compete in one shared screen.
+12. Shared CSS primitives now collapse adjacent borders in stacked builder sections and treat single-column JSON blocks as full-width label rows so the UI keeps the Qt-style single-line separator look instead of showing partial or doubled borders.
+13. The `JOBS` and `CLIENTS` detail panes now use fixed-height selectable lists above a flexing detail console, and each tile/body is explicitly height-constrained, so large JSON payloads scroll inside the detail pane instead of expanding the tile.
+14. The `IMAGES` workflow uses real image geometry from Postgres, preferring `image_assets.latitude/longitude` and deriving coordinates from `image_assets.location` when needed; it now uses a basic Leaflet slippy map with OpenStreetMap raster tiles instead of the previous vector-renderer stack. Image assets are drawn as DOM markers on top of that map, `FIT TO MAP` uses Leaflet bounds fitting, `Shift`-drag selection uses the map’s `latLngToContainerPoint` projection against the screen-space selection rectangle, and the lower `IMAGES` console panel carries live Leaflet diagnostics (tile loads/errors, container size, marker counts) for debugging.
+15. `rslogic.client.control_tui.ClientControlTUI` remains a client-local supervisor by reading:
    - process PID/log files
    - Redis heartbeat
    - client queue depth
@@ -109,7 +110,7 @@ Important current behavior:
 | Processed bucket | `rslogic.ingest`, `rslogic.client.file_ops` | Ingested image payloads used for staging |
 | Postgres/PostGIS | `rslogic.common.db`, `studio_db.models` | Image assets, groups, RealityScan jobs, plus labeling domain tables |
 | Redis | `rslogic.common.redis_bus`, `rslogic.api.server`, `rslogic.client.runtime`, `rslogic.client.control_tui` | Job command queues, result queues, client heartbeats |
-| Client working root | `rslogic.client.file_ops`, `rslogic.client.runtime` | `staging/`, `working/`, `sessions/<session>/_data/`, session state JSON |
+| Client working root | `rslogic.client.file_ops`, `rslogic.client.runtime` | `staging/`, `sessions/<session>/_data/`, session state JSON |
 | RealityScan/RSNode HTTP API | `realityscan_sdk` | Project session lifecycle, async task execution, project progress |
 
 ## 4. Repository map
@@ -150,7 +151,7 @@ Important current behavior:
 | `rslogic/api/web/static/js/images-view.js` | Browser-side image asset map, drag selection, and image-group CRUD/membership controller |
 | `rslogic/api/web/static/js/*` | Browser-side upload, ingest, jobs, clients, images, job-builder behavior, and dashboard assembly |
 | `rslogic/client/executor.py` | Per-step dispatcher for file and SDK steps |
-| `rslogic/client/file_ops.py` | Group staging and file copy operations, including session `_data` copy targets |
+| `rslogic/client/file_ops.py` | Group staging and explicit session `_data` copy operations; no generic `working/` fallback |
 | `rslogic/client/process_guard.py` | RSNode process supervision |
 | `rslogic/client/runtime.py` | Long-running client worker |
 | `rslogic/client/control_tui.py` | Client supervisor TUI and non-interactive commands |
@@ -240,8 +241,8 @@ Important helper modules that these classes depend on:
 | File | Class | Type | Role | Main connections |
 | --- | --- | --- | --- | --- |
 | `rslogic/client/executor.py` | `StepExecutionResult` | dataclass | Typed step result with raw value plus extracted task IDs | `StepExecutor` -> `ClientRuntime` |
-| `rslogic/client/executor.py` | `StepExecutor` | service object | Dispatches one `Step` to file or SDK handlers and maintains session-aware string templating context | `ClientRuntime` -> `FileExecutor` / `RealityScanClient` |
-| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets from processed storage into staging and copies staged files into session `_data` roots or deeper relative subdirectories | `StepExecutor` -> filesystem + S3 + DB |
+| `rslogic/client/executor.py` | `StepExecutor` | service object | Dispatches one `Step` to file or SDK handlers, maintains session-aware string templating context, and hard-fails `file_copy_staging_to_session` if the session `_data` path is unknown | `ClientRuntime` -> `FileExecutor` / `RealityScanClient` |
+| `rslogic/client/file_ops.py` | `FileExecutor` | service object | Downloads group assets from processed storage into staging and copies staged files into `<working_root>/sessions/<session>/_data[/relative_dir]` only | `StepExecutor` -> filesystem + S3 + DB |
 | `rslogic/client/process_guard.py` | `RsNodeProcess` | service object | Ensures RSNode is running, reuses external process if present, stops managed process on shutdown | `ClientRuntime` |
 | `rslogic/client/runtime.py` | `ClientRuntime` | service object | Long-running client: queue polling, job locking, step execution, task polling, heartbeat publishing, DB/result updates | Redis + DB + filesystem + RSNode + RealityScan SDK |
 

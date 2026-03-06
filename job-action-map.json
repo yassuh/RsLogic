@@ -15,15 +15,15 @@
       "required_params": [],
       "optional_params": []
     },
-    "file_copy_staging_to_working": {
+    "file_copy_staging_to_session": {
       "kind": "file",
-      "description": "Copies staged files into <working_root>/sessions/<session>/_data or a deeper relative subdirectory.",
+      "description": "Copies staged files into <working_root>/sessions/<session>/_data or a deeper relative subdirectory beneath that session root.",
       "required_params": [],
       "optional_params": [
         "relative_dir"
       ],
       "updates_state": {
-        "executor_state": "returns_working_dir"
+        "executor_state": "returns_session_dir"
       }
     }
   },

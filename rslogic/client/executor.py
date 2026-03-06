@@ -131,7 +131,6 @@ class StepExecutor:
             self._context.update(
                 {
                     "working_root": str(self.file_executor.working_root),
-                    "working_projects_root": str(self.file_executor.working_projects_root),
                     "staging_root": str(self.file_executor.staging_root),
                 }
             )
@@ -227,7 +226,7 @@ class StepExecutor:
                 _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
                 return StepExecutionResult(value=str(manifest), task_ids=[])
 
-            if action == "file_copy_staging_to_working":
+            if action == "file_copy_staging_to_session":
                 staging = self._staging_dir
                 if staging is None:
                     staging = self.file_executor.staging_root
@@ -236,13 +235,13 @@ class StepExecutor:
                 base_dir = self._context.get("session_data_dir")
                 if not base_dir:
                     raise RuntimeError("session data directory not known; run sdk_project_create before copying staged files")
-                working_dir = _relative_target_path(Path(base_dir), params.get("relative_dir"))
-                result = str(self.file_executor.copy_staging_to_working(job_id, staging, working_dir))
+                session_dir = _relative_target_path(Path(base_dir), params.get("relative_dir"))
+                result = str(self.file_executor.copy_staging_to_session(job_id, staging, session_dir))
                 _LOGGER.info(
-                    "file_copy_staging_to_working complete job_id=%s staging=%s destination=%s",
+                    "file_copy_staging_to_session complete job_id=%s staging=%s destination=%s",
                     job_id,
                     staging,
-                    working_dir,
+                    session_dir,
                 )
                 return StepExecutionResult(value=result, task_ids=[])
 

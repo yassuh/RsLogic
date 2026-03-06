@@ -216,6 +216,10 @@ function buildBuilderStepEditor(refs) {
         ],
       }),
       fieldBlock({
+        label: "PARAM FIELDS",
+        control: remember(refs, "jobStepParamFields", element("div", { id: "job-step-param-fields", className: "job-step-param-fields" })),
+      }),
+      fieldBlock({
         label: "PARAMS JSON",
         control: remember(refs, "jobStepParams", textarea({ id: "job-step-params", spellcheck: false, text: "{}" })),
       }),

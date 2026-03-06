@@ -1,5 +1,5 @@
 import { postJSON, prettyJSON } from "./api.js";
-import { element, listRowButton, moveStack } from "./ui-components.js";
+import { element, fieldRow, input, listRowButton, moveStack, textarea } from "./ui-components.js";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -58,6 +58,119 @@ function actionEntry(metadata, kind, action) {
   return (kind === "file" ? metadata.actions.file_steps : metadata.actions.sdk_steps)?.[action];
 }
 
+function parseJSONObject(text, fallback = {}) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return clone(fallback);
+  }
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("step params JSON must be an object");
+  }
+  return parsed;
+}
+
+function paramDefinitions(metadata, kind, action) {
+  const entry = actionEntry(metadata, kind, action);
+  if (!entry) {
+    return [];
+  }
+  const required = new Set([...(entry.required_params || []), ...(entry.requires_params || [])].map((value) => String(value)));
+  const optional = new Set((entry.optional_params || []).map((value) => String(value)));
+  const definitions = new Map();
+
+  if (entry.params && typeof entry.params === "object") {
+    for (const [name, type] of Object.entries(entry.params)) {
+      const typeLabel = String(type || "string");
+      const inferredRequired = /\brequired\b/i.test(typeLabel);
+      definitions.set(name, {
+        name,
+        typeLabel,
+        required: required.has(name) || inferredRequired,
+      });
+    }
+  }
+
+  for (const name of required) {
+    if (!definitions.has(name)) {
+      definitions.set(name, { name, typeLabel: "string", required: true });
+    } else {
+      definitions.get(name).required = true;
+    }
+  }
+  for (const name of optional) {
+    if (!definitions.has(name)) {
+      definitions.set(name, { name, typeLabel: "string", required: false });
+    }
+  }
+
+  return [...definitions.values()];
+}
+
+function paramInputMode(typeLabel) {
+  const normalized = String(typeLabel || "").toLowerCase();
+  if (normalized.includes("bool")) {
+    return "bool";
+  }
+  if (normalized.includes("dict") || normalized.includes("list") || normalized.includes("json") || normalized.includes("object")) {
+    return "json";
+  }
+  if (normalized.includes("int")) {
+    return "int";
+  }
+  if (normalized.includes("float") || normalized.includes("number")) {
+    return "float";
+  }
+  return "text";
+}
+
+function formatParamValue(definition, value) {
+  if (value == null) {
+    return "";
+  }
+  const mode = paramInputMode(definition.typeLabel);
+  if (mode === "json") {
+    return prettyJSON(value);
+  }
+  if (mode === "bool") {
+    return Boolean(value);
+  }
+  return String(value);
+}
+
+function parseParamValue(definition, control) {
+  const mode = paramInputMode(definition.typeLabel);
+  if (mode === "bool") {
+    return Boolean(control.checked);
+  }
+  const raw = String(control.value || "").trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (mode === "int") {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`param ${definition.name} must be an integer`);
+    }
+    return parsed;
+  }
+  if (mode === "float") {
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`param ${definition.name} must be a number`);
+    }
+    return parsed;
+  }
+  if (mode === "json") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(`param ${definition.name} must be valid JSON`);
+    }
+  }
+  return raw;
+}
+
 function actionDetails(metadata, kind, action) {
   const entry = actionEntry(metadata, kind, action);
   if (!entry) {
@@ -101,6 +214,7 @@ export function createJobBuilder(elements, metadata, hooks) {
     metadata,
     draft: createEmptyDraft(),
     selectedStepIndex: 0,
+    paramControls: [],
   };
 
   const firstFragment = metadata.fragments[0];
@@ -155,13 +269,86 @@ export function createJobBuilder(elements, metadata, hooks) {
   }
 
   function maybeApplyActionTemplate(kind, action, previousAction = "") {
-    const entry = actionEntry(metadata, kind, action);
-    if (!entry || !entry.params || typeof entry.params !== "object") {
-      return;
-    }
     const currentText = elements.jobStepParams.value.trim();
     if (!currentText || currentText === "{}" || previousAction !== action) {
-      elements.jobStepParams.value = prettyJSON(entry.params);
+      elements.jobStepParams.value = "{}";
+    }
+  }
+
+  function mergeEditorParamsFromFields() {
+    const current = parseJSONObject(elements.jobStepParams.value, {});
+    for (const definition of paramDefinitions(metadata, elements.jobStepKind.value || "sdk", elements.jobStepAction.value.trim())) {
+      delete current[definition.name];
+    }
+    for (const { definition, control } of state.paramControls) {
+      const value = parseParamValue(definition, control);
+      if (value !== undefined) {
+        current[definition.name] = value;
+      }
+    }
+    return current;
+  }
+
+  function syncParamsJsonFromFields() {
+    const merged = mergeEditorParamsFromFields();
+    elements.jobStepParams.value = prettyJSON(merged);
+  }
+
+  function renderParamFields() {
+    elements.jobStepParamFields.replaceChildren();
+    state.paramControls = [];
+    const definitions = paramDefinitions(metadata, elements.jobStepKind.value || "sdk", elements.jobStepAction.value.trim());
+    if (!definitions.length) {
+      elements.jobStepParamFields.append(
+        element("div", {
+          className: "job-step-param-empty",
+          text: "No cataloged parameters. Use PARAMS JSON for custom payloads.",
+        }),
+      );
+      return;
+    }
+
+    let params = {};
+    try {
+      params = parseJSONObject(elements.jobStepParams.value, {});
+    } catch {
+      params = {};
+    }
+
+    for (const definition of definitions) {
+      const mode = paramInputMode(definition.typeLabel);
+      const control =
+        mode === "json"
+          ? textarea({
+              id: `job-step-param-${definition.name}`,
+              spellcheck: false,
+              text: formatParamValue(definition, params[definition.name]),
+            })
+          : input({
+              id: `job-step-param-${definition.name}`,
+              type: mode === "bool" ? "checkbox" : mode === "text" ? "text" : "number",
+              spellcheck: false,
+              value: mode === "bool" ? undefined : formatParamValue(definition, params[definition.name]),
+              checked: mode === "bool" ? formatParamValue(definition, params[definition.name]) : undefined,
+            });
+      if (mode === "int" || mode === "float") {
+        control.step = mode === "int" ? "1" : "any";
+      }
+      control.title = definition.typeLabel;
+      const row = fieldRow({
+        className: `field-row${mode === "bool" ? " checkbox-row" : ""}`,
+        label: definition.required ? `${definition.name}*` : definition.name,
+        control,
+      });
+      elements.jobStepParamFields.append(row);
+      state.paramControls.push({ definition, control });
+      control.addEventListener(mode === "bool" ? "change" : "input", () => {
+        try {
+          syncParamsJsonFromFields();
+        } catch (error) {
+          hooks.setStatus(String(error), "error");
+        }
+      });
     }
   }
 
@@ -233,6 +420,7 @@ export function createJobBuilder(elements, metadata, hooks) {
   function render() {
     syncFormFromRootFields();
     syncActionSelect();
+    renderParamFields();
     renderHelp();
     renderStepList();
     renderPreview();
@@ -251,6 +439,7 @@ export function createJobBuilder(elements, metadata, hooks) {
       elements.jobStepTimeout.value = "600";
       elements.jobStepParams.value = "{}";
       syncActionSelect();
+      renderParamFields();
       renderHelp();
       return;
     }
@@ -260,15 +449,12 @@ export function createJobBuilder(elements, metadata, hooks) {
     elements.jobStepTimeout.value = String(step.timeout_s ?? 600);
     elements.jobStepParams.value = prettyJSON(step.params || {});
     syncActionSelect();
+    renderParamFields();
     renderHelp();
   }
 
   function readEditorStep() {
-    const paramsText = elements.jobStepParams.value.trim() || "{}";
-    const params = JSON.parse(paramsText);
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-      throw new Error("step params JSON must be an object");
-    }
+    const params = mergeEditorParamsFromFields();
     return normalizeStep({
       kind: elements.jobStepKind.value,
       action: elements.jobStepAction.value,
@@ -355,6 +541,7 @@ export function createJobBuilder(elements, metadata, hooks) {
 
   elements.jobStepKind.addEventListener("change", () => {
     syncActionSelect();
+    renderParamFields();
     renderHelp();
   });
   elements.jobActionSelect.addEventListener("change", () => {
@@ -363,11 +550,21 @@ export function createJobBuilder(elements, metadata, hooks) {
       elements.jobStepAction.value = elements.jobActionSelect.value;
       maybeApplyActionTemplate(elements.jobStepKind.value || "sdk", elements.jobActionSelect.value, previousAction);
     }
+    renderParamFields();
     renderHelp();
   });
   elements.jobStepAction.addEventListener("input", () => {
     syncActionSelect();
+    renderParamFields();
     renderHelp();
+  });
+  elements.jobStepParams.addEventListener("input", () => {
+    try {
+      parseJSONObject(elements.jobStepParams.value, {});
+    } catch {
+      return;
+    }
+    renderParamFields();
   });
 
   elements.jobStepAddButton.addEventListener("click", withStatus(() => {
