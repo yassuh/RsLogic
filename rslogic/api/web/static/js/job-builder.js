@@ -250,6 +250,7 @@ export function createJobBuilder(elements, metadata, hooks) {
   function syncActionSelect() {
     const kind = elements.jobStepKind.value || "sdk";
     const entries = actionEntries(metadata, kind).sort(([left], [right]) => left.localeCompare(right));
+    const currentAction = elements.jobStepAction.value.trim();
     elements.jobActionSelect.replaceChildren();
     const blank = document.createElement("option");
     blank.value = "";
@@ -261,8 +262,14 @@ export function createJobBuilder(elements, metadata, hooks) {
       option.textContent = entry.description ? `${action} | ${entry.description}` : action;
       elements.jobActionSelect.append(option);
     }
-    if (entries.some(([action]) => action === elements.jobStepAction.value.trim())) {
-      elements.jobActionSelect.value = elements.jobStepAction.value.trim();
+    if (currentAction && !entries.some(([action]) => action === currentAction)) {
+      const custom = document.createElement("option");
+      custom.value = currentAction;
+      custom.textContent = `${currentAction} | custom`;
+      elements.jobActionSelect.append(custom);
+    }
+    if (entries.some(([action]) => action === currentAction) || currentAction) {
+      elements.jobActionSelect.value = currentAction;
     } else {
       elements.jobActionSelect.value = "";
     }
@@ -530,6 +537,9 @@ export function createJobBuilder(elements, metadata, hooks) {
 
   elements.jobFragmentAppendButton.addEventListener("click", withStatus(() => applyFragment({ replace: false })));
   elements.jobFragmentReplaceButton.addEventListener("click", withStatus(() => applyFragment({ replace: true })));
+  elements.jobFragmentSelect.addEventListener("change", () => {
+    renderHelp();
+  });
 
   elements.jobClearButton.addEventListener("click", withStatus(() => {
     state.draft = createEmptyDraft();

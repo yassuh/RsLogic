@@ -24,6 +24,7 @@ class FakeFileExecutor:
 def test_file_copy_staging_to_session_requires_session_context(tmp_path: Path) -> None:
     executor = StepExecutor(sdk_client=None, file_executor=FakeFileExecutor(tmp_path))
     executor.begin_job("job-1")
+    executor._staging_dir = tmp_path / "staging"  # noqa: SLF001
 
     step = Step(kind="file", action="file_copy_staging_to_session", params={})
 
@@ -35,6 +36,7 @@ def test_file_copy_staging_to_session_targets_session_data_root(tmp_path: Path) 
     file_executor = FakeFileExecutor(tmp_path)
     executor = StepExecutor(sdk_client=None, file_executor=file_executor, initial_session="session-123")
     executor.begin_job("job-1")
+    executor._staging_dir = tmp_path / "staging"  # noqa: SLF001
 
     step = Step(kind="file", action="file_copy_staging_to_session", params={"relative_dir": "Imagery/raw"})
     result = executor.execute(step, job_id="job-1")
@@ -47,3 +49,13 @@ def test_file_copy_staging_to_session_targets_session_data_root(tmp_path: Path) 
             tmp_path / "sessions" / "session-123" / "_data" / "Imagery" / "raw",
         )
     ]
+
+
+def test_file_copy_staging_to_session_requires_stage_first(tmp_path: Path) -> None:
+    executor = StepExecutor(sdk_client=None, file_executor=FakeFileExecutor(tmp_path), initial_session="session-123")
+    executor.begin_job("job-1")
+
+    step = Step(kind="file", action="file_copy_staging_to_session", params={})
+
+    with pytest.raises(RuntimeError, match="run stage before file_copy_staging_to_session"):
+        executor.execute(step, job_id="job-1")

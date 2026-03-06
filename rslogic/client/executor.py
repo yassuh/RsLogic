@@ -220,8 +220,7 @@ class StepExecutor:
                     raise RuntimeError("group_id required for file_write_manifest")
                 staging = self._staging_dir
                 if staging is None:
-                    staging = self.file_executor.stage_group(group_id, job_id)
-                    self._staging_dir = staging
+                    raise RuntimeError("staging directory not known; run stage before file_write_manifest")
                 manifest = self.file_executor.write_manifest(job_id, staging, group_id)
                 _LOGGER.info("file_write_manifest complete job_id=%s staging_dir=%s manifest=%s", job_id, staging, manifest)
                 return StepExecutionResult(value=str(manifest), task_ids=[])
@@ -229,7 +228,7 @@ class StepExecutor:
             if action == "file_copy_staging_to_session":
                 staging = self._staging_dir
                 if staging is None:
-                    staging = self.file_executor.staging_root
+                    raise RuntimeError("staging directory not known; run stage before file_copy_staging_to_session")
                 if not staging.exists():
                     raise RuntimeError(f"staging directory does not exist: {staging}")
                 base_dir = self._context.get("session_data_dir")
