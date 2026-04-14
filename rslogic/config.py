@@ -52,8 +52,8 @@ def _normalize_postgres_port(host: str, port: str) -> str:
     return str(port).strip()
 
 
-LOCKED_WAITING_BUCKET_NAME = "drone-imagery-waiting"
-LOCKED_PROCESSED_BUCKET_NAME = "drone-imagery"
+LOCKED_WAITING_BUCKET_NAME = "waiting-drone-imagery"
+LOCKED_PROCESSED_BUCKET_NAME = "processed-drone-imagery"
 
 
 def _env(name: str, default: str) -> str:
