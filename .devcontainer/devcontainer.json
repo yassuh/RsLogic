@@ -5,7 +5,7 @@
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"image": "mcr.microsoft.com/devcontainers/python:2-3.13-trixie",
 	"features": {
-		"ghcr.io/devcontainers/features/node:1": {}
+		"ghcr.io/devcontainers/features/node:2": {}
 	},
 	// Attach this dev container to the existing Studio DB compose network.
 	"runArgs": [
