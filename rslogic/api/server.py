@@ -20,6 +20,7 @@ from rslogic.api.web_models import (
     ImageGroupCreateRequest,
     ImageGroupMembershipRequest,
     IngestStartRequest,
+    RegisterFromS3Request,
     UploadStartRequest,
 )
 from rslogic.api.web_ops import OperationRegistry
@@ -423,6 +424,25 @@ def web_update_image_group_membership(group_id: str, payload: ImageGroupMembersh
         if message.startswith("group not found:"):
             raise HTTPException(status_code=404, detail=message)
         raise HTTPException(status_code=400, detail=message)
+    except Exception as exc:
+        _raise_service_unavailable(exc)
+
+
+@app.post("/ui/api/images/from-s3")
+def web_register_images_from_s3(payload: RegisterFromS3Request) -> dict[str, Any]:
+    try:
+        image_ids = []
+        for key in payload.keys:
+            asset = _db.register_s3_image(bucket=payload.bucket, key=key)
+            image_ids.append(asset.id)
+        group = _db.create_image_group(
+            name=payload.group_name,
+            description=f"Submitted from Data Manager ({len(image_ids)} images)",
+            image_ids=image_ids,
+        )
+        return {"group_id": group["id"], "image_count": len(image_ids)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         _raise_service_unavailable(exc)
 

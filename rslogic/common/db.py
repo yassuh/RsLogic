@@ -122,6 +122,26 @@ class LabelDbStore:
             session.add(item)
             session.commit()
 
+    def register_s3_image(self, *, bucket: str, key: str) -> Any:
+        """Create or retrieve a minimal image asset by S3 bucket+key."""
+        uri = f"s3://{bucket}/{key}"
+        with self.session() as session:
+            existing = session.execute(
+                select(self.RsLogicImageAsset).where(self.RsLogicImageAsset.uri == uri)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+            asset = self.RsLogicImageAsset(
+                id=str(uuid4()),
+                uri=uri,
+                bucket_name=bucket,
+                object_key=key,
+                filename=Path(key).name,
+            )
+            session.add(asset)
+            session.commit()
+            return asset
+
     def update_asset_state(self, asset_id: str, updates: dict[str, Any]) -> None:
         with self.session() as session:
             asset = session.get(self.RsLogicImageAsset, asset_id)

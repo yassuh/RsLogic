@@ -25,3 +25,9 @@ class ImageGroupCreateRequest(BaseModel):
 class ImageGroupMembershipRequest(BaseModel):
     mode: Literal["replace", "add", "remove"]
     image_ids: list[str] = Field(default_factory=list)
+
+
+class RegisterFromS3Request(BaseModel):
+    bucket: str = Field(min_length=1)
+    keys: list[str] = Field(min_length=1)
+    group_name: str = Field(min_length=1)
