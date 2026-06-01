@@ -246,6 +246,47 @@ class StepExecutor:
                 )
                 return StepExecutionResult(value=result, task_ids=[])
 
+            if action == "file_mkdir":
+                dir_path_str = params.get("path")
+                if not dir_path_str:
+                    raise RuntimeError("path required for file_mkdir")
+                Path(dir_path_str).mkdir(parents=True, exist_ok=True)
+                _LOGGER.info("file_mkdir complete job_id=%s path=%s", job_id, dir_path_str)
+                return StepExecutionResult(value=dir_path_str, task_ids=[])
+
+            if action == "file_write_imagelist":
+                image_dir_str = params.get("image_dir")
+                out_path_str = params.get("out_path")
+                if not image_dir_str:
+                    raise RuntimeError("image_dir required for file_write_imagelist")
+                if not out_path_str:
+                    raise RuntimeError("out_path required for file_write_imagelist")
+                image_dir = Path(image_dir_str)
+                extensions = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
+                image_paths = sorted(
+                    str(p) for p in image_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in extensions
+                )
+                out_path = Path(out_path_str)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text("\n".join(image_paths), encoding="utf-8")
+                _LOGGER.info("file_write_imagelist complete job_id=%s path=%s count=%d", job_id, out_path_str, len(image_paths))
+                return StepExecutionResult(value=out_path_str, task_ids=[])
+
+            if action == "file_upload_to_s3":
+                local_path_str = params.get("local_path")
+                bucket = params.get("bucket")
+                s3_key = params.get("s3_key")
+                if not local_path_str:
+                    raise RuntimeError("local_path required for file_upload_to_s3")
+                if not bucket:
+                    raise RuntimeError("bucket required for file_upload_to_s3")
+                if not s3_key:
+                    raise RuntimeError("s3_key required for file_upload_to_s3")
+                result = self.file_executor.upload_to_s3(Path(local_path_str), bucket, s3_key)
+                _LOGGER.info("file_upload_to_s3 complete job_id=%s uri=%s", job_id, result)
+                return StepExecutionResult(value=result, task_ids=[])
+
             raise RuntimeError(f"unsupported file action {action}")
 
         if kind != "sdk":

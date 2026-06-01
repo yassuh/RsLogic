@@ -172,6 +172,16 @@ class FileExecutor:
         _LOGGER.debug("write_manifest wrote %s", manifest_path)
         return manifest_path
 
+    def upload_to_s3(self, local_path: Path, bucket: str, s3_key: str) -> str:
+        """Upload a local file to S3 and return the s3:// URI."""
+        _LOGGER.info("upload_to_s3 local=%s bucket=%s key=%s", local_path, bucket, s3_key)
+        if not local_path.is_file():
+            raise RuntimeError(f"upload_to_s3: file not found: {local_path}")
+        self.s3.upload_file(str(local_path), bucket, s3_key)
+        uri = f"s3://{bucket}/{s3_key}"
+        _LOGGER.info("upload_to_s3 complete uri=%s", uri)
+        return uri
+
     def copy_staging_to_session(
         self,
         job_id: str,

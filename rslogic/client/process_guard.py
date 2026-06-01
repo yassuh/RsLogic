@@ -23,6 +23,8 @@ class RsNodeProcess:
         self._external_pid: int | None = None
         self._last_existing_check_ts: float | None = None
         self._existing_check_interval_s = 2.0
+        self._last_start_ts: float | None = None
+        self._min_restart_interval_s = 30.0
         self._lock = threading.Lock()
 
     @staticmethod
@@ -106,6 +108,11 @@ class RsNodeProcess:
             if self._find_existing_rsnode_pid() is not None:
                 _LOGGER.debug("existing rsnode process detected; reusing external pid=%s", self._external_pid)
                 return
+            now = time.monotonic()
+            if self._last_start_ts is not None and (now - self._last_start_ts) < self._min_restart_interval_s:
+                remaining = round(self._min_restart_interval_s - (now - self._last_start_ts), 1)
+                _LOGGER.debug("rsnode restart suppressed; cooling down for %ss more", remaining)
+                return
             self.start()
 
     def start(self) -> None:
@@ -128,19 +135,25 @@ class RsNodeProcess:
         if self.executable_args:
             cmd.extend(shlex.split(self.executable_args))
         _LOGGER.info("starting rsnode cmd=%s", cmd)
+        self._last_start_ts = time.monotonic()
+        log_dir = Path(__file__).resolve().parents[2] / "logs" / "client"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        rsnode_stdout = open(log_dir / "rsnode-stdout.log", "a", encoding="utf-8", errors="replace")
+        rsnode_stderr = open(log_dir / "rsnode-stderr.log", "a", encoding="utf-8", errors="replace")
         if sys.platform.startswith("win"):
             CREATE_NO_WINDOW = 0x08000000
             self._proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=rsnode_stdout,
+                stderr=rsnode_stderr,
                 shell=False,
                 creationflags=CREATE_NO_WINDOW,
                 cwd=None,
             )
         else:
-            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=None)
+            self._proc = subprocess.Popen(cmd, stdout=rsnode_stdout, stderr=rsnode_stderr, cwd=None)
         if self._proc is not None:
+            self._external_pid = self._proc.pid
             _LOGGER.info("rsnode started pid=%s", self._proc.pid)
 
     def stop(self) -> None:

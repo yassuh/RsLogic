@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "studio-db repo."
 requires-python = ">=3.12"
 dependencies = [
-  "alembic",
   "SQLAlchemy",
   "psycopg",
   "geoalchemy2",

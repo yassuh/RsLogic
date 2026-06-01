@@ -127,9 +127,9 @@ def _resolve_label_db_root() -> str:
     module_file = getattr(studio_db, "__file__", "")
     module_path = Path(module_file).resolve() if module_file else Path.cwd()
     root = module_path.parent
-    if not (root / "alembic.ini").is_file() or not (root / "models.py").is_file():
+    if not (root / "models.py").is_file():
         raise RuntimeError(
-            "Imported studio_db module is incomplete: expected models.py and alembic.ini in package root."
+            "Imported studio_db module is incomplete: expected models.py in package root."
         )
     return str(root)
 
@@ -189,10 +189,9 @@ class RsToolsConfig:
 
 @dataclass(frozen=True)
 class LabelDbConfig:
-    """Label-db connection and migration settings shared by services."""
+    """Label-db connection settings shared by services."""
 
     migration_root: str
-    alembic_ini: str
     database_url: str
 
 
@@ -285,10 +284,6 @@ def load_config() -> AppConfig:
     label_db_root_path = Path(label_db_root)
     label_db = LabelDbConfig(
         migration_root=str(label_db_root_path),
-        alembic_ini=_env(
-            "RSLOGIC_LABEL_DB_ALEMBIC_INI",
-            str(label_db_root_path / "alembic.ini"),
-        ),
         database_url=label_db_url,
     )
     api = ApiConfig(

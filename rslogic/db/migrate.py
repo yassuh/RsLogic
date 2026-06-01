@@ -1,13 +1,14 @@
-"""Wrapper around alembic for label-db."""
+"""Create all database tables from SQLAlchemy models."""
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 from rslogic.config import CONFIG
+from sqlalchemy import create_engine
+import studio_db  # noqa: F401 - ensures all models are registered on Base
+from studio_db import Base
 
 
 def main() -> None:
-    cfg = CONFIG.label_db.alembic_ini
-    subprocess.run([sys.executable, "-m", "alembic", "-c", cfg, "upgrade", "head"], check=False)
+    engine = create_engine(CONFIG.label_db.database_url)
+    Base.metadata.create_all(engine)
+    print("Database tables created.")

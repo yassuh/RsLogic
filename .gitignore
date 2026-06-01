@@ -2,6 +2,7 @@
 .env
 .env.*
 client.env
+docker-compose.yml
 !.env.example
 !.env.sample
 

@@ -12,8 +12,12 @@ class RSNodeConnectionInfo:
     allAddresses: list[str]
 
     @classmethod
-
-    def from_json(cls, data: dict[str, Any]) -> "RSNodeConnectionInfo":
+    def from_json(cls, data: Any) -> "RSNodeConnectionInfo":
+        import json as _json
+        if isinstance(data, (bytes, bytearray)):
+            data = _json.loads(data)
+        elif isinstance(data, str):
+            data = _json.loads(data)
         return cls(
             protocol=str(data.get("protocol", "")),
             hostAddress=str(data.get("hostAddress", "")),

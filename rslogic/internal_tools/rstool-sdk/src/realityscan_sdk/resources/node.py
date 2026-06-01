@@ -10,12 +10,18 @@ class NodeAPI:
     def __init__(self, client: "RealityScanClient") -> None:
         self._c = client
 
-    def connect_user(self) -> None:
+    def connect_user(self) -> RSNodeConnectionInfo:
         """
         GET /node/connectuser
-        Connect user to the node.
+        Bootstraps auth via /node/connection (unauthenticated, localhost-only),
+        stores the token, then reserves a session slot via /node/connectuser.
         """
+        conn_data = self._c._request("GET", "/node/connection", require_session=False)
+        conn_info = RSNodeConnectionInfo.from_json(conn_data)
+        if conn_info.authToken:
+            self._c.auth_token = conn_info.authToken
         self._c._request("GET", "/node/connectuser", require_session=False)
+        return conn_info
 
     # Back-compat for older naming
     connectuser = connect_user

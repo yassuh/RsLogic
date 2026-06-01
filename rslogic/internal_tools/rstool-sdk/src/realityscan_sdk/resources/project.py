@@ -453,6 +453,34 @@ class ProjectAPI:
             content=file_bytes,
         )
 
+    def upload_folder(
+        self,
+        directory_path: str,
+        *,
+        extensions: Optional[Sequence[str]] = None,
+        imagelist_name: str = "images.imagelist",
+    ) -> str:
+        """
+        Upload all images from a local directory to RSNode's project folder,
+        then upload an imagelist file referencing them by filename only.
+        Returns the imagelist filename for use with add().
+        """
+        from pathlib import Path as _Path
+        import logging as _logging
+        _log = _logging.getLogger("realityscan_sdk.project")
+        exts = {e.lower() for e in (extensions or [".jpg", ".jpeg", ".tif", ".tiff", ".png"])}
+        directory = _Path(directory_path)
+        image_files = sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in exts)
+        filenames = []
+        for image_file in image_files:
+            _log.info("uploading %s to RSNode project folder", image_file.name)
+            self.upload(image_file.name, image_file.read_bytes())
+            filenames.append(image_file.name)
+        imagelist_bytes = "\n".join(filenames).encode("utf-8")
+        self.upload(imagelist_name, imagelist_bytes)
+        _log.info("uploaded %d images and imagelist to RSNode project folder", len(filenames))
+        return imagelist_name
+
     def acknowledge_restart(self) -> None:
         """POST /project/acknowledgerestart"""
         self._c._request("POST", "/project/acknowledgerestart", require_session=True)

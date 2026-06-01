@@ -3,7 +3,7 @@ version = "0.1.0"
 name = "realityscan-sdk"
 description = "RealityScan SDK for Python"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [
     {name = "Adam Holness", email = "Adamvibeo@gmail.com"},
     {name = "Nasha Frith", email = "nasha.frith@gmail.com"}

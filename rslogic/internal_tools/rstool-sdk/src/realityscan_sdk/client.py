@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Optional, Union, Iterable, Dict
+import json as _json
 import httpx
 from .resources.node import NodeAPI
 from .resources.project import ProjectAPI
@@ -55,8 +56,9 @@ class RealityScanClient:
         h: Headers = {
             "clientId": self.config.client_id,
             "appToken": self.config.app_token,
-            "Authorization": f"Bearer {self.auth_token}",
         }
+        if self.auth_token and self.auth_token.lower() not in ("none", ""):
+            h["Authorization"] = f"Bearer {self.auth_token}"
         if require_session:
             if not self.session:
                 raise ValueError("This call requires a Session header, but client.session is not set."
@@ -104,9 +106,11 @@ class RealityScanClient:
             self.session = session_header
         
         if 200 <= response.status_code < 300:
+            try:
+                return _json.loads(response.content)
+            except Exception:
+                pass
             ctype = (response.headers.get("Content-Type") or "").lower()
-            if "application/json" in ctype:
-                return response.json()
             if "text/" in ctype:
                 return response.text
             return response.content

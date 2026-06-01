@@ -15,6 +15,18 @@
       "required_params": [],
       "optional_params": []
     },
+    "file_mkdir": {
+      "kind": "file",
+      "description": "Creates a local directory (and any missing parents). Supports context template vars in path.",
+      "required_params": ["path"],
+      "optional_params": []
+    },
+    "file_upload_to_s3": {
+      "kind": "file",
+      "description": "Uploads a local file to an S3 bucket. Supports context template vars (e.g. {job_id}, {session}, {working_root}) in local_path and s3_key.",
+      "required_params": ["local_path", "bucket", "s3_key"],
+      "optional_params": []
+    },
     "file_copy_staging_to_session": {
       "kind": "file",
       "description": "Copies staged files into <working_root>/sessions/<session>/_data or a deeper relative subdirectory beneath that session root.",

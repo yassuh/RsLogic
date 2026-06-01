@@ -595,41 +595,54 @@ class ClientProcessManager:
         pid = self._start_detached()
         return f"started (pid={pid})"
 
-    def stop(self) -> str:
-        pid = self._load_pid()
-        if pid is None:
-            return "no client pid found"
+    @staticmethod
+    def _force_kill_pid(pid: int) -> bool:
+        if sys.platform.startswith("win"):
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+        else:
+            try:
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                return True
+            except Exception:
+                return False
 
-        stopped = False
+    @staticmethod
+    def _kill_by_commandline(fragment: str) -> None:
+        if not sys.platform.startswith("win"):
+            return
         try:
-            os.kill(pid, getattr(signal, "SIGTERM", signal.SIGINT))
+            result = subprocess.run(
+                ["wmic", "process", "where", f"commandline like '%{fragment}%'", "get", "processid"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", line],
+                                   capture_output=True, timeout=5)
         except Exception:
             pass
-        end = time.monotonic() + 8
-        while time.monotonic() < end:
-            if not self._is_windows_pid_alive(pid):
-                stopped = True
-                break
-            time.sleep(0.25)
 
-        if not stopped and self._is_windows_pid_alive(pid):
-            try:
-                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGABRT))
-                stopped = True
-            except Exception:
-                stopped = False
-
+    def stop(self) -> str:
+        pid = self._load_pid()
+        if pid is not None:
+            self._force_kill_pid(pid)
         self._clear_pid()
-        if not stopped:
-            raise RuntimeError("unable to stop client process")
 
+        # Kill any rsnode_client instances not tracked by the PID file
+        self._kill_by_commandline("rsnode_client")
+
+        # Kill RSNode.exe
         for node_pid in self._rsnode_pids():
-            if node_pid == pid:
-                continue
-            try:
-                os.kill(node_pid, getattr(signal, "SIGTERM", signal.SIGINT))
-            except Exception:
-                pass
+            self._force_kill_pid(node_pid)
+
         return "stopped"
 
     def restart(self, detach: bool = False) -> str:
@@ -698,6 +711,10 @@ class ClientProcessManager:
         return lines[-max_lines:]
 
     def shutdown(self) -> None:
+        try:
+            self.stop()
+        except Exception:
+            pass
         if self._stdout_handle is not None and not self._stdout_handle.closed:
             self._stdout_handle.close()
         if self._stderr_handle is not None and not self._stderr_handle.closed:
