@@ -24,9 +24,9 @@ use futures_util::{SinkExt, StreamExt};
 use rslogic_protocol::{
     new_id, now, verify_challenge_signature, CameraIntrinsics, Challenge, ClientEvent,
     CloudfrontInput, DesiredState, EnrollmentApproval, EnrollmentRejection, EnrollmentRequest,
-    EnrollmentRequestRecord, JobEvent, JobInputManifest, OutputUploadTarget, PipelineJob,
-    RealityScanPipeline, RealityScanStage, ServerCommand, SessionRequest, SessionToken,
-    UploadedArtifact, PROTOCOL_VERSION, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
+    EnrollmentRequestRecord, JobEvent, JobInputManifest, OrthoRenderMethod, OutputUploadTarget,
+    PipelineJob, RealityScanPipeline, RealityScanStage, ServerCommand, SessionRequest,
+    SessionToken, UploadedArtifact, PROTOCOL_VERSION, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
 };
 use serde::{Deserialize, Serialize};
 use store::{
@@ -206,6 +206,10 @@ struct JobTemplate {
     orthomosaic_filename: Option<String>,
     #[serde(default)]
     ortho_pixel_size_meters: Option<f64>,
+    #[serde(default)]
+    ortho_render_method: Option<OrthoRenderMethod>,
+    #[serde(default)]
+    ortho_projection_params_xml: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -774,6 +778,8 @@ async fn build_job_from_imagery(
             project_filename: template.project_filename,
             orthomosaic_filename: template.orthomosaic_filename,
             ortho_pixel_size_meters: template.ortho_pixel_size_meters,
+            ortho_render_method: template.ortho_render_method,
+            ortho_projection_params_xml: template.ortho_projection_params_xml,
         },
     };
 
@@ -823,6 +829,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "preview-ortho.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         },
         JobTemplate {
             template_id: "align_normal_orthomosaic".to_string(),
@@ -844,6 +852,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "normal-orthomosaic.rsproj".to_string(),
             orthomosaic_filename: Some("orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         },
         JobTemplate {
             template_id: "align_only".to_string(),
@@ -858,6 +868,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "aligned.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         },
     ]
 }

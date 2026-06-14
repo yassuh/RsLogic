@@ -16,8 +16,8 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use rslogic_protocol::{
     now, CameraIntrinsics, CloudfrontInput, JobEvent, JobEventDetails, JobEventKind,
-    JobInputManifest, JobState, OutputUploadTarget, PipelineJob, RealityScanPipeline,
-    RealityScanStage, UploadedArtifact, DEFAULT_WORKER_STATE_DIR,
+    JobInputManifest, JobState, OrthoRenderMethod, OutputUploadTarget, PipelineJob,
+    RealityScanPipeline, RealityScanStage, UploadedArtifact, DEFAULT_WORKER_STATE_DIR,
 };
 use rslogic_realityscan::{
     parse_realityscan_status, ContainerRealityScanRunner, ContainerRuntime, RealityScanRunConfig,
@@ -630,11 +630,7 @@ async fn monitor_realityscan_stdout(
                     status.progress_id,
                     format_age_seconds(status.runtime_seconds.map(|seconds| seconds as u64))
                 ),
-                realityscan_phase_progress(
-                    phase_index,
-                    phase_count,
-                    phase_fraction_value,
-                ),
+                realityscan_phase_progress(phase_index, phase_count, phase_fraction_value),
                 Some(details),
             )
             .await
@@ -656,8 +652,8 @@ async fn monitor_realityscan_stdout(
                     phase_count,
                 );
                 details.command = Some(command.to_string());
-                details.stage_id = realityscan_command_stage_id(command, &phase_name)
-                    .map(ToString::to_string);
+                details.stage_id =
+                    realityscan_command_stage_id(command, &phase_name).map(ToString::to_string);
                 details.raw_status = Some(line.trim().to_string());
                 emit_with_details(
                     &job_dir,
@@ -693,11 +689,7 @@ async fn monitor_realityscan_stdout(
                         "RealityScan {phase_name}: {} completed",
                         format_stage_event_id(completion.stage_id)
                     ),
-                    realityscan_phase_progress(
-                        phase_index,
-                        phase_count,
-                        completion.phase_fraction,
-                    ),
+                    realityscan_phase_progress(phase_index, phase_count, completion.phase_fraction),
                     Some(details),
                 )
                 .await
@@ -1231,6 +1223,7 @@ fn realityscan_cli_script(
         anyhow::bail!("ortho_pixel_size_meters must be greater than zero");
     }
     let ortho_export_config = ortho_export_config_xml(pipeline);
+    let ortho_projection_params = ortho_projection_params_xml(pipeline)?;
     let mut script = r#"set -euo pipefail
 mkdir -p /job/outputs /job/logs /tmp/runtime-rslogic
 chmod 700 /tmp/runtime-rslogic
@@ -1247,6 +1240,10 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
 "#
     .to_string();
     script.push_str(&ortho_export_config);
+    if let Some(params) = ortho_projection_params {
+        script.push_str("XML\ncat > /job/outputs/calculate-ortho.rsortho <<'XML'\n");
+        script.push_str(&params);
+    }
     script.push_str(&format!(
         "XML\n/opt/realityscan/bin/realityscan-cli -headless -stdConsole -execRSCMD {}\n",
         shell_quote(windows_commands_path)
@@ -1286,6 +1283,7 @@ fn ortho_export_config_xml(pipeline: &RealityScanPipeline) -> String {
   <entry key="exportOrthoAsBatch" value="false"/>
   <entry key="exportDSM" value="false"/>
   <entry key="exportOrthoInfoFile" value="true"/>
+  <entry key="exportProjectionParametersFile" value="true"/>
   <entry key="exportOrthoAsBigTiff" value="true"/>
   <entry key="exportOrthoCompression" value="0"/>
   <entry key="exportOrthoWorldFile" value="-1"/>
@@ -1300,6 +1298,119 @@ fn ortho_export_config_xml(pipeline: &RealityScanPipeline) -> String {
     }
     config.push_str("</Configuration>\n");
     config
+}
+
+fn has_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
+    pipeline
+        .ortho_projection_params_xml
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
+    let Some(raw_xml) = pipeline.ortho_projection_params_xml.as_deref() else {
+        return Ok(None);
+    };
+    let mut xml = raw_xml.trim().to_string();
+    if xml.is_empty() {
+        return Ok(None);
+    }
+    if xml.contains("\nXML\n") || xml.starts_with("XML\n") || xml.ends_with("\nXML") {
+        anyhow::bail!("ortho_projection_params_xml cannot contain the heredoc delimiter XML");
+    }
+    if !xml.contains("<OrthoProjection") || !xml.contains("<ReconstructionRegion") {
+        anyhow::bail!(
+            "ortho_projection_params_xml must include OrthoProjection and ReconstructionRegion"
+        );
+    }
+    if let Some(method) = &pipeline.ortho_render_method {
+        xml = replace_xml_attribute_in_tag(
+            &xml,
+            "OrthoProjection",
+            "colorType",
+            realityscan_ortho_color_type(method),
+        )?;
+    }
+    if let Some(pixel_size) = pipeline.ortho_pixel_size_meters {
+        if let Some((width_meters, height_meters)) = parse_reconstruction_region_footprint(&xml) {
+            let width = (width_meters / pixel_size).ceil().max(1.0) as u64;
+            let height = (height_meters / pixel_size).ceil().max(1.0) as u64;
+            xml =
+                replace_xml_attribute_in_tag(&xml, "OrthoProjection", "width", &width.to_string())?;
+            xml = replace_xml_attribute_in_tag(
+                &xml,
+                "OrthoProjection",
+                "height",
+                &height.to_string(),
+            )?;
+        }
+    }
+    if !xml.ends_with('\n') {
+        xml.push('\n');
+    }
+    Ok(Some(xml))
+}
+
+fn realityscan_ortho_color_type(method: &OrthoRenderMethod) -> &'static str {
+    match method {
+        OrthoRenderMethod::TrueOrthoTexturing => "texturing",
+        OrthoRenderMethod::TrueOrthoColoring => "coloring",
+        OrthoRenderMethod::ImageMosaicingGeneral => "general mosaicing",
+        OrthoRenderMethod::ImageMosaicingAerial => "aerial mosaicing",
+    }
+}
+
+fn parse_reconstruction_region_footprint(xml: &str) -> Option<(f64, f64)> {
+    let marker = "widthHeightDepth=\"";
+    let value_start = xml.find(marker)? + marker.len();
+    let value_end = value_start + xml[value_start..].find('"')?;
+    let values: Vec<f64> = xml[value_start..value_end]
+        .split_whitespace()
+        .filter_map(|value| value.parse::<f64>().ok())
+        .collect();
+    let width = *values.first()?;
+    let height = *values.get(1)?;
+    (width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0)
+        .then_some((width, height))
+}
+
+fn replace_xml_attribute_in_tag(
+    xml: &str,
+    tag: &str,
+    attr: &str,
+    value: &str,
+) -> anyhow::Result<String> {
+    let tag_start = xml
+        .find(&format!("<{tag}"))
+        .with_context(|| format!("missing XML tag {tag}"))?;
+    let relative_tag_end = xml[tag_start..]
+        .find('>')
+        .with_context(|| format!("unterminated XML tag {tag}"))?;
+    let tag_end = tag_start + relative_tag_end;
+    let tag_contents = &xml[tag_start..tag_end];
+    let attr_marker = format!("{attr}=\"");
+    if let Some(relative_attr_start) = tag_contents.find(&attr_marker) {
+        let value_start = tag_start + relative_attr_start + attr_marker.len();
+        let value_end = value_start
+            + xml[value_start..]
+                .find('"')
+                .with_context(|| format!("unterminated XML attribute {attr}"))?;
+        let mut updated = String::with_capacity(xml.len() + value.len());
+        updated.push_str(&xml[..value_start]);
+        updated.push_str(value);
+        updated.push_str(&xml[value_end..]);
+        return Ok(updated);
+    }
+
+    let mut updated = String::with_capacity(xml.len() + attr.len() + value.len() + 4);
+    updated.push_str(&xml[..tag_end]);
+    updated.push(' ');
+    updated.push_str(attr);
+    updated.push_str("=\"");
+    updated.push_str(value);
+    updated.push('"');
+    updated.push_str(&xml[tag_end..]);
+    Ok(updated)
 }
 
 fn realityscan_stage_commands(
@@ -1318,6 +1429,12 @@ fn realityscan_stage_commands(
         RealityScanStage::CalculateNormalModel => Ok(vec!["-calculateNormalModel".to_string()]),
         RealityScanStage::CalculateHighModel => Ok(vec!["-calculateHighModel".to_string()]),
         RealityScanStage::CalculateTexture => Ok(vec!["-calculateTexture".to_string()]),
+        RealityScanStage::CalculateOrthoProjection if has_ortho_projection_params(pipeline) => {
+            Ok(vec![format!(
+                "-calculateOrthoProjection {}",
+                rscmd_quote("Z:\\job\\outputs\\calculate-ortho.rsortho")
+            )])
+        }
         RealityScanStage::CalculateOrthoProjection => {
             Ok(vec!["-calculateOrthoProjection".to_string()])
         }
@@ -2062,7 +2179,10 @@ mod tests {
                 phase_fraction: 0.62,
             })
         );
-        assert_eq!(parse_realityscan_completion("Loading Project completed"), None);
+        assert_eq!(
+            parse_realityscan_completion("Loading Project completed"),
+            None
+        );
     }
 
     #[test]
@@ -2159,6 +2279,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2221,6 +2343,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2245,17 +2369,64 @@ mod tests {
             project_filename: "ortho.rsproj".to_string(),
             orthomosaic_filename: Some("seaforth-5cm-orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         };
 
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
 
         assert!(launcher.contains(r#"<entry key="exportOrthoAsBigTiff" value="true"/>"#));
+        assert!(launcher.contains(r#"<entry key="exportProjectionParametersFile" value="true"/>"#));
         assert!(launcher.contains(r#"<entry key="orthoPixelSize" value="0.05"/>"#));
         assert!(launcher.contains("-execRSCMD 'Z:\\job\\work\\commands.rscmd'"));
         assert!(script.contains(
             "-exportOrthoProjection \"Z:\\job\\outputs\\seaforth-5cm-orthomosaic.tif\" \"Z:\\job\\outputs\\export-ortho-config.xml\""
         ));
+    }
+
+    #[test]
+    fn realityscan_script_uses_aerial_mosaicing_ortho_params_without_texture() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let ortho_params = r#"<OrthoProjection width="1000" height="1000" name="Ortho projection 1" modelName="Model 1"
+   colorType="coloring" boxSideConerIndex="21" bEmpty="0" backFaceColorType="1" backFaceColor="2130706687"
+   projectionType="0" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+<ReconstructionRegion globalCoordinateSystem="+proj=geocent +ellps=WGS84 +no_defs"
+   globalCoordinateSystemName="local:1 - Euclidean" isGeoreferenced="1"
+   isLatLon="0" widthHeightDepth="10 12 3">
+  <yawPitchRoll>0 0 0</yawPitchRoll>
+  <Header magic="5395016" version="2"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "aerial".to_string(),
+            stages: vec![
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "aerial.rsproj".to_string(),
+            orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: Some(ortho_params.to_string()),
+        };
+
+        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
+        let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
+
+        assert!(!script.contains("-calculateTexture"));
+        assert!(script
+            .contains("-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\""));
+        assert!(launcher.contains(r#"colorType="aerial mosaicing""#));
+        assert!(launcher.contains(r#"width="200""#));
+        assert!(launcher.contains(r#"height="240""#));
+        assert!(launcher.contains("cat > /job/outputs/calculate-ortho.rsortho"));
     }
 
     #[test]
@@ -2281,6 +2452,8 @@ mod tests {
             project_filename: "final.rsproj".to_string(),
             orthomosaic_filename: Some("ortho.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();
@@ -2333,6 +2506,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();

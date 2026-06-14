@@ -355,6 +355,10 @@ pub struct RealityScanPipeline {
     pub orthomosaic_filename: Option<String>,
     #[serde(default)]
     pub ortho_pixel_size_meters: Option<f64>,
+    #[serde(default)]
+    pub ortho_render_method: Option<OrthoRenderMethod>,
+    #[serde(default)]
+    pub ortho_projection_params_xml: Option<String>,
 }
 
 impl Default for RealityScanPipeline {
@@ -374,8 +378,19 @@ impl Default for RealityScanPipeline {
             project_filename: "preview-ortho.rsproj".to_string(),
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrthoRenderMethod {
+    TrueOrthoTexturing,
+    TrueOrthoColoring,
+    ImageMosaicingGeneral,
+    ImageMosaicingAerial,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
