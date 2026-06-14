@@ -84,6 +84,19 @@ Worker upload targets are explicit. Before artifact discovery, the worker packag
 
 ## NixOS
 
+This repository exposes a Nix flake package for client hosts:
+
+```sh
+nix build .#rslogic-client
+```
+
+`rslogic-client` installs both:
+
+```text
+bin/rslogic-agent
+bin/rslogic-worker
+```
+
 Service modules live in the sibling `yassuh-nixos` repo:
 
 ```text
@@ -92,3 +105,12 @@ modules/services/rslogic-worker.nix
 ```
 
 They are imported by `hosts/yassuh-1/profile.nix` and remain disabled until the final package/binary deployment path and management URL are set.
+
+Expected deployment shape after branch `v2` is pushed:
+
+```nix
+inputs.rslogic.url = "github:yassuh/RsLogic/v2";
+
+yassuh.services.rslogicAgent.package = inputs.rslogic.packages.${pkgs.system}.rslogic-client;
+yassuh.services.rslogicWorker.package = inputs.rslogic.packages.${pkgs.system}.rslogic-client;
+```
