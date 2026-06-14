@@ -1,0 +1,45 @@
+[workspace]
+members = [
+  "crates/rslogic-protocol",
+  "crates/rslogic-server",
+  "crates/rslogic-agent",
+  "crates/rslogic-worker",
+  "crates/rslogic-realityscan",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+repository = "https://local.rslogic.invalid/rslogic"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+async-trait = "0.1.88"
+aws-config = "1.8.8"
+aws-sdk-s3 = "1.108.0"
+axum = { version = "0.7.9", features = ["macros", "ws"] }
+base64 = "0.22.1"
+chrono = { version = "0.4.41", features = ["serde"] }
+clap = { version = "4.5.40", features = ["derive", "env"] }
+ed25519-dalek = { version = "2.1.1", features = ["rand_core", "serde"] }
+futures-util = "0.3.31"
+hex = "0.4.3"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+reqwest = { version = "0.12.20", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rsa = { version = "0.9.8", features = ["pem"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = { version = "0.10.9", features = ["oid"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
+tempfile = "3.20.0"
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "io-util"] }
+tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-webpki-roots"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.6", features = ["trace"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

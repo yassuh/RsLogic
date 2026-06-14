@@ -1,0 +1,26 @@
+[package]
+name = "rslogic-worker"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+rslogic-protocol = { path = "../rslogic-protocol" }
+rslogic-realityscan = { path = "../rslogic-realityscan" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

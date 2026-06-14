@@ -1,45 +1,18 @@
-# Environment and secrets
+# Rust
+/target/
+**/*.rs.bk
+
+# Local configuration and secrets
 .env
 .env.*
-client.env
-!.env.example
-!.env.sample
+*.local.*
+client.json
+identity.ed25519
 
-# Python virtual environments
-.venv/
-venv/
-env/
-
-# Python cache and tooling
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.pyre/
-.hypothesis/
-.nox/
-.tox/
-
-# Coverage and test artifacts
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-
-# Packaging/build artifacts
-build/
-dist/
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-
-# Notebook artifacts
-.ipynb_checkpoints/
-
-# Logs and local runtime output
+# Runtime state
+/data/
+/logs/
+/.tmp/
 *.log
 *.pid
 
@@ -48,17 +21,3 @@ pip-wheel-metadata/
 Thumbs.db
 .vscode/
 .idea/
-
-# Local project data
-DJI_001/
-DJI_001 - Copy/
-scratchpad/
-rslogic.egg-info/
-*.db
-
-AGENTS.md
-
-example.ipynb
-
-rslogic-3.14t-venv/
-.env
