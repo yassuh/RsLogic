@@ -2366,6 +2366,7 @@ function JobStageTimeline({
   const latestEvent = sortedEvents.at(-1) ?? null
   const progress = jobProgress(job, latestEvent)
   const currentIndex = currentTimelineIndex(rows, progress)
+  const railProgress = timelineRailProgress(rows, progress)
   const latestMessage = latestEvent?.message ?? job.state
 
   return (
@@ -2381,11 +2382,10 @@ function JobStageTimeline({
         / {latestMessage}
       </div>
       <div className="relative px-3 py-3">
-        <div className="absolute top-5 bottom-5 left-[1.16rem] w-px bg-border" />
         <div
           className="absolute top-5 left-[1.16rem] w-px bg-primary transition-[height] duration-700"
           style={{
-            height: `calc((100% - 2.5rem) * ${progress / 100})`,
+            height: `calc((100% - 2.5rem) * ${railProgress})`,
           }}
         />
         <div className="grid gap-2">
@@ -4187,6 +4187,18 @@ function timelineRowLocalProgress(row: TimelineRow, progress: number) {
   if (progress >= row.end) return 100
   if (progress <= row.start) return 0
   return clampPercent(((progress - row.start) / (row.end - row.start)) * 100)
+}
+
+function timelineRailProgress(rows: TimelineRow[], progress: number) {
+  if (rows.length <= 1) return 0
+  const currentIndex = currentTimelineIndex(rows, progress)
+  if (currentIndex < 0) return 0
+  const currentRow = rows[currentIndex]
+  const localProgress = timelineRowLocalProgress(currentRow, progress) / 100
+  return Math.min(
+    1,
+    Math.max(0, (currentIndex + localProgress) / (rows.length - 1))
+  )
 }
 
 function timelineRowLabel(status: string) {
