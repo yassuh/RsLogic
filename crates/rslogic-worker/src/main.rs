@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use chrono::Utc;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -27,6 +27,10 @@ use tokio::{
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
+const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
+const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -72,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
                 0.0,
             )
             .await?;
-            download_inputs(&Client::new(), &manifest, &job_dir).await?;
+            download_inputs(&Client::new(), &manifest, &job_dir, &args.state_dir).await?;
         }
     }
     Ok(())
@@ -120,7 +124,7 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
     }
 
     emit(&job.job_id, JobState::Accepted, "job accepted", 0.0).await?;
-    download_inputs(&http, &job.manifest, &job_dir).await?;
+    download_inputs(&http, &job.manifest, &job_dir, &args.state_dir).await?;
     run_realityscan(args, &job, &job_dir).await?;
     let outputs = collect_outputs(&job, &job_dir).await?;
     upload_outputs(&http, &job, &job_dir, &outputs).await?;
@@ -141,10 +145,13 @@ async fn download_inputs(
     http: &Client,
     manifest: &JobInputManifest,
     job_dir: &Path,
+    state_dir: &Path,
 ) -> anyhow::Result<()> {
     if manifest.expires_at < Utc::now() {
         return Err(anyhow!("input manifest expired at {}", manifest.expires_at));
     }
+    let cache_root = input_cache_root(state_dir);
+    prune_input_cache(&cache_root).await?;
     emit(
         &manifest.job_id,
         JobState::Downloading,
@@ -157,7 +164,11 @@ async fn download_inputs(
         if target.is_file() {
             if let Some(expected) = &input.sha256 {
                 verify_sha256(&target, expected).await?;
+                store_input_in_cache(&cache_root, input, &target).await?;
             }
+            continue;
+        }
+        if input.sha256.is_some() && restore_input_from_cache(&cache_root, input, &target).await? {
             continue;
         }
         info!(
@@ -166,15 +177,10 @@ async fn download_inputs(
             filename = input.filename,
             "downloading input"
         );
-        let response = http.get(&input.url).send().await?.error_for_status()?;
-        let mut stream = response.bytes_stream();
-        let mut file = fs::File::create(&target).await?;
-        while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
-        }
-        file.flush().await?;
+        download_input(http, input, &target).await?;
         if let Some(expected) = &input.sha256 {
             verify_sha256(&target, expected).await?;
+            store_input_in_cache(&cache_root, input, &target).await?;
         }
     }
     emit(
@@ -184,6 +190,195 @@ async fn download_inputs(
         30.0,
     )
     .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedInputMetadata {
+    sha256: String,
+    filename: String,
+    size_bytes: Option<u64>,
+    cached_at: DateTime<Utc>,
+    last_used_at: DateTime<Utc>,
+}
+
+struct InputCachePaths {
+    entry_dir: PathBuf,
+    blob_path: PathBuf,
+    metadata_path: PathBuf,
+}
+
+async fn download_input(
+    http: &Client,
+    input: &CloudfrontInput,
+    target: &Path,
+) -> anyhow::Result<()> {
+    let response = http.get(&input.url).send().await?.error_for_status()?;
+    let mut stream = response.bytes_stream();
+    let tmp_target = target.with_extension(format!(
+        "{}.download",
+        target
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("tmp")
+    ));
+    fs::remove_file(&tmp_target).await.ok();
+    let mut file = fs::File::create(&tmp_target).await?;
+    while let Some(chunk) = stream.next().await {
+        file.write_all(&chunk?).await?;
+    }
+    file.flush().await?;
+    fs::rename(&tmp_target, target).await?;
+    Ok(())
+}
+
+fn input_cache_root(state_dir: &Path) -> PathBuf {
+    state_dir.join("cache").join("inputs").join("sha256")
+}
+
+fn input_cache_paths(cache_root: &Path, sha256: &str) -> anyhow::Result<InputCachePaths> {
+    let sha256 = normalized_sha256(sha256)?;
+    let entry_dir = cache_root.join(&sha256[..2]).join(&sha256);
+    Ok(InputCachePaths {
+        blob_path: entry_dir.join("input"),
+        metadata_path: entry_dir.join("metadata.json"),
+        entry_dir,
+    })
+}
+
+fn normalized_sha256(value: &str) -> anyhow::Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid sha256 value: {value}"));
+    }
+    Ok(normalized)
+}
+
+async fn restore_input_from_cache(
+    cache_root: &Path,
+    input: &CloudfrontInput,
+    target: &Path,
+) -> anyhow::Result<bool> {
+    let Some(expected) = &input.sha256 else {
+        return Ok(false);
+    };
+    let paths = input_cache_paths(cache_root, expected)?;
+    if !paths.blob_path.is_file() {
+        return Ok(false);
+    }
+    if verify_sha256(&paths.blob_path, expected).await.is_err() {
+        fs::remove_dir_all(&paths.entry_dir).await.ok();
+        return Ok(false);
+    }
+    link_or_copy_file(&paths.blob_path, target).await?;
+    verify_sha256(target, expected).await?;
+    write_cache_metadata(&paths, input, expected).await?;
+    info!(
+        asset_id = input.asset_id,
+        filename = input.filename,
+        "restored input from cache"
+    );
+    Ok(true)
+}
+
+async fn store_input_in_cache(
+    cache_root: &Path,
+    input: &CloudfrontInput,
+    source: &Path,
+) -> anyhow::Result<()> {
+    let Some(expected) = &input.sha256 else {
+        return Ok(());
+    };
+    let paths = input_cache_paths(cache_root, expected)?;
+    fs::create_dir_all(&paths.entry_dir).await?;
+    if paths.blob_path.is_file() {
+        verify_sha256(&paths.blob_path, expected)
+            .await
+            .with_context(|| format!("verifying cached input {}", paths.blob_path.display()))?;
+        write_cache_metadata(&paths, input, expected).await?;
+        return Ok(());
+    }
+    let tmp_path = paths.entry_dir.join("input.tmp");
+    fs::remove_file(&tmp_path).await.ok();
+    link_or_copy_file(source, &tmp_path).await?;
+    verify_sha256(&tmp_path, expected).await?;
+    fs::rename(&tmp_path, &paths.blob_path).await?;
+    write_cache_metadata(&paths, input, expected).await?;
+    info!(
+        asset_id = input.asset_id,
+        filename = input.filename,
+        "stored input in cache"
+    );
+    Ok(())
+}
+
+async fn write_cache_metadata(
+    paths: &InputCachePaths,
+    input: &CloudfrontInput,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let now = Utc::now();
+    let cached_at = match fs::read_to_string(&paths.metadata_path).await {
+        Ok(raw) => serde_json::from_str::<CachedInputMetadata>(&raw)
+            .map(|metadata| metadata.cached_at)
+            .unwrap_or(now),
+        Err(error) if error.kind() == ErrorKind::NotFound => now,
+        Err(error) => return Err(error.into()),
+    };
+    write_json(
+        &paths.metadata_path,
+        &CachedInputMetadata {
+            sha256: normalized_sha256(expected_sha256)?,
+            filename: input.filename.clone(),
+            size_bytes: input.size_bytes,
+            cached_at,
+            last_used_at: now,
+        },
+    )
+    .await
+}
+
+async fn link_or_copy_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::remove_file(target).await.ok();
+    match fs::hard_link(source, target).await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(source, target).await?;
+            Ok(())
+        }
+    }
+}
+
+async fn prune_input_cache(cache_root: &Path) -> anyhow::Result<()> {
+    if !cache_root.is_dir() {
+        return Ok(());
+    }
+    let cutoff = Utc::now() - ChronoDuration::days(INPUT_CACHE_MAX_UNUSED_DAYS);
+    let mut prefixes = fs::read_dir(cache_root).await?;
+    while let Some(prefix) = prefixes.next_entry().await? {
+        if !prefix.file_type().await?.is_dir() {
+            continue;
+        }
+        let mut entries = fs::read_dir(prefix.path()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let metadata_path = entry.path().join("metadata.json");
+            let Ok(raw) = fs::read_to_string(&metadata_path).await else {
+                continue;
+            };
+            let Ok(metadata) = serde_json::from_str::<CachedInputMetadata>(&raw) else {
+                continue;
+            };
+            if metadata.last_used_at < cutoff {
+                fs::remove_dir_all(entry.path()).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -199,6 +394,7 @@ async fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
         hasher.update(&buffer[..read]);
     }
     let actual = hex::encode(hasher.finalize());
+    let expected = normalized_sha256(expected)?;
     if actual != expected {
         return Err(anyhow!(
             "sha256 mismatch for {}: expected {expected}, got {actual}",
@@ -229,27 +425,46 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         "docker" => ContainerRuntime::Docker,
         other => return Err(anyhow!("unsupported container runtime: {other}")),
     };
-    let script_path = job_dir.join("work").join("run-realityscan.sh");
-    let commands_path = job_dir.join("work").join("commands.rscmd");
-    fs::write(&script_path, realityscan_cli_script(&job.pipeline)?).await?;
-    fs::write(
-        &commands_path,
-        realityscan_rscmd_script(&job.pipeline, &job.manifest)?,
-    )
-    .await?;
+    let phases = realityscan_phases(&job.pipeline, &job.manifest)?;
     let runner = ContainerRealityScanRunner;
-    runner
-        .run(RealityScanRunConfig {
-            runtime,
-            image: job.realityscan_image.clone(),
-            job_dir: job_dir.to_path_buf(),
-            command: vec![
-                "/bin/bash".to_string(),
-                "/job/work/run-realityscan.sh".to_string(),
-            ],
-            gpu: true,
-        })
+    let phase_count = phases.len().max(1) as f32;
+    for (index, phase) in phases.iter().enumerate() {
+        let file_stem = format!("{index:02}-{}", phase.name);
+        let script_path = job_dir
+            .join("work")
+            .join(format!("run-realityscan-{file_stem}.sh"));
+        let commands_path = job_dir.join("work").join(format!("{file_stem}.rscmd"));
+        let windows_commands_path = format!("Z:\\job\\work\\{file_stem}.rscmd");
+        fs::write(
+            &script_path,
+            realityscan_cli_script(&job.pipeline, &windows_commands_path)?,
+        )
         .await?;
+        fs::write(&commands_path, phase.commands.join("\n")).await?;
+        emit(
+            &job.job_id,
+            JobState::RunningRealityscan,
+            &format!("starting RealityScan phase {}", phase.name),
+            40.0 + ((index as f32) / phase_count) * 40.0,
+        )
+        .await?;
+        runner
+            .run(RealityScanRunConfig {
+                runtime: runtime.clone(),
+                image: job.realityscan_image.clone(),
+                job_dir: job_dir.to_path_buf(),
+                command: vec![
+                    "/bin/bash".to_string(),
+                    format!("/job/work/run-realityscan-{file_stem}.sh"),
+                ],
+                gpu: true,
+                log_prefix: Some(format!("realityscan-{file_stem}")),
+                max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
+                liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+            })
+            .await
+            .with_context(|| format!("RealityScan phase {} failed", phase.name))?;
+    }
     Ok(())
 }
 
@@ -258,7 +473,156 @@ async fn inputs_are_empty(job_dir: &Path) -> anyhow::Result<bool> {
     Ok(entries.next_entry().await?.is_none())
 }
 
-fn realityscan_cli_script(pipeline: &RealityScanPipeline) -> anyhow::Result<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealityScanPhase {
+    name: String,
+    commands: Vec<String>,
+}
+
+fn realityscan_phases(
+    pipeline: &RealityScanPipeline,
+    manifest: &JobInputManifest,
+) -> anyhow::Result<Vec<RealityScanPhase>> {
+    let stages = effective_stages(pipeline);
+    let should_split =
+        stages.iter().any(is_split_trigger_stage) && stages.iter().any(is_alignment_stage);
+    if !should_split {
+        return Ok(vec![RealityScanPhase {
+            name: "single".to_string(),
+            commands: combined_realityscan_commands(pipeline, manifest, &stages)?,
+        }]);
+    }
+
+    let mut phases = Vec::new();
+    let mut align_commands = vec![
+        "-newScene".to_string(),
+        "-addFolder \"Z:\\job\\inputs\"".to_string(),
+    ];
+    for stage in stages.iter().filter(|stage| is_alignment_stage(stage)) {
+        align_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
+    }
+    align_commands.push(save_project_command("aligned.rsproj"));
+    align_commands.push("-quit".to_string());
+    phases.push(RealityScanPhase {
+        name: "align-save".to_string(),
+        commands: align_commands,
+    });
+
+    let mut model_stage_commands = Vec::new();
+    for stage in stages.iter().filter(|stage| is_model_stage(stage)) {
+        model_stage_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
+    }
+    let has_output_stage = stages.iter().any(is_output_stage);
+    let mut latest_project = "aligned.rsproj";
+    if !model_stage_commands.is_empty() {
+        let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(model_stage_commands);
+        if has_output_stage {
+            commands.push(save_project_command("modeled.rsproj"));
+            latest_project = "modeled.rsproj";
+        }
+        commands.push("-quit".to_string());
+        phases.push(RealityScanPhase {
+            name: "model-save".to_string(),
+            commands,
+        });
+    }
+
+    let mut output_stage_commands = Vec::new();
+    for stage in stages.iter().filter(|stage| is_output_stage(stage)) {
+        output_stage_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
+    }
+    if !output_stage_commands.is_empty() {
+        let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(output_stage_commands);
+        commands.push("-quit".to_string());
+        phases.push(RealityScanPhase {
+            name: "outputs".to_string(),
+            commands,
+        });
+    }
+
+    Ok(phases)
+}
+
+fn effective_stages(pipeline: &RealityScanPipeline) -> Vec<RealityScanStage> {
+    if pipeline.stages.is_empty() {
+        RealityScanPipeline::default().stages
+    } else {
+        pipeline.stages.clone()
+    }
+}
+
+fn combined_realityscan_commands(
+    pipeline: &RealityScanPipeline,
+    manifest: &JobInputManifest,
+    stages: &[RealityScanStage],
+) -> anyhow::Result<Vec<String>> {
+    let mut commands = vec![
+        "-newScene".to_string(),
+        "-addFolder \"Z:\\job\\inputs\"".to_string(),
+    ];
+    for stage in stages {
+        commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
+    }
+    commands.push("-quit".to_string());
+    Ok(commands)
+}
+
+fn is_alignment_stage(stage: &RealityScanStage) -> bool {
+    matches!(
+        stage,
+        RealityScanStage::SetIntrinsics
+            | RealityScanStage::Align
+            | RealityScanStage::SelectMaximalComponent
+    )
+}
+
+fn is_model_stage(stage: &RealityScanStage) -> bool {
+    matches!(
+        stage,
+        RealityScanStage::SetReconstructionRegionAuto
+            | RealityScanStage::CalculatePreviewModel
+            | RealityScanStage::CalculateNormalModel
+            | RealityScanStage::CalculateHighModel
+    )
+}
+
+fn is_output_stage(stage: &RealityScanStage) -> bool {
+    matches!(
+        stage,
+        RealityScanStage::CalculateTexture
+            | RealityScanStage::CalculateOrthoProjection
+            | RealityScanStage::ExportOrthoProjection
+            | RealityScanStage::SaveProject
+    )
+}
+
+fn is_split_trigger_stage(stage: &RealityScanStage) -> bool {
+    is_model_stage(stage)
+        || matches!(
+            stage,
+            RealityScanStage::CalculateTexture
+                | RealityScanStage::CalculateOrthoProjection
+                | RealityScanStage::ExportOrthoProjection
+        )
+}
+
+fn save_project_command(filename: &str) -> String {
+    format!("-save {}", rscmd_quote(&windows_output_path(filename)))
+}
+
+fn load_project_command(filename: &str) -> String {
+    format!(
+        "-load {} deleteAutosave",
+        rscmd_quote(&windows_output_path(filename))
+    )
+}
+
+fn realityscan_cli_script(
+    pipeline: &RealityScanPipeline,
+    windows_commands_path: &str,
+) -> anyhow::Result<String> {
     if pipeline
         .ortho_pixel_size_meters
         .is_some_and(|value| !value.is_finite() || value <= 0.0)
@@ -284,11 +648,12 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
     script.push_str(&ortho_export_config);
     script.push_str(&format!(
         "XML\n/opt/realityscan/bin/realityscan-cli -headless -stdConsole -execRSCMD {}\n",
-        shell_quote("Z:\\job\\work\\commands.rscmd")
+        shell_quote(windows_commands_path)
     ));
     Ok(script)
 }
 
+#[cfg(test)]
 fn realityscan_rscmd_script(
     pipeline: &RealityScanPipeline,
     manifest: &JobInputManifest,
@@ -500,7 +865,11 @@ fn input_intrinsics_settings(
     settings
 }
 
-fn push_float_setting(settings: &mut Vec<(&'static str, String)>, key: &'static str, value: Option<f64>) {
+fn push_float_setting(
+    settings: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<f64>,
+) {
     let Some(value) = value else {
         return;
     };
@@ -1095,7 +1464,7 @@ mod tests {
             ortho_pixel_size_meters: Some(0.05),
         };
 
-        let launcher = realityscan_cli_script(&pipeline).unwrap();
+        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
 
         assert!(launcher.contains(r#"<entry key="exportOrthoAsBigTiff" value="true"/>"#));
@@ -1104,6 +1473,158 @@ mod tests {
         assert!(script.contains(
             "-exportOrthoProjection \"Z:\\job\\outputs\\seaforth-5cm-orthomosaic.tif\" \"Z:\\job\\outputs\\export-ortho-config.xml\""
         ));
+    }
+
+    #[test]
+    fn realityscan_phases_save_after_align_before_normal_model() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "normal".to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionAuto,
+                RealityScanStage::CalculateNormalModel,
+                RealityScanStage::CalculateTexture,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "final.rsproj".to_string(),
+            orthomosaic_filename: Some("ortho.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].name, "align-save");
+        assert!(phases[0]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\aligned.rsproj\"".to_string()));
+        assert!(!phases[0]
+            .commands
+            .contains(&"-calculateNormalModel".to_string()));
+        assert_eq!(
+            phases[1].commands[0],
+            "-load \"Z:\\job\\outputs\\aligned.rsproj\" deleteAutosave"
+        );
+        assert!(phases[1]
+            .commands
+            .contains(&"-calculateNormalModel".to_string()));
+        assert!(phases[1]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
+        assert_eq!(
+            phases[2].commands[0],
+            "-load \"Z:\\job\\outputs\\modeled.rsproj\" deleteAutosave"
+        );
+        assert!(phases[2].commands.iter().any(|command| {
+            command.contains("-exportOrthoProjection \"Z:\\job\\outputs\\ortho.tif\"")
+        }));
+        assert!(phases[2]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\final.rsproj\"".to_string()));
+    }
+
+    #[test]
+    fn realityscan_align_only_template_stays_single_phase() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "align-only".to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "aligned.rsproj".to_string(),
+            orthomosaic_filename: None,
+            ortho_pixel_size_meters: None,
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].name, "single");
+        assert!(phases[0]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\aligned.rsproj\"".to_string()));
+    }
+
+    #[tokio::test]
+    async fn input_cache_restores_verified_blob() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_root = input_cache_root(temp.path());
+        let source = temp.path().join("source.jpg");
+        fs::write(&source, b"image-data").await.unwrap();
+        let sha256 = file_sha256(&source).await.unwrap();
+        let input = CloudfrontInput {
+            asset_id: "asset-1".to_string(),
+            filename: "image.jpg".to_string(),
+            url: "https://example.test/image.jpg".to_string(),
+            sha256: Some(sha256.clone()),
+            size_bytes: Some(10),
+            camera_intrinsics: None,
+        };
+
+        store_input_in_cache(&cache_root, &input, &source)
+            .await
+            .unwrap();
+        let target = temp.path().join("job").join("inputs").join("image.jpg");
+        let restored = restore_input_from_cache(&cache_root, &input, &target)
+            .await
+            .unwrap();
+
+        assert!(restored);
+        assert_eq!(fs::read(&target).await.unwrap(), b"image-data");
+        assert_eq!(file_sha256(&target).await.unwrap(), sha256);
+    }
+
+    #[tokio::test]
+    async fn input_cache_prunes_entries_unused_for_a_month() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_root = input_cache_root(temp.path());
+        let source = temp.path().join("source.jpg");
+        fs::write(&source, b"old-image-data").await.unwrap();
+        let sha256 = file_sha256(&source).await.unwrap();
+        let input = CloudfrontInput {
+            asset_id: "asset-1".to_string(),
+            filename: "image.jpg".to_string(),
+            url: "https://example.test/image.jpg".to_string(),
+            sha256: Some(sha256.clone()),
+            size_bytes: None,
+            camera_intrinsics: None,
+        };
+        store_input_in_cache(&cache_root, &input, &source)
+            .await
+            .unwrap();
+        let paths = input_cache_paths(&cache_root, &sha256).unwrap();
+        write_json(
+            &paths.metadata_path,
+            &CachedInputMetadata {
+                sha256,
+                filename: "image.jpg".to_string(),
+                size_bytes: None,
+                cached_at: Utc::now() - chrono::Duration::days(40),
+                last_used_at: Utc::now() - chrono::Duration::days(31),
+            },
+        )
+        .await
+        .unwrap();
+
+        prune_input_cache(&cache_root).await.unwrap();
+
+        assert!(!paths.entry_dir.exists());
     }
 
     #[tokio::test]
