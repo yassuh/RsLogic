@@ -32,6 +32,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
 const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
+const JOB_EVENTS_LOG: &str = "job-events.jsonl";
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -71,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
             let job_dir = args.state_dir.join("jobs").join(&manifest.job_id);
             prepare_job_dir(&job_dir).await?;
             emit(
+                &job_dir,
                 &manifest.job_id,
                 JobState::Accepted,
                 "download-only job accepted",
@@ -101,6 +103,7 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
     if let Some(state) = read_worker_state(&job_dir).await? {
         if state.completed {
             emit(
+                &job_dir,
                 &job.job_id,
                 JobState::Completed,
                 "job already completed in local state",
@@ -111,6 +114,7 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
         }
         if !state.output_artifacts.is_empty() {
             emit(
+                &job_dir,
                 &job.job_id,
                 JobState::Accepted,
                 "resuming job from collected outputs",
@@ -119,18 +123,32 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
             .await?;
             upload_outputs(&http, &job, &job_dir, &state.output_artifacts).await?;
             write_worker_state(&job_dir, &job.job_id, state.output_artifacts, true).await?;
-            emit(&job.job_id, JobState::Completed, "job completed", 100.0).await?;
+            emit(
+                &job_dir,
+                &job.job_id,
+                JobState::Completed,
+                "job completed",
+                100.0,
+            )
+            .await?;
             return Ok(());
         }
     }
 
-    emit(&job.job_id, JobState::Accepted, "job accepted", 0.0).await?;
+    emit(&job_dir, &job.job_id, JobState::Accepted, "job accepted", 0.0).await?;
     download_inputs(&http, &job.manifest, &job_dir, &args.state_dir).await?;
     run_realityscan(args, &job, &job_dir).await?;
     let outputs = collect_outputs(&job, &job_dir).await?;
     upload_outputs(&http, &job, &job_dir, &outputs).await?;
     write_worker_state(&job_dir, &job.job_id, outputs, true).await?;
-    emit(&job.job_id, JobState::Completed, "job completed", 100.0).await?;
+    emit(
+        &job_dir,
+        &job.job_id,
+        JobState::Completed,
+        "job completed",
+        100.0,
+    )
+    .await?;
     Ok(())
 }
 
@@ -154,6 +172,7 @@ async fn download_inputs(
     let cache_root = input_cache_root(state_dir);
     prune_input_cache(&cache_root).await?;
     emit(
+        job_dir,
         &manifest.job_id,
         JobState::Downloading,
         "downloading signed inputs",
@@ -185,6 +204,7 @@ async fn download_inputs(
         }
     }
     emit(
+        job_dir,
         &manifest.job_id,
         JobState::Verifying,
         "inputs downloaded and verified",
@@ -407,6 +427,7 @@ async fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
 
 async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyhow::Result<()> {
     emit(
+        job_dir,
         &job.job_id,
         JobState::RunningRealityscan,
         "starting RealityScan stage",
@@ -443,6 +464,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         .await?;
         fs::write(&commands_path, phase.commands.join("\n")).await?;
         emit(
+            job_dir,
             &job.job_id,
             JobState::RunningRealityscan,
             &format!("starting RealityScan phase {}", phase.name),
@@ -456,6 +478,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             index,
             phases.len(),
             job.manifest.inputs.len(),
+            job_dir.to_path_buf(),
             stdout_line_rx,
         ));
         let run_result = runner
@@ -478,6 +501,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         progress_task.await.ok();
         run_result.with_context(|| format!("RealityScan phase {} failed", phase.name))?;
         emit(
+            job_dir,
             &job.job_id,
             JobState::RunningRealityscan,
             &format!("completed RealityScan phase {}", phase.name),
@@ -494,6 +518,7 @@ async fn monitor_realityscan_stdout(
     phase_index: usize,
     phase_count: usize,
     input_count: usize,
+    job_dir: PathBuf,
     mut lines: mpsc::UnboundedReceiver<String>,
 ) {
     let mut detected_images = 0_usize;
@@ -506,9 +531,15 @@ async fn monitor_realityscan_stdout(
                     phase_count,
                     command_progress_hint(command),
                 );
-                emit(&job_id, JobState::RunningRealityscan, &message, progress)
-                    .await
-                    .ok();
+                emit(
+                    &job_dir,
+                    &job_id,
+                    JobState::RunningRealityscan,
+                    &message,
+                    progress,
+                )
+                .await
+                .ok();
             }
             continue;
         }
@@ -527,6 +558,7 @@ async fn monitor_realityscan_stdout(
                     0.2
                 };
                 emit(
+                    &job_dir,
                     &job_id,
                     JobState::RunningRealityscan,
                     &message,
@@ -540,6 +572,7 @@ async fn monitor_realityscan_stdout(
 
         if line.contains("Feature detection completed") {
             emit(
+                &job_dir,
                 &job_id,
                 JobState::RunningRealityscan,
                 &format!("RealityScan {phase_name}: {}", line.trim()),
@@ -552,6 +585,7 @@ async fn monitor_realityscan_stdout(
 
         if line.contains("Alignment completed") {
             emit(
+                &job_dir,
                 &job_id,
                 JobState::RunningRealityscan,
                 &format!("RealityScan {phase_name}: {}", line.trim()),
@@ -1140,6 +1174,7 @@ async fn collect_outputs(
     job_dir: &Path,
 ) -> anyhow::Result<Vec<CollectedOutputArtifact>> {
     emit(
+        job_dir,
         &job.job_id,
         JobState::CollectingOutputs,
         "collecting outputs",
@@ -1314,6 +1349,7 @@ async fn upload_outputs(
     outputs: &[CollectedOutputArtifact],
 ) -> anyhow::Result<()> {
     emit(
+        job_dir,
         &job.job_id,
         JobState::UploadingOutputs,
         "uploading output artifacts",
@@ -1448,7 +1484,13 @@ async fn write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Resul
     Ok(())
 }
 
-async fn emit(job_id: &str, state: JobState, message: &str, progress: f32) -> anyhow::Result<()> {
+async fn emit(
+    job_dir: &Path,
+    job_id: &str,
+    state: JobState,
+    message: &str,
+    progress: f32,
+) -> anyhow::Result<()> {
     let event = JobEvent {
         job_id: job_id.to_string(),
         state,
@@ -1456,7 +1498,25 @@ async fn emit(job_id: &str, state: JobState, message: &str, progress: f32) -> an
         progress,
         observed_at: now(),
     };
-    println!("{}", serde_json::to_string(&event)?);
+    let line = serde_json::to_string(&event)?;
+    println!("{line}");
+    append_job_event(job_dir, &line).await?;
+    Ok(())
+}
+
+async fn append_job_event(job_dir: &Path, line: &str) -> anyhow::Result<()> {
+    let path = job_dir.join("logs").join(JOB_EVENTS_LOG);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.write_all(b"\n").await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -1493,6 +1553,31 @@ mod tests {
             infer_content_type("unknown.bin"),
             "application/octet-stream"
         );
+    }
+
+    #[tokio::test]
+    async fn emit_appends_job_event_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        emit(
+            temp.path(),
+            "job-1",
+            JobState::RunningRealityscan,
+            "RealityScan align",
+            42.0,
+        )
+        .await
+        .unwrap();
+
+        let raw = fs::read_to_string(temp.path().join("logs").join(JOB_EVENTS_LOG))
+            .await
+            .unwrap();
+        let lines: Vec<_> = raw.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let event: JobEvent = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(event.job_id, "job-1");
+        assert_eq!(event.state, JobState::RunningRealityscan);
+        assert_eq!(event.message, "RealityScan align");
+        assert_eq!(event.progress, 42.0);
     }
 
     #[test]

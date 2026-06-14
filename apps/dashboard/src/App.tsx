@@ -340,6 +340,7 @@ export function App() {
   const [artifacts, setArtifacts] = useState<UploadedArtifact[]>([])
   const [jobTemplates, setJobTemplates] = useState<JobTemplate[]>([])
   const [jobError, setJobError] = useState<string | null>(null)
+  const [jobEventsError, setJobEventsError] = useState<string | null>(null)
   const [clientSource, setClientSource] = useState<ClientSource>("loading")
   const [clientError, setClientError] = useState<string | null>(null)
   const [imageryAssets, setImageryAssets] = useState<StudioImageAsset[]>([])
@@ -364,14 +365,17 @@ export function App() {
     (
       records: ApiClientRecord[],
       jobRecords: JobRecord[],
-      jobEventRecords: JobEvent[],
+      jobEventRecords: JobEvent[] | null,
       source: "api" | "ws",
       reason: string,
       observedAt: string
     ) => {
       setClients(records)
       setJobs(jobRecords)
-      setJobEvents(jobEventRecords)
+      if (jobEventRecords) {
+        setJobEvents(jobEventRecords)
+        setJobEventsError(null)
+      }
       setClientSource(records.length > 0 ? source : `${source}-empty`)
       setClientError(null)
       setStreamReason(reason)
@@ -416,9 +420,13 @@ export function App() {
       const artifactRecords = artifactsResponse.ok
         ? ((await artifactsResponse.json()) as UploadedArtifact[])
         : []
-      const jobEventRecords = jobEventsResponse.ok
-        ? ((await jobEventsResponse.json()) as JobEvent[])
-        : []
+      let jobEventRecords: JobEvent[] | null = null
+      if (jobEventsResponse.ok) {
+        jobEventRecords = (await jobEventsResponse.json()) as JobEvent[]
+        setJobEventsError(null)
+      } else {
+        setJobEventsError(`job-events api ${jobEventsResponse.status}`)
+      }
       setArtifacts(artifactRecords)
       applySnapshot(
         records,
@@ -435,6 +443,7 @@ export function App() {
       setClients(fallbackClients)
       setJobs([])
       setJobEvents([])
+      setJobEventsError(null)
       setClientSource("fallback")
       setArtifacts([])
       setExpandedClientIds([fallbackClients[0].client_id])
@@ -530,10 +539,17 @@ export function App() {
         try {
           const message = JSON.parse(String(event.data)) as AdminStreamMessage
           if (message.type !== "snapshot") return
+          const hasJobEvents = Object.prototype.hasOwnProperty.call(
+            message,
+            "job_events"
+          )
+          if (!hasJobEvents) {
+            setJobEventsError("admin stream missing job_events")
+          }
           applySnapshot(
             message.clients,
             message.jobs,
-            message.job_events ?? [],
+            hasJobEvents ? (message.job_events ?? []) : null,
             "ws",
             message.reason,
             message.observed_at
@@ -746,6 +762,7 @@ export function App() {
                   clients={clients}
                   jobs={jobs}
                   jobEvents={jobEvents}
+                  jobEventsError={jobEventsError}
                   streamEvents={streamEvents}
                   telemetryHistory={telemetryHistory}
                 />
@@ -760,6 +777,7 @@ export function App() {
                 <JobsView
                   jobs={jobs}
                   jobEvents={jobEvents}
+                  jobEventsError={jobEventsError}
                   clients={clients}
                   artifacts={artifacts}
                   templates={jobTemplates}
@@ -1184,12 +1202,14 @@ function OverviewView({
   clients,
   jobs,
   jobEvents,
+  jobEventsError,
   streamEvents,
   telemetryHistory,
 }: {
   clients: ApiClientRecord[]
   jobs: JobRecord[]
   jobEvents: JobEvent[]
+  jobEventsError: string | null
   streamEvents: string[]
   telemetryHistory: Record<string, TelemetrySample[]>
 }) {
@@ -1203,6 +1223,7 @@ function OverviewView({
         <JobsView
           jobs={jobs}
           jobEvents={jobEvents}
+          jobEventsError={jobEventsError}
           clients={clients}
           artifacts={[]}
           templates={[]}
@@ -1222,6 +1243,7 @@ function OverviewView({
 function JobsView({
   jobs,
   jobEvents,
+  jobEventsError,
   clients,
   artifacts,
   templates,
@@ -1234,6 +1256,7 @@ function JobsView({
 }: {
   jobs: JobRecord[]
   jobEvents: JobEvent[]
+  jobEventsError: string | null
   clients: ApiClientRecord[]
   artifacts: UploadedArtifact[]
   templates: JobTemplate[]
@@ -1448,6 +1471,7 @@ function JobsView({
       <JobsTable
         jobs={jobs}
         eventsByJob={eventsByJob}
+        eventsError={jobEventsError}
         artifactsByJob={artifactsByJob}
         expandedJobIds={expandedJobIds}
         onToggleJob={toggleJob}
@@ -1460,6 +1484,7 @@ function JobsView({
       <JobsTable
         jobs={jobs}
         eventsByJob={eventsByJob}
+        eventsError={jobEventsError}
         artifactsByJob={artifactsByJob}
         expandedJobIds={expandedJobIds}
         onToggleJob={toggleJob}
@@ -2160,6 +2185,7 @@ function StageList({ stages }: { stages: string[] }) {
 function JobsTable({
   jobs,
   eventsByJob,
+  eventsError,
   artifactsByJob,
   expandedJobIds,
   onToggleJob,
@@ -2167,6 +2193,7 @@ function JobsTable({
 }: {
   jobs: JobRecord[]
   eventsByJob: Map<string, JobEvent[]>
+  eventsError: string | null
   artifactsByJob: Map<string, UploadedArtifact[]>
   expandedJobIds: string[]
   onToggleJob: (jobId: string) => void
@@ -2242,6 +2269,7 @@ function JobsTable({
                             job={job}
                             artifacts={jobArtifacts}
                             events={jobEvents}
+                            eventsError={eventsError}
                           />
                         </td>
                       </tr>
@@ -2261,10 +2289,12 @@ function JobDetails({
   job,
   artifacts,
   events,
+  eventsError,
 }: {
   job: JobRecord
   artifacts: UploadedArtifact[]
   events: JobEvent[]
+  eventsError: string | null
 }) {
   const inputs = job.job.manifest?.inputs ?? []
   const pipeline = job.job.pipeline
@@ -2298,7 +2328,7 @@ function JobDetails({
         />
       </div>
       <div className="grid min-w-0 gap-3 xl:col-start-2 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <RecentJobEvents events={events} />
+        <RecentJobEvents events={events} error={eventsError} />
         <div className="min-w-0 border bg-background/35">
           <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
             artifacts / {artifacts.length}
@@ -2452,15 +2482,25 @@ function JobStageTimeline({
   )
 }
 
-function RecentJobEvents({ events }: { events: JobEvent[] }) {
+function RecentJobEvents({
+  events,
+  error,
+}: {
+  events: JobEvent[]
+  error: string | null
+}) {
   const recentEvents = sortJobEvents(events).slice(-10).reverse()
   return (
     <div className="min-w-0 border bg-background/35">
       <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
-        job events / {events.length}
+        job events / {error ? "unavailable" : events.length}
       </div>
       <div className="max-h-48 overflow-auto">
-        {recentEvents.length === 0 ? (
+        {error ? (
+          <div className="px-2 py-3 text-muted-foreground">
+            event stream unavailable: {error}
+          </div>
+        ) : recentEvents.length === 0 ? (
           <div className="px-2 py-3 text-muted-foreground">
             no worker events recorded yet
           </div>
