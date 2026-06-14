@@ -4,8 +4,7 @@ mod store;
 mod studio_api;
 
 use std::{
-    collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc,
-    time::Duration as StdDuration,
+    collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration as StdDuration,
 };
 
 use anyhow::Context;
@@ -25,7 +24,7 @@ use futures_util::{SinkExt, StreamExt};
 use rslogic_protocol::{
     new_id, now, verify_challenge_signature, CameraIntrinsics, Challenge, ClientEvent,
     CloudfrontInput, DesiredState, EnrollmentApproval, EnrollmentRejection, EnrollmentRequest,
-    EnrollmentRequestRecord, JobInputManifest, OutputUploadTarget, PipelineJob,
+    EnrollmentRequestRecord, JobEvent, JobInputManifest, OutputUploadTarget, PipelineJob,
     RealityScanPipeline, RealityScanStage, ServerCommand, SessionRequest, SessionToken,
     UploadedArtifact, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
 };
@@ -255,6 +254,12 @@ struct ClientRevocation {
     revoked_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListJobEventsQuery {
+    job_id: Option<String>,
+    limit: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AdminStreamMessage {
@@ -263,6 +268,7 @@ enum AdminStreamMessage {
         observed_at: chrono::DateTime<chrono::Utc>,
         clients: Vec<AdminClientRecord>,
         jobs: Vec<JobRecord>,
+        job_events: Vec<JobEvent>,
     },
 }
 
@@ -368,6 +374,7 @@ fn router(state: AppState) -> Router {
         .route("/api/admin/job-templates", get(list_job_templates))
         .route("/api/admin/jobs/build", post(build_job_from_imagery))
         .route("/api/admin/jobs", get(list_jobs))
+        .route("/api/admin/job-events", get(list_job_events))
         .route("/api/admin/artifacts", get(list_artifacts))
         .route("/api/clients/:client_id/connect", get(client_websocket))
         .layer(TraceLayer::new_for_http())
@@ -629,6 +636,18 @@ async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<JobRecord>>
     Ok(Json(jobs))
 }
 
+async fn list_job_events(
+    State(state): State<AppState>,
+    Query(query): Query<ListJobEventsQuery>,
+) -> Result<Json<Vec<JobEvent>>, ApiError> {
+    let events = state
+        .store
+        .list_job_events(query.job_id.as_deref(), query.limit.unwrap_or(200))
+        .await
+        .map_err(ApiError::from_store)?;
+    Ok(Json(events))
+}
+
 async fn list_artifacts(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UploadedArtifact>>, ApiError> {
@@ -841,7 +860,9 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
         return Err(ApiError::bad_request("custom template_id cannot be empty"));
     }
     if template.name.trim().is_empty() {
-        return Err(ApiError::bad_request("custom template name cannot be empty"));
+        return Err(ApiError::bad_request(
+            "custom template name cannot be empty",
+        ));
     }
     if template.stages.is_empty() {
         return Err(ApiError::bad_request(
@@ -1342,6 +1363,7 @@ async fn admin_snapshot(
         observed_at: now(),
         clients: state.store.list_clients().await?,
         jobs: state.store.list_jobs().await?,
+        job_events: state.store.list_job_events(None, 200).await?,
     })
 }
 

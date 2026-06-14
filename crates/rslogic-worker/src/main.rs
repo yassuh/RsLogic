@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
+    sync::mpsc,
 };
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -448,7 +449,16 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             40.0 + ((index as f32) / phase_count) * 40.0,
         )
         .await?;
-        runner
+        let (stdout_line_tx, stdout_line_rx) = mpsc::unbounded_channel();
+        let progress_task = tokio::spawn(monitor_realityscan_stdout(
+            job.job_id.clone(),
+            phase.name.clone(),
+            index,
+            phases.len(),
+            job.manifest.inputs.len(),
+            stdout_line_rx,
+        ));
+        let run_result = runner
             .run(RealityScanRunConfig {
                 runtime: runtime.clone(),
                 image: job.realityscan_image.clone(),
@@ -461,11 +471,151 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                 log_prefix: Some(format!("realityscan-{file_stem}")),
                 max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+                stdout_line_tx: Some(stdout_line_tx),
+                stderr_line_tx: None,
             })
-            .await
-            .with_context(|| format!("RealityScan phase {} failed", phase.name))?;
+            .await;
+        progress_task.await.ok();
+        run_result.with_context(|| format!("RealityScan phase {} failed", phase.name))?;
+        emit(
+            &job.job_id,
+            JobState::RunningRealityscan,
+            &format!("completed RealityScan phase {}", phase.name),
+            40.0 + (((index + 1) as f32) / phase_count) * 40.0,
+        )
+        .await?;
     }
     Ok(())
+}
+
+async fn monitor_realityscan_stdout(
+    job_id: String,
+    phase_name: String,
+    phase_index: usize,
+    phase_count: usize,
+    input_count: usize,
+    mut lines: mpsc::UnboundedReceiver<String>,
+) {
+    let mut detected_images = 0_usize;
+    while let Some(line) = lines.recv().await {
+        if let Some(command) = parse_realityscan_command(&line) {
+            if should_emit_realityscan_command(command) {
+                let message = format!("RealityScan {phase_name}: command {command}");
+                let progress = realityscan_phase_progress(
+                    phase_index,
+                    phase_count,
+                    command_progress_hint(command),
+                );
+                emit(&job_id, JobState::RunningRealityscan, &message, progress)
+                    .await
+                    .ok();
+            }
+            continue;
+        }
+
+        if line.contains("features in image") {
+            detected_images += 1;
+            if should_emit_feature_progress(detected_images, input_count) {
+                let message = if input_count > 0 {
+                    format!("RealityScan {phase_name}: feature detection {detected_images}/{input_count}")
+                } else {
+                    format!("RealityScan {phase_name}: feature detection {detected_images} images")
+                };
+                let fraction = if input_count > 0 {
+                    ((detected_images as f32) / (input_count as f32)).clamp(0.0, 1.0) * 0.35
+                } else {
+                    0.2
+                };
+                emit(
+                    &job_id,
+                    JobState::RunningRealityscan,
+                    &message,
+                    realityscan_phase_progress(phase_index, phase_count, fraction),
+                )
+                .await
+                .ok();
+            }
+            continue;
+        }
+
+        if line.contains("Feature detection completed") {
+            emit(
+                &job_id,
+                JobState::RunningRealityscan,
+                &format!("RealityScan {phase_name}: {}", line.trim()),
+                realityscan_phase_progress(phase_index, phase_count, 0.38),
+            )
+            .await
+            .ok();
+            continue;
+        }
+
+        if line.contains("Alignment completed") {
+            emit(
+                &job_id,
+                JobState::RunningRealityscan,
+                &format!("RealityScan {phase_name}: {}", line.trim()),
+                realityscan_phase_progress(phase_index, phase_count, 0.82),
+            )
+            .await
+            .ok();
+        }
+    }
+}
+
+fn parse_realityscan_command(line: &str) -> Option<&str> {
+    let marker = "Executing command '";
+    let start = line.find(marker)? + marker.len();
+    let rest = &line[start..];
+    let end = rest.find('\'')?;
+    Some(&rest[..end])
+}
+
+fn should_emit_realityscan_command(command: &str) -> bool {
+    matches!(
+        command,
+        "addFolder"
+            | "align"
+            | "selectMaximalComponent"
+            | "setReconstructionRegionAuto"
+            | "calculatePreviewModel"
+            | "calculateNormalModel"
+            | "calculateHighModel"
+            | "calculateTexture"
+            | "calculateOrthoProjection"
+            | "exportOrthoProjection"
+            | "save"
+            | "load"
+    )
+}
+
+fn should_emit_feature_progress(detected_images: usize, input_count: usize) -> bool {
+    detected_images == 1
+        || detected_images % 50 == 0
+        || (input_count > 0 && detected_images == input_count)
+}
+
+fn command_progress_hint(command: &str) -> f32 {
+    match command {
+        "addFolder" => 0.03,
+        "align" => 0.36,
+        "selectMaximalComponent" => 0.84,
+        "setReconstructionRegionAuto" => 0.10,
+        "calculatePreviewModel" | "calculateNormalModel" | "calculateHighModel" => 0.42,
+        "calculateTexture" => 0.18,
+        "calculateOrthoProjection" => 0.52,
+        "exportOrthoProjection" => 0.78,
+        "save" => 0.92,
+        "load" => 0.02,
+        _ => 0.05,
+    }
+}
+
+fn realityscan_phase_progress(phase_index: usize, phase_count: usize, phase_fraction: f32) -> f32 {
+    let phase_count = phase_count.max(1) as f32;
+    let base = 40.0 + ((phase_index as f32) / phase_count) * 40.0;
+    let span = 40.0 / phase_count;
+    base + phase_fraction.clamp(0.0, 1.0) * span
 }
 
 async fn inputs_are_empty(job_dir: &Path) -> anyhow::Result<bool> {
@@ -1343,6 +1493,35 @@ mod tests {
             infer_content_type("unknown.bin"),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn realityscan_command_is_parsed_from_stdout_line() {
+        assert_eq!(
+            parse_realityscan_command("Executing command 'calculateNormalModel'"),
+            Some("calculateNormalModel")
+        );
+        assert_eq!(
+            parse_realityscan_command(
+                "Executing command 'addFolder' with parameter 'Z:\\job\\inputs'"
+            ),
+            Some("addFolder")
+        );
+        assert_eq!(parse_realityscan_command("Detected 40000 features"), None);
+    }
+
+    #[test]
+    fn realityscan_feature_progress_is_throttled() {
+        assert!(should_emit_feature_progress(1, 2202));
+        assert!(should_emit_feature_progress(50, 2202));
+        assert!(should_emit_feature_progress(2202, 2202));
+        assert!(!should_emit_feature_progress(49, 2202));
+    }
+
+    #[test]
+    fn realityscan_phase_progress_maps_to_worker_range() {
+        assert!((realityscan_phase_progress(0, 3, 0.0) - 40.0).abs() < 0.001);
+        assert!((realityscan_phase_progress(2, 3, 1.0) - 80.0).abs() < 0.001);
     }
 
     #[test]

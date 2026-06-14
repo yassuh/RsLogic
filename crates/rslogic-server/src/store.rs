@@ -120,6 +120,7 @@ pub trait Store: Send + Sync {
     async fn record_agent_status(&self, client_id: &str, status: AgentStatus) -> Result<()>;
     async fn record_job_assignment(&self, client_id: &str, job: PipelineJob) -> Result<JobRecord>;
     async fn record_job_event(&self, client_id: &str, event: JobEvent) -> Result<()>;
+    async fn list_job_events(&self, job_id: Option<&str>, limit: u32) -> Result<Vec<JobEvent>>;
     async fn record_uploaded_artifact(
         &self,
         client_id: &str,
@@ -443,6 +444,20 @@ impl Store for InMemoryStore {
         }
         guard.job_events.push(event);
         Ok(())
+    }
+
+    async fn list_job_events(&self, job_id: Option<&str>, limit: u32) -> Result<Vec<JobEvent>> {
+        let guard = self.inner.read().await;
+        let limit = limit.clamp(1, 500) as usize;
+        let mut events = guard
+            .job_events
+            .iter()
+            .filter(|event| job_id.map_or(true, |job_id| event.job_id == job_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        events.sort_by_key(|event| std::cmp::Reverse(event.observed_at));
+        events.truncate(limit);
+        Ok(events)
     }
 
     async fn record_uploaded_artifact(
@@ -980,6 +995,43 @@ impl Store for PostgresStore {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn list_job_events(&self, job_id: Option<&str>, limit: u32) -> Result<Vec<JobEvent>> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let rows = if let Some(job_id) = job_id {
+            sqlx::query(
+                r#"
+                SELECT event_payload
+                FROM job_events
+                WHERE job_id = $1
+                ORDER BY observed_at DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(job_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT event_payload
+                FROM job_events
+                ORDER BY observed_at DESC
+                LIMIT $1
+                "#,
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.into_iter()
+            .map(|row| {
+                let event_payload: serde_json::Value = row.try_get("event_payload")?;
+                Ok(serde_json::from_value(event_payload)?)
+            })
+            .collect()
     }
 
     async fn record_uploaded_artifact(

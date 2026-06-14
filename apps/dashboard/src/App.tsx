@@ -150,6 +150,22 @@ type JobRecord = {
   }
 }
 
+type JobEvent = {
+  job_id: string
+  state: string
+  message: string
+  progress: number
+  observed_at: string
+}
+
+type TimelineRow = {
+  id: string
+  label: string
+  start: number
+  end: number
+  detail?: string
+}
+
 type JobTemplate = {
   template_id: string
   name: string
@@ -203,6 +219,7 @@ type AdminStreamMessage = {
   observed_at: string
   clients: ApiClientRecord[]
   jobs: JobRecord[]
+  job_events?: JobEvent[]
 }
 
 type ClientSource =
@@ -319,6 +336,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("clients")
   const [clients, setClients] = useState<ApiClientRecord[]>(fallbackClients)
   const [jobs, setJobs] = useState<JobRecord[]>([])
+  const [jobEvents, setJobEvents] = useState<JobEvent[]>([])
   const [artifacts, setArtifacts] = useState<UploadedArtifact[]>([])
   const [jobTemplates, setJobTemplates] = useState<JobTemplate[]>([])
   const [jobError, setJobError] = useState<string | null>(null)
@@ -346,12 +364,14 @@ export function App() {
     (
       records: ApiClientRecord[],
       jobRecords: JobRecord[],
+      jobEventRecords: JobEvent[],
       source: "api" | "ws",
       reason: string,
       observedAt: string
     ) => {
       setClients(records)
       setJobs(jobRecords)
+      setJobEvents(jobEventRecords)
       setClientSource(records.length > 0 ? source : `${source}-empty`)
       setClientError(null)
       setStreamReason(reason)
@@ -366,18 +386,25 @@ export function App() {
     setClientSource("loading")
     setClientError(null)
     try {
-      const [clientsResponse, jobsResponse, artifactsResponse] =
-        await Promise.all([
-          fetch("/api/admin/clients", {
-            headers: { Accept: "application/json" },
-          }),
-          fetch("/api/admin/jobs", {
-            headers: { Accept: "application/json" },
-          }),
-          fetch("/api/admin/artifacts", {
-            headers: { Accept: "application/json" },
-          }),
-        ])
+      const [
+        clientsResponse,
+        jobsResponse,
+        artifactsResponse,
+        jobEventsResponse,
+      ] = await Promise.all([
+        fetch("/api/admin/clients", {
+          headers: { Accept: "application/json" },
+        }),
+        fetch("/api/admin/jobs", {
+          headers: { Accept: "application/json" },
+        }),
+        fetch("/api/admin/artifacts", {
+          headers: { Accept: "application/json" },
+        }),
+        fetch("/api/admin/job-events?limit=400", {
+          headers: { Accept: "application/json" },
+        }),
+      ])
       if (!clientsResponse.ok) {
         throw new Error(`clients api ${clientsResponse.status}`)
       }
@@ -389,10 +416,14 @@ export function App() {
       const artifactRecords = artifactsResponse.ok
         ? ((await artifactsResponse.json()) as UploadedArtifact[])
         : []
+      const jobEventRecords = jobEventsResponse.ok
+        ? ((await jobEventsResponse.json()) as JobEvent[])
+        : []
       setArtifacts(artifactRecords)
       applySnapshot(
         records,
         jobRecords,
+        jobEventRecords,
         "api",
         "manual_refresh",
         new Date().toISOString()
@@ -403,6 +434,7 @@ export function App() {
     } catch (error) {
       setClients(fallbackClients)
       setJobs([])
+      setJobEvents([])
       setClientSource("fallback")
       setArtifacts([])
       setExpandedClientIds([fallbackClients[0].client_id])
@@ -501,6 +533,7 @@ export function App() {
           applySnapshot(
             message.clients,
             message.jobs,
+            message.job_events ?? [],
             "ws",
             message.reason,
             message.observed_at
@@ -712,6 +745,7 @@ export function App() {
                 <OverviewView
                   clients={clients}
                   jobs={jobs}
+                  jobEvents={jobEvents}
                   streamEvents={streamEvents}
                   telemetryHistory={telemetryHistory}
                 />
@@ -725,6 +759,7 @@ export function App() {
               ) : activeTab === "jobs" ? (
                 <JobsView
                   jobs={jobs}
+                  jobEvents={jobEvents}
                   clients={clients}
                   artifacts={artifacts}
                   templates={jobTemplates}
@@ -1148,11 +1183,13 @@ function ClientDetails({
 function OverviewView({
   clients,
   jobs,
+  jobEvents,
   streamEvents,
   telemetryHistory,
 }: {
   clients: ApiClientRecord[]
   jobs: JobRecord[]
+  jobEvents: JobEvent[]
   streamEvents: string[]
   telemetryHistory: Record<string, TelemetrySample[]>
 }) {
@@ -1165,6 +1202,7 @@ function OverviewView({
         />
         <JobsView
           jobs={jobs}
+          jobEvents={jobEvents}
           clients={clients}
           artifacts={[]}
           templates={[]}
@@ -1183,6 +1221,7 @@ function OverviewView({
 
 function JobsView({
   jobs,
+  jobEvents,
   clients,
   artifacts,
   templates,
@@ -1194,6 +1233,7 @@ function JobsView({
   compact = false,
 }: {
   jobs: JobRecord[]
+  jobEvents: JobEvent[]
   clients: ApiClientRecord[]
   artifacts: UploadedArtifact[]
   templates: JobTemplate[]
@@ -1216,6 +1256,7 @@ function JobsView({
     () => groupArtifactsByJob(artifacts),
     [artifacts]
   )
+  const eventsByJob = useMemo(() => groupJobEventsByJob(jobEvents), [jobEvents])
   const [expandedJobIds, setExpandedJobIds] = useState<string[]>([])
   const [builderOpen, setBuilderOpen] = useState(false)
   const [selectedClientId, setSelectedClientId] = useState("")
@@ -1226,8 +1267,7 @@ function JobsView({
   const [jobName, setJobName] = useState("")
   const [customName, setCustomName] = useState("")
   const [customProjectFilename, setCustomProjectFilename] = useState("")
-  const [customOrthomosaicFilename, setCustomOrthomosaicFilename] =
-    useState("")
+  const [customOrthomosaicFilename, setCustomOrthomosaicFilename] = useState("")
   const [customStageIds, setCustomStageIds] = useState<string[]>([])
   const [selectionMode, setSelectionMode] = useState<"group_name" | "polygon">(
     "group_name"
@@ -1328,7 +1368,10 @@ function JobsView({
     )
     persistSavedTemplates(nextTemplates)
     if (effectiveTemplateId === template.key) {
-      setTemplateId(templateOptions.find((option) => option.source === "built_in")?.key ?? "")
+      setTemplateId(
+        templateOptions.find((option) => option.source === "built_in")?.key ??
+          ""
+      )
     }
     resetPreview()
   }
@@ -1404,6 +1447,7 @@ function JobsView({
     return (
       <JobsTable
         jobs={jobs}
+        eventsByJob={eventsByJob}
         artifactsByJob={artifactsByJob}
         expandedJobIds={expandedJobIds}
         onToggleJob={toggleJob}
@@ -1415,6 +1459,7 @@ function JobsView({
     <div className="relative h-full min-h-0 min-w-0">
       <JobsTable
         jobs={jobs}
+        eventsByJob={eventsByJob}
         artifactsByJob={artifactsByJob}
         expandedJobIds={expandedJobIds}
         onToggleJob={toggleJob}
@@ -1501,19 +1546,17 @@ function JobsView({
             ) : null}
 
             <div className="grid border-b bg-background/35 px-3 py-2 text-[11px] sm:grid-cols-4">
-              {["client", "imagery", "review", "queue"].map(
-                (label, index) => (
-                  <div
-                    key={label}
-                    className={`border-r px-2 last:border-r-0 ${jobBuilderStepClass(
-                      index,
-                      buildPreview
-                    )}`}
-                  >
-                    {index + 1}. {label}
-                  </div>
-                )
-              )}
+              {["client", "imagery", "review", "queue"].map((label, index) => (
+                <div
+                  key={label}
+                  className={`border-r px-2 last:border-r-0 ${jobBuilderStepClass(
+                    index,
+                    buildPreview
+                  )}`}
+                >
+                  {index + 1}. {label}
+                </div>
+              ))}
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -1907,7 +1950,7 @@ function CustomTemplateEditor({
   )
   const effectiveStageToAdd = addableStages.includes(stageToAdd)
     ? stageToAdd
-    : addableStages[0] ?? ""
+    : (addableStages[0] ?? "")
 
   const addStage = () => {
     if (!effectiveStageToAdd) return
@@ -1956,9 +1999,7 @@ function CustomTemplateEditor({
             <input
               className="h-8 w-full border bg-background px-2 text-xs"
               value={projectFilename}
-              onChange={(event) =>
-                onProjectFilenameChange(event.target.value)
-              }
+              onChange={(event) => onProjectFilenameChange(event.target.value)}
             />
           </Field>
           <Field label="orthomosaic filename">
@@ -2074,7 +2115,7 @@ function SortableStageRow({
     >
       <button
         type="button"
-        className="flex h-9 items-center justify-center border-r text-muted-foreground cursor-grab active:cursor-grabbing"
+        className="flex h-9 cursor-grab items-center justify-center border-r text-muted-foreground active:cursor-grabbing"
         title="Drag stage"
         {...attributes}
         {...listeners}
@@ -2118,12 +2159,14 @@ function StageList({ stages }: { stages: string[] }) {
 
 function JobsTable({
   jobs,
+  eventsByJob,
   artifactsByJob,
   expandedJobIds,
   onToggleJob,
   headerRight,
 }: {
   jobs: JobRecord[]
+  eventsByJob: Map<string, JobEvent[]>
   artifactsByJob: Map<string, UploadedArtifact[]>
   expandedJobIds: string[]
   onToggleJob: (jobId: string) => void
@@ -2157,6 +2200,7 @@ function JobsTable({
               jobs.map((job) => {
                 const expanded = expandedJobIds.includes(job.job_id)
                 const jobArtifacts = artifactsByJob.get(job.job_id) ?? []
+                const jobEvents = eventsByJob.get(job.job_id) ?? []
                 return (
                   <Fragment key={job.job_id}>
                     <tr className="border-b hover:bg-muted/25">
@@ -2194,7 +2238,11 @@ function JobsTable({
                     {expanded ? (
                       <tr className="border-b bg-muted/10">
                         <td colSpan={8} className="px-3 py-3">
-                          <JobDetails job={job} artifacts={jobArtifacts} />
+                          <JobDetails
+                            job={job}
+                            artifacts={jobArtifacts}
+                            events={jobEvents}
+                          />
                         </td>
                       </tr>
                     ) : null}
@@ -2212,21 +2260,26 @@ function JobsTable({
 function JobDetails({
   job,
   artifacts,
+  events,
 }: {
   job: JobRecord
   artifacts: UploadedArtifact[]
+  events: JobEvent[]
 }) {
   const inputs = job.job.manifest?.inputs ?? []
   const pipeline = job.job.pipeline
   return (
     <div className="grid gap-3 text-[11px] xl:grid-cols-[1fr_1fr]">
+      <div className="xl:col-span-2">
+        <JobStageTimeline job={job} events={events} />
+      </div>
       <DetailBlock
         title="pipeline"
         rows={[
           ["name", job.job.job_name ?? "-"],
           ["template", pipeline?.template_id ?? "-"],
           ["image", job.job.realityscan_image ?? "-"],
-          ["stages", pipeline?.stages?.map(formatStage).join(" -> ") ?? "-"],
+          ["stage count", String(pipeline?.stages?.length ?? 0)],
           ["project", pipeline?.project_filename ?? "-"],
           ["ortho", pipeline?.orthomosaic_filename ?? "-"],
         ]}
@@ -2266,6 +2319,7 @@ function JobDetails({
           )}
         </div>
       </div>
+      <RecentJobEvents events={events} />
       <div className="min-w-0 border bg-background/35">
         <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
           artifacts / {artifacts.length}
@@ -2295,6 +2349,132 @@ function JobDetails({
             </table>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function JobStageTimeline({
+  job,
+  events,
+}: {
+  job: JobRecord
+  events: JobEvent[]
+}) {
+  const rows = useMemo(() => jobTimelineRows(job), [job])
+  const sortedEvents = useMemo(() => sortJobEvents(events), [events])
+  const latestEvent = sortedEvents.at(-1) ?? null
+  const progress = jobProgress(job, latestEvent)
+  const currentIndex = currentTimelineIndex(rows, progress)
+  const latestMessage = latestEvent?.message ?? job.state
+
+  return (
+    <div className="min-w-0 border bg-background/35">
+      <PanelHeader
+        title="stage progress"
+        right={`${formatPercent(progress)} / ${formatClock(latestEvent?.observed_at ?? job.updated_at)}`}
+      />
+      <div className="border-b px-3 py-2 text-[11px] text-muted-foreground">
+        <span className="font-medium text-foreground">
+          {timelineStatusLabel(job.state)}
+        </span>{" "}
+        / {latestMessage}
+      </div>
+      <div className="relative px-3 py-3">
+        <div className="absolute top-5 bottom-5 left-[1.16rem] w-px bg-border" />
+        <div
+          className="absolute top-5 left-[1.16rem] w-px bg-primary transition-[height] duration-700"
+          style={{
+            height: `calc((100% - 2.5rem) * ${progress / 100})`,
+          }}
+        />
+        <div className="grid gap-2">
+          {rows.map((row, index) => {
+            const status = timelineRowStatus(row, index, currentIndex, progress)
+            const localProgress = timelineRowLocalProgress(row, progress)
+            return (
+              <div
+                key={row.id}
+                className="relative grid grid-cols-[1.75rem_1fr_auto] items-start gap-2"
+              >
+                <span
+                  className={`relative z-10 mt-1 size-2.5 rounded-full border ${
+                    status === "complete"
+                      ? "border-primary bg-primary"
+                      : status === "current"
+                        ? "border-primary bg-background ring-2 ring-primary/20"
+                        : "border-border bg-background"
+                  }`}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 pb-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs font-medium">
+                      {row.label}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {timelineRowLabel(status)}
+                    </span>
+                  </div>
+                  {status === "current" ? (
+                    <div className="mt-1 h-1 max-w-72 overflow-hidden bg-muted">
+                      <div
+                        className="h-full bg-primary transition-[width] duration-700"
+                        style={{ width: `${localProgress}%` }}
+                      />
+                    </div>
+                  ) : null}
+                  {row.detail ? (
+                    <div className="mt-1 truncate text-[10px] text-muted-foreground">
+                      {row.detail}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="pt-0.5 text-[10px] text-muted-foreground">
+                  {formatPercent(row.end)}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RecentJobEvents({ events }: { events: JobEvent[] }) {
+  const recentEvents = sortJobEvents(events).slice(-10).reverse()
+  return (
+    <div className="min-w-0 border bg-background/35">
+      <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
+        job events / {events.length}
+      </div>
+      <div className="max-h-48 overflow-auto">
+        {recentEvents.length === 0 ? (
+          <div className="px-2 py-3 text-muted-foreground">
+            no worker events recorded yet
+          </div>
+        ) : (
+          <table className="w-full min-w-[620px] border-collapse text-left">
+            <tbody>
+              {recentEvents.map((event) => (
+                <tr
+                  key={`${event.observed_at}-${event.message}`}
+                  className="border-b last:border-b-0"
+                >
+                  <Td className="whitespace-nowrap text-muted-foreground">
+                    {formatClock(event.observed_at)}
+                  </Td>
+                  <Td>
+                    <StatusPill state={event.state} />
+                  </Td>
+                  <Td>{formatPercent(event.progress)}</Td>
+                  <Td className="max-w-[34rem] truncate">{event.message}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )
@@ -2348,7 +2528,13 @@ function JobBuildPreview({ preview }: { preview: BuildJobResponse | null }) {
   )
 }
 
-function Field({ label, children }: { label: string; children: import("react").ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string
+  children: import("react").ReactNode
+}) {
   return (
     <label className="grid gap-1 text-[11px] text-muted-foreground uppercase">
       <span>{label}</span>
@@ -3019,7 +3205,13 @@ function Sparkline({
   )
 }
 
-function PanelHeader({ title, right }: { title: string; right: import("react").ReactNode }) {
+function PanelHeader({
+  title,
+  right,
+}: {
+  title: string
+  right: import("react").ReactNode
+}) {
   return (
     <div className="flex h-8 items-center justify-between border-b bg-muted/40 px-3 text-[11px] uppercase">
       <span className="font-medium">{title}</span>
@@ -3846,6 +4038,205 @@ function groupArtifactsByJob(artifacts: UploadedArtifact[]) {
   return grouped
 }
 
+function groupJobEventsByJob(events: JobEvent[]) {
+  const grouped = new Map<string, JobEvent[]>()
+  for (const event of events) {
+    const group = grouped.get(event.job_id)
+    if (group) {
+      group.push(event)
+    } else {
+      grouped.set(event.job_id, [event])
+    }
+  }
+  for (const group of grouped.values()) {
+    group.sort(compareJobEvents)
+  }
+  return grouped
+}
+
+function sortJobEvents(events: JobEvent[]) {
+  return [...events].sort(compareJobEvents)
+}
+
+function compareJobEvents(left: JobEvent, right: JobEvent) {
+  return (
+    new Date(left.observed_at).getTime() - new Date(right.observed_at).getTime()
+  )
+}
+
+function jobTimelineRows(job: JobRecord): TimelineRow[] {
+  const stages = job.job.pipeline?.stages ?? []
+  const rows: TimelineRow[] = [
+    {
+      id: "accepted",
+      label: "accept job",
+      start: 0,
+      end: 8,
+      detail: "agent accepted assignment",
+    },
+    {
+      id: "inputs",
+      label: "stage inputs",
+      start: 8,
+      end: 35,
+      detail: `${job.job.manifest?.inputs?.length ?? 0} images`,
+    },
+    {
+      id: "prepare_realityscan",
+      label: "prepare RealityScan",
+      start: 35,
+      end: 40,
+      detail: "write scripts and command files",
+    },
+  ]
+
+  const stageSpan = stages.length > 0 ? 40 / stages.length : 40
+  stages.forEach((stage, index) => {
+    const start = 40 + stageSpan * index
+    rows.push({
+      id: stage,
+      label: formatStage(stage),
+      start,
+      end: start + stageSpan,
+      detail: realityScanStageDetail(stage),
+    })
+  })
+
+  rows.push(
+    {
+      id: "collecting_outputs",
+      label: "collect outputs",
+      start: 80,
+      end: 88,
+      detail: "discover project, ortho, and logs",
+    },
+    {
+      id: "uploading_outputs",
+      label: "upload outputs",
+      start: 88,
+      end: 96,
+      detail: "presigned targets or local artifacts",
+    },
+    {
+      id: "completed",
+      label: "complete",
+      start: 96,
+      end: 100,
+      detail: terminalTimelineDetail(job.state),
+    }
+  )
+
+  return rows
+}
+
+function jobProgress(job: JobRecord, latestEvent: JobEvent | null) {
+  if (latestEvent) return clampPercent(latestEvent.progress)
+  return progressForJobState(job.state)
+}
+
+function progressForJobState(state: string) {
+  switch (state) {
+    case "assigned":
+      return 0
+    case "accepted":
+      return 8
+    case "resolving_inputs":
+    case "downloading":
+      return 18
+    case "verifying":
+      return 32
+    case "staging":
+      return 36
+    case "running_realityscan":
+      return 40
+    case "collecting_outputs":
+      return 84
+    case "uploading_outputs":
+      return 92
+    case "completed":
+      return 100
+    case "failed":
+    case "cancelled":
+      return 100
+    default:
+      return 0
+  }
+}
+
+function currentTimelineIndex(rows: TimelineRow[], progress: number) {
+  if (progress >= 100) return rows.length - 1
+  const index = rows.findIndex(
+    (row) => progress >= row.start && progress < row.end
+  )
+  if (index !== -1) return index
+  return rows.findIndex((row) => progress < row.end)
+}
+
+function timelineRowStatus(
+  row: TimelineRow,
+  index: number,
+  currentIndex: number,
+  progress: number
+) {
+  if (progress >= row.end || index < currentIndex) return "complete"
+  if (index === currentIndex) return "current"
+  return "pending"
+}
+
+function timelineRowLocalProgress(row: TimelineRow, progress: number) {
+  if (progress >= row.end) return 100
+  if (progress <= row.start) return 0
+  return clampPercent(((progress - row.start) / (row.end - row.start)) * 100)
+}
+
+function timelineRowLabel(status: string) {
+  if (status === "complete") return "done"
+  if (status === "current") return "active"
+  return "pending"
+}
+
+function timelineStatusLabel(state: string) {
+  if (state === "completed") return "complete"
+  if (state === "failed") return "failed"
+  if (state === "cancelled") return "cancelled"
+  return "running"
+}
+
+function realityScanStageDetail(stage: string) {
+  switch (stage) {
+    case "set_intrinsics":
+      return "apply camera priors"
+    case "align":
+      return "features, matching, component solve"
+    case "select_maximal_component":
+      return "keep largest component"
+    case "set_reconstruction_region_auto":
+      return "derive model bounds"
+    case "calculate_preview_model":
+      return "preview mesh"
+    case "calculate_normal_model":
+      return "normal mesh"
+    case "calculate_high_model":
+      return "high mesh"
+    case "calculate_texture":
+      return "texture generation"
+    case "calculate_ortho_projection":
+      return "orthographic projection"
+    case "export_ortho_projection":
+      return "orthomosaic export"
+    case "save_project":
+      return "write rsproj"
+    default:
+      return undefined
+  }
+}
+
+function terminalTimelineDetail(state: string) {
+  if (state === "failed") return "job failed"
+  if (state === "cancelled") return "job cancelled"
+  return "terminal state"
+}
+
 function parsePolygonText(value: string): Array<[number, number]> {
   const trimmed = value.trim()
   if (!trimmed) throw new Error("polygon coordinates are empty")
@@ -3906,7 +4297,10 @@ function jobTemplateOptions(
   ]
 }
 
-function templateOptionKey(source: TemplateOption["source"], templateId: string) {
+function templateOptionKey(
+  source: TemplateOption["source"],
+  templateId: string
+) {
   return `${source}:${templateId}`
 }
 

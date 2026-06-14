@@ -7,7 +7,14 @@ use std::{
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::{fs, process::Command, time::sleep};
+use tokio::{
+    fs,
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    process::Command,
+    sync::mpsc,
+    task::JoinHandle,
+    time::sleep,
+};
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +46,10 @@ pub struct RealityScanRunConfig {
     pub max_runtime_secs: Option<u64>,
     #[serde(default)]
     pub liveness_check_interval_secs: Option<u64>,
+    #[serde(skip)]
+    pub stdout_line_tx: Option<mpsc::UnboundedSender<String>>,
+    #[serde(skip)]
+    pub stderr_line_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,9 +87,6 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             .join(format!("{log_prefix}.stderr.log"));
         let container_name = container_name(&config.job_dir, config.log_prefix.as_deref());
 
-        let stdout = std::fs::File::create(&stdout_path)?;
-        let stderr = std::fs::File::create(&stderr_path)?;
-
         remove_container(&config.runtime, &container_name)
             .await
             .ok();
@@ -113,8 +121,8 @@ impl RealityScanRunner for ContainerRealityScanRunner {
         cmd.arg("-e").arg("WINEDEBUG=-all");
         cmd.arg(&config.image);
         cmd.args(&config.command);
-        cmd.stdout(Stdio::from(stdout));
-        cmd.stderr(Stdio::from(stderr));
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
         info!(
             runtime = config.runtime.binary(),
@@ -127,6 +135,24 @@ impl RealityScanRunner for ContainerRealityScanRunner {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("starting {}", config.runtime.binary()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("{} stdout was not piped", config.runtime.binary()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("{} stderr was not piped", config.runtime.binary()))?;
+        let stdout_task = tokio::spawn(stream_to_log_file(
+            stdout,
+            stdout_path.clone(),
+            config.stdout_line_tx.clone(),
+        ));
+        let stderr_task = tokio::spawn(stream_to_log_file(
+            stderr,
+            stderr_path.clone(),
+            config.stderr_line_tx.clone(),
+        ));
         let started_at = Instant::now();
         let check_interval =
             Duration::from_secs(config.liveness_check_interval_secs.unwrap_or(30).max(1));
@@ -150,6 +176,7 @@ impl RealityScanRunner for ContainerRealityScanRunner {
                         .await
                         .ok();
                     child.wait().await.ok();
+                    await_log_tasks(stdout_task, stderr_task).await.ok();
                     return Err(anyhow!(
                         "RealityScan container exceeded runtime limit of {} seconds; stdout={}; stderr={}",
                         max_runtime.as_secs(),
@@ -167,6 +194,7 @@ impl RealityScanRunner for ContainerRealityScanRunner {
                     .await
                     .ok();
                 child.wait().await.ok();
+                await_log_tasks(stdout_task, stderr_task).await.ok();
                 return Err(anyhow!(
                     "RealityScan.exe became defunct in container {container_name}; stdout={}; stderr={}",
                     stdout_path.display(),
@@ -177,6 +205,7 @@ impl RealityScanRunner for ContainerRealityScanRunner {
         };
 
         let exit_code = status.code().unwrap_or(-1);
+        await_log_tasks(stdout_task, stderr_task).await?;
         if !status.success() {
             return Err(anyhow!(
                 "RealityScan container exited with status {exit_code}; stdout={}; stderr={}",
@@ -190,6 +219,40 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             stderr_path,
         })
     }
+}
+
+async fn stream_to_log_file<R>(
+    reader: R,
+    path: PathBuf,
+    line_tx: Option<mpsc::UnboundedSender<String>>,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut file = fs::File::create(path).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        file.write_all(line.as_bytes()).await?;
+        file.write_all(b"\n").await?;
+        if let Some(line_tx) = &line_tx {
+            line_tx.send(line).ok();
+        }
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+async fn await_log_tasks(
+    stdout_task: JoinHandle<anyhow::Result<()>>,
+    stderr_task: JoinHandle<anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    stdout_task
+        .await
+        .context("joining RealityScan stdout task")??;
+    stderr_task
+        .await
+        .context("joining RealityScan stderr task")??;
+    Ok(())
 }
 
 async fn container_has_defunct_realityscan(
