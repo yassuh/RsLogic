@@ -303,10 +303,17 @@ where
     R: AsyncRead + Unpin,
 {
     let mut file = fs::File::create(path).await?;
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
-        file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+    let mut reader = BufReader::new(reader);
+    let mut raw_line = Vec::new();
+    loop {
+        raw_line.clear();
+        if reader.read_until(b'\n', &mut raw_line).await? == 0 {
+            break;
+        }
+        file.write_all(&raw_line).await?;
+        let line = String::from_utf8_lossy(&raw_line)
+            .trim_end_matches(&['\r', '\n'][..])
+            .to_string();
         if let Some(pattern) = matched_fatal_output_pattern(&line, &fatal_patterns) {
             fatal_line_tx
                 .send(FatalOutputLine {
@@ -585,6 +592,44 @@ PID STAT COMMAND COMMAND
             &patterns
         )
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_to_log_file_handles_non_utf8_lines_lossily() {
+        let path = std::env::temp_dir().join(format!(
+            "rslogic-realityscan-stream-{}-{}.log",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let (line_tx, mut line_rx) = mpsc::unbounded_channel();
+        let (fatal_line_tx, mut fatal_line_rx) = mpsc::unbounded_channel();
+        let fatal_patterns = Arc::new(vec!["fatal marker".to_string()]);
+        let raw = b"progress \xff line\nfatal marker \xfe line\n";
+
+        let task = tokio::spawn(stream_to_log_file(
+            "stdout",
+            reader,
+            path.clone(),
+            Some(line_tx),
+            fatal_line_tx,
+            fatal_patterns,
+        ));
+        writer.write_all(raw).await.unwrap();
+        drop(writer);
+        task.await.unwrap().unwrap();
+
+        assert_eq!(fs::read(&path).await.unwrap(), raw);
+        fs::remove_file(&path).await.ok();
+
+        let first_line = line_rx.recv().await.unwrap();
+        assert!(first_line.contains('\u{FFFD}'));
+        let second_line = line_rx.recv().await.unwrap();
+        assert!(second_line.contains("fatal marker"));
+
+        let fatal = fatal_line_rx.recv().await.unwrap();
+        assert_eq!(fatal.pattern, "fatal marker");
+        assert!(fatal.line.contains('\u{FFFD}'));
     }
 
     #[test]

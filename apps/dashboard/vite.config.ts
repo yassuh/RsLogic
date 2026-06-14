@@ -12,6 +12,9 @@ export default defineConfig({
         target: "http://host.docker.internal:8080",
         ws: true,
       },
+      "/healthz": {
+        target: "http://host.docker.internal:8080",
+      },
     },
   },
   resolve: {

@@ -35,7 +35,7 @@ sha2 = { version = "0.10.9", features = ["oid"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 tempfile = "3.20.0"
 thiserror = "2.0.12"
-tokio = { version = "1.45.1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "io-util"] }
+tokio = { version = "1.45.1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "io-util", "sync"] }
 tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-webpki-roots"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.6.6", features = ["trace"] }
