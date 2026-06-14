@@ -48,6 +48,10 @@ pub struct RealityScanRunConfig {
     #[serde(default)]
     pub liveness_check_interval_secs: Option<u64>,
     #[serde(default)]
+    pub status_poll_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub realityscan_instance_name: Option<String>,
+    #[serde(default)]
     pub fatal_output_patterns: Vec<String>,
     #[serde(skip)]
     pub stdout_line_tx: Option<mpsc::UnboundedSender<String>>,
@@ -60,6 +64,15 @@ pub struct RealityScanRunResult {
     pub exit_code: i32,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RealityScanStatusSample {
+    pub progress_id: String,
+    pub progress_percent: f32,
+    pub runtime_seconds: Option<f64>,
+    pub eta_seconds: Option<f64>,
+    pub raw_status: String,
 }
 
 #[derive(Debug)]
@@ -175,6 +188,10 @@ impl RealityScanRunner for ContainerRealityScanRunner {
         let check_interval =
             Duration::from_secs(config.liveness_check_interval_secs.unwrap_or(30).max(1));
         let max_runtime = config.max_runtime_secs.map(Duration::from_secs);
+        let status_poll_interval = config
+            .status_poll_interval_secs
+            .map(|seconds| Duration::from_secs(seconds.max(1)));
+        let mut next_status_poll = status_poll_interval.map(|interval| Instant::now() + interval);
 
         let status = loop {
             if let Some(status) = child
@@ -233,6 +250,23 @@ impl RealityScanRunner for ContainerRealityScanRunner {
                     stdout_path.display(),
                     stderr_path.display()
                 ));
+            }
+            if let (Some(instance_name), Some(interval), Some(next_poll)) = (
+                config.realityscan_instance_name.as_deref(),
+                status_poll_interval,
+                next_status_poll,
+            ) {
+                if Instant::now() >= next_poll {
+                    if let Some(status_line) =
+                        poll_realityscan_status(&config.runtime, &container_name, instance_name)
+                            .await?
+                    {
+                        if let Some(line_tx) = &config.stdout_line_tx {
+                            line_tx.send(status_line).ok();
+                        }
+                    }
+                    next_status_poll = Some(Instant::now() + interval);
+                }
             }
             sleep(check_interval).await;
         };
@@ -316,6 +350,46 @@ fn matched_fatal_output_pattern(line: &str, patterns: &[String]) -> Option<Strin
         .cloned()
 }
 
+pub fn parse_realityscan_status(raw: &str) -> Option<RealityScanStatusSample> {
+    let mut progress_id = None;
+    let mut progress_percent = None;
+    let mut runtime_seconds = None;
+    let mut eta_seconds = None;
+    for token in raw.split_whitespace() {
+        if let Some(value) = token.strip_prefix("id:") {
+            progress_id = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = token
+            .strip_prefix("progress:")
+            .and_then(|value| value.strip_suffix('%'))
+        {
+            progress_percent = value.parse::<f32>().ok();
+            continue;
+        }
+        if let Some(value) = token
+            .strip_prefix("runtime:")
+            .and_then(|value| value.strip_suffix("sec"))
+        {
+            runtime_seconds = value.parse::<f64>().ok();
+            continue;
+        }
+        if let Some(value) = token
+            .strip_prefix("endEstimation:")
+            .and_then(|value| value.strip_suffix("sec"))
+        {
+            eta_seconds = value.parse::<f64>().ok();
+        }
+    }
+    Some(RealityScanStatusSample {
+        progress_id: progress_id?,
+        progress_percent: progress_percent?,
+        runtime_seconds,
+        eta_seconds,
+        raw_status: raw.trim().to_string(),
+    })
+}
+
 async fn await_log_tasks(
     stdout_task: JoinHandle<anyhow::Result<()>>,
     stderr_task: JoinHandle<anyhow::Result<()>>,
@@ -367,6 +441,37 @@ async fn remove_container(runtime: &ContainerRuntime, container_name: &str) -> a
     Err(anyhow!(
         "failed to remove RealityScan container {container_name}: {stderr}"
     ))
+}
+
+async fn poll_realityscan_status(
+    runtime: &ContainerRuntime,
+    container_name: &str,
+    instance_name: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut command = Command::new(runtime.binary());
+    command
+        .arg("exec")
+        .arg(container_name)
+        .arg("/opt/realityscan/bin/realityscan-cli")
+        .arg("-headless")
+        .arg("-stdConsole")
+        .arg("-getStatus")
+        .arg(instance_name);
+    let output = match tokio::time::timeout(Duration::from_secs(10), command.output()).await {
+        Ok(output) => {
+            output.with_context(|| format!("polling RealityScan status in {container_name}"))?
+        }
+        Err(_) => return Ok(None),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| parse_realityscan_status(line).is_some())
+        .map(ToString::to_string))
 }
 
 fn top_output_has_defunct_realityscan(output: &str) -> bool {
@@ -480,5 +585,18 @@ PID STAT COMMAND COMMAND
             &patterns
         )
         .is_none());
+    }
+
+    #[test]
+    fn parses_realityscan_get_status_output() {
+        let sample = parse_realityscan_status(
+            "id:0x10001 progress:57.5% runtime:4.26sec endEstimation:3.40sec",
+        )
+        .unwrap();
+
+        assert_eq!(sample.progress_id, "0x10001");
+        assert_eq!(sample.progress_percent, 57.5);
+        assert_eq!(sample.runtime_seconds, Some(4.26));
+        assert_eq!(sample.eta_seconds, Some(3.40));
     }
 }

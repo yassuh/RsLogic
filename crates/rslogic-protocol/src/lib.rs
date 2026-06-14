@@ -11,6 +11,7 @@ pub const DEFAULT_MANAGEMENT_URL: &str = "http://127.0.0.1:8080";
 pub const DEFAULT_WEBSOCKET_PATH: &str = "/api/clients/{client_id}/connect";
 pub const DEFAULT_AGENT_STATE_DIR: &str = "/var/lib/rslogic-agent";
 pub const DEFAULT_WORKER_STATE_DIR: &str = "/var/lib/rslogic-worker";
+pub const PROTOCOL_VERSION: &str = "rslogic-v2";
 pub const YASSUH_IMAGERY_CLOUDFRONT_DOMAIN: &str = "d15n2niw0v0y8k.cloudfront.net";
 pub const YASSUH_IMAGERY_BUCKET: &str = "yassuh-imagery-749174759245-us-east-1";
 
@@ -234,6 +235,8 @@ pub struct WorkerStatus {
     pub worker_version: String,
     pub process_state: WorkerProcessState,
     pub active_job_id: Option<String>,
+    #[serde(default)]
+    pub supports_job_events_jsonl: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -406,6 +409,49 @@ pub enum JobState {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobEventKind {
+    Lifecycle,
+    RealityScanCommand,
+    RealityScanStatus,
+    RealityScanHeartbeat,
+    RealityScanFatal,
+    Artifact,
+    Cache,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JobEventDetails {
+    pub kind: JobEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_progress: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fatal_pattern: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JobEvent {
     pub job_id: String,
@@ -413,6 +459,8 @@ pub struct JobEvent {
     pub message: String,
     pub progress: f32,
     pub observed_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<JobEventDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

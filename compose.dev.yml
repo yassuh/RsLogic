@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: rslogic-postgres-dev
+    environment:
+      POSTGRES_DB: rslogic
+      POSTGRES_USER: rslogic
+      POSTGRES_PASSWORD: rslogic
+    ports:
+      - "54329:5432"
+    volumes:
+      - rslogic-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rslogic -d rslogic"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    image: rust:latest
+    container_name: rslogic-api-dev
+    profiles: ["api"]
+    working_dir: /work
+    command:
+      - sh
+      - -lc
+      - cargo run -p rslogic-server -- --bind 0.0.0.0:8080
+    environment:
+      RSLOGIC_DATABASE_URL: postgres://rslogic:rslogic@postgres:5432/rslogic
+      RSLOGIC_SERVER_BIND: 0.0.0.0:8080
+      RSLOGIC_STUDIO_API_URL: https://studio.yassuh.dev
+      RSLOGIC_STUDIO_API_EMAIL: ${RSLOGIC_STUDIO_API_EMAIL:-}
+      RSLOGIC_STUDIO_API_PASSWORD: ${RSLOGIC_STUDIO_API_PASSWORD:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/work
+      - rslogic-cargo-cache:/usr/local/cargo/registry
+      - rslogic-target-cache:/work/target
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  rslogic-postgres-data:
+  rslogic-cargo-cache:
+  rslogic-target-cache:

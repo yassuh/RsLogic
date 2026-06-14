@@ -26,7 +26,7 @@ use rslogic_protocol::{
     CloudfrontInput, DesiredState, EnrollmentApproval, EnrollmentRejection, EnrollmentRequest,
     EnrollmentRequestRecord, JobEvent, JobInputManifest, OutputUploadTarget, PipelineJob,
     RealityScanPipeline, RealityScanStage, ServerCommand, SessionRequest, SessionToken,
-    UploadedArtifact, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
+    UploadedArtifact, PROTOCOL_VERSION, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
 };
 use serde::{Deserialize, Serialize};
 use store::{
@@ -276,6 +276,7 @@ enum AdminStreamMessage {
 struct HealthResponse {
     status: &'static str,
     version: &'static str,
+    protocol_version: &'static str,
     build_sha: Option<&'static str>,
     capabilities: HealthCapabilities,
 }
@@ -288,6 +289,7 @@ struct HealthCapabilities {
     cloudfront_manifests: bool,
     postgres_store: bool,
     studio_api: bool,
+    worker_status: bool,
 }
 
 #[tokio::main]
@@ -403,6 +405,7 @@ async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+        protocol_version: PROTOCOL_VERSION,
         build_sha: option_env!("RSLOGIC_BUILD_SHA"),
         capabilities: HealthCapabilities {
             admin_job_events: true,
@@ -411,6 +414,7 @@ async fn healthz() -> Json<HealthResponse> {
             cloudfront_manifests: true,
             postgres_store: true,
             studio_api: true,
+            worker_status: true,
         },
     })
 }
@@ -1356,6 +1360,12 @@ async fn persist_client_event(state: &AppState, client_id: &str, event: &ClientE
             state
                 .store
                 .record_agent_status(client_id, status.clone())
+                .await
+        }
+        ClientEvent::WorkerStatus { status } => {
+            state
+                .store
+                .record_worker_status(client_id, status.clone())
                 .await
         }
         ClientEvent::JobEvent { event } => persist_job_event(state, client_id, event).await,

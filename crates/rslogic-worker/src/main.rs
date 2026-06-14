@@ -11,12 +11,13 @@ use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use reqwest::Client;
 use rslogic_protocol::{
-    now, CameraIntrinsics, CloudfrontInput, JobEvent, JobInputManifest, JobState,
-    OutputUploadTarget, PipelineJob, RealityScanPipeline, RealityScanStage, UploadedArtifact,
-    DEFAULT_WORKER_STATE_DIR,
+    now, CameraIntrinsics, CloudfrontInput, JobEvent, JobEventDetails, JobEventKind,
+    JobInputManifest, JobState, OutputUploadTarget, PipelineJob, RealityScanPipeline,
+    RealityScanStage, UploadedArtifact, DEFAULT_WORKER_STATE_DIR,
 };
 use rslogic_realityscan::{
-    ContainerRealityScanRunner, ContainerRuntime, RealityScanRunConfig, RealityScanRunner,
+    parse_realityscan_status, ContainerRealityScanRunner, ContainerRuntime, RealityScanRunConfig,
+    RealityScanRunner,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -466,18 +467,28 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             .join(format!("run-realityscan-{file_stem}.sh"));
         let commands_path = job_dir.join("work").join(format!("{file_stem}.rscmd"));
         let windows_commands_path = format!("Z:\\job\\work\\{file_stem}.rscmd");
+        let instance_name = realityscan_instance_name(&job.job_id, index, &phase.name);
         fs::write(
             &script_path,
             realityscan_cli_script(&job.pipeline, &windows_commands_path)?,
         )
         .await?;
-        fs::write(&commands_path, phase.commands.join("\n")).await?;
-        emit(
+        let mut phase_commands = Vec::with_capacity(phase.commands.len() + 1);
+        phase_commands.push(format!("-setInstanceName {instance_name}"));
+        phase_commands.extend(phase.commands.clone());
+        fs::write(&commands_path, phase_commands.join("\n")).await?;
+        emit_with_details(
             job_dir,
             &job.job_id,
             JobState::RunningRealityscan,
             &format!("starting RealityScan phase {}", phase.name),
             40.0 + ((index as f32) / phase_count) * 40.0,
+            Some(realityscan_phase_details(
+                JobEventKind::Lifecycle,
+                &phase.name,
+                index,
+                phases.len(),
+            )),
         )
         .await?;
         let realityscan_log_prefix = format!("realityscan-{file_stem}");
@@ -504,8 +515,8 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             index,
             phases.len(),
             job_dir.to_path_buf(),
-            stdout_log_path,
-            stderr_log_path,
+            stdout_log_path.clone(),
+            stderr_log_path.clone(),
             heartbeat_stop_rx,
         ));
         let run_result = runner
@@ -521,6 +532,8 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                 log_prefix: Some(realityscan_log_prefix),
                 max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+                status_poll_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+                realityscan_instance_name: Some(instance_name),
                 fatal_output_patterns: realityscan_fatal_output_patterns(),
                 stdout_line_tx: Some(stdout_line_tx),
                 stderr_line_tx: None,
@@ -532,12 +545,22 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         match run_result {
             Ok(_) => {}
             Err(error) => {
-                emit(
+                let mut details = realityscan_phase_details(
+                    JobEventKind::RealityScanFatal,
+                    &phase.name,
+                    index,
+                    phases.len(),
+                );
+                details.stdout_log_path = Some(stdout_log_path.display().to_string());
+                details.stderr_log_path = Some(stderr_log_path.display().to_string());
+                details.raw_status = Some(format!("{error:#}"));
+                emit_with_details(
                     job_dir,
                     &job.job_id,
                     JobState::Failed,
                     &format!("RealityScan phase {} failed: {error:#}", phase.name),
                     realityscan_phase_progress(index, phases.len(), 1.0),
+                    Some(details),
                 )
                 .await
                 .ok();
@@ -545,12 +568,18 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                     .with_context(|| format!("RealityScan phase {} failed", phase.name));
             }
         }
-        emit(
+        emit_with_details(
             job_dir,
             &job.job_id,
             JobState::RunningRealityscan,
             &format!("completed RealityScan phase {}", phase.name),
             40.0 + (((index + 1) as f32) / phase_count) * 40.0,
+            Some(realityscan_phase_details(
+                JobEventKind::Lifecycle,
+                &phase.name,
+                index,
+                phases.len(),
+            )),
         )
         .await?;
     }
@@ -568,6 +597,38 @@ async fn monitor_realityscan_stdout(
 ) {
     let mut detected_images = 0_usize;
     while let Some(line) = lines.recv().await {
+        if let Some(status) = parse_realityscan_status(&line) {
+            let mut details = realityscan_phase_details(
+                JobEventKind::RealityScanStatus,
+                &phase_name,
+                phase_index,
+                phase_count,
+            );
+            details.status_progress = Some(status.progress_percent);
+            details.runtime_seconds = status.runtime_seconds;
+            details.eta_seconds = status.eta_seconds;
+            details.raw_status = Some(status.raw_status);
+            emit_with_details(
+                &job_dir,
+                &job_id,
+                JobState::RunningRealityscan,
+                &format!(
+                    "RealityScan {phase_name}: status {} {}",
+                    status.progress_id,
+                    format_age_seconds(status.runtime_seconds.map(|seconds| seconds as u64))
+                ),
+                realityscan_phase_progress(
+                    phase_index,
+                    phase_count,
+                    status.progress_percent / 100.0,
+                ),
+                Some(details),
+            )
+            .await
+            .ok();
+            continue;
+        }
+
         if let Some(command) = parse_realityscan_command(&line) {
             if should_emit_realityscan_command(command) {
                 let message = format!("RealityScan {phase_name}: command {command}");
@@ -576,12 +637,21 @@ async fn monitor_realityscan_stdout(
                     phase_count,
                     command_progress_hint(command),
                 );
-                emit(
+                let mut details = realityscan_phase_details(
+                    JobEventKind::RealityScanCommand,
+                    &phase_name,
+                    phase_index,
+                    phase_count,
+                );
+                details.command = Some(command.to_string());
+                details.raw_status = Some(line.trim().to_string());
+                emit_with_details(
                     &job_dir,
                     &job_id,
                     JobState::RunningRealityscan,
                     &message,
                     progress,
+                    Some(details),
                 )
                 .await
                 .ok();
@@ -602,12 +672,22 @@ async fn monitor_realityscan_stdout(
                 } else {
                     0.2
                 };
-                emit(
+                let mut details = realityscan_phase_details(
+                    JobEventKind::RealityScanStatus,
+                    &phase_name,
+                    phase_index,
+                    phase_count,
+                );
+                details.stage_id = Some("feature_detection".to_string());
+                details.status_progress = Some((fraction / 0.35 * 100.0).clamp(0.0, 100.0));
+                details.raw_status = Some(line.trim().to_string());
+                emit_with_details(
                     &job_dir,
                     &job_id,
                     JobState::RunningRealityscan,
                     &message,
                     realityscan_phase_progress(phase_index, phase_count, fraction),
+                    Some(details),
                 )
                 .await
                 .ok();
@@ -616,12 +696,22 @@ async fn monitor_realityscan_stdout(
         }
 
         if line.contains("Feature detection completed") {
-            emit(
+            let mut details = realityscan_phase_details(
+                JobEventKind::RealityScanStatus,
+                &phase_name,
+                phase_index,
+                phase_count,
+            );
+            details.stage_id = Some("feature_detection".to_string());
+            details.status_progress = Some(100.0);
+            details.raw_status = Some(line.trim().to_string());
+            emit_with_details(
                 &job_dir,
                 &job_id,
                 JobState::RunningRealityscan,
                 &format!("RealityScan {phase_name}: {}", line.trim()),
                 realityscan_phase_progress(phase_index, phase_count, 0.38),
+                Some(details),
             )
             .await
             .ok();
@@ -629,12 +719,22 @@ async fn monitor_realityscan_stdout(
         }
 
         if line.contains("Alignment completed") {
-            emit(
+            let mut details = realityscan_phase_details(
+                JobEventKind::RealityScanStatus,
+                &phase_name,
+                phase_index,
+                phase_count,
+            );
+            details.stage_id = Some("alignment".to_string());
+            details.status_progress = Some(100.0);
+            details.raw_status = Some(line.trim().to_string());
+            emit_with_details(
                 &job_dir,
                 &job_id,
                 JobState::RunningRealityscan,
                 &format!("RealityScan {phase_name}: {}", line.trim()),
                 realityscan_phase_progress(phase_index, phase_count, 0.82),
+                Some(details),
             )
             .await
             .ok();
@@ -667,12 +767,23 @@ async fn emit_realityscan_phase_heartbeats(
                     format_age_seconds(stderr_age),
                     format_age_seconds(outputs_age),
                 );
-                emit(
+                let mut details = realityscan_phase_details(
+                    JobEventKind::RealityScanHeartbeat,
+                    &phase_name,
+                    phase_index,
+                    phase_count,
+                );
+                details.stdout_log_path = Some(stdout_log_path.display().to_string());
+                details.stderr_log_path = Some(stderr_log_path.display().to_string());
+                details.output_path = Some(job_dir.join("outputs").display().to_string());
+                details.raw_status = Some(message.clone());
+                emit_with_details(
                     &job_dir,
                     &job_id,
                     JobState::RunningRealityscan,
                     &message,
                     realityscan_phase_progress(phase_index, phase_count, 0.05),
+                    Some(details),
                 )
                 .await
                 .ok();
@@ -699,6 +810,66 @@ fn realityscan_fatal_output_patterns() -> Vec<String> {
         "operation failed.".to_string(),
         " failed after ".to_string(),
     ]
+}
+
+fn realityscan_phase_details(
+    kind: JobEventKind,
+    phase_name: &str,
+    phase_index: usize,
+    phase_count: usize,
+) -> JobEventDetails {
+    JobEventDetails {
+        kind,
+        stage_id: Some(phase_name.to_string()),
+        phase_id: Some(format!("{phase_index:02}-{phase_name}")),
+        phase_index: Some(phase_index as u32),
+        phase_count: Some(phase_count as u32),
+        command: None,
+        status_progress: None,
+        runtime_seconds: None,
+        eta_seconds: None,
+        raw_status: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
+        output_path: None,
+        fatal_pattern: None,
+    }
+}
+
+fn realityscan_instance_name(job_id: &str, phase_index: usize, phase_name: &str) -> String {
+    let job_fragment: String = job_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let phase_fragment = realityscan_name_fragment(phase_name);
+    format!(
+        "rslogic_{}_{phase_index:02}_{phase_fragment}",
+        if job_fragment.is_empty() {
+            "job"
+        } else {
+            &job_fragment
+        }
+    )
+}
+
+fn realityscan_name_fragment(value: &str) -> String {
+    let fragment: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let fragment = fragment.trim_matches('_');
+    if fragment.is_empty() {
+        "phase".to_string()
+    } else {
+        fragment.to_string()
+    }
 }
 
 fn parse_realityscan_command(line: &str) -> Option<&str> {
@@ -1595,12 +1766,24 @@ async fn emit(
     message: &str,
     progress: f32,
 ) -> anyhow::Result<()> {
+    emit_with_details(job_dir, job_id, state, message, progress, None).await
+}
+
+async fn emit_with_details(
+    job_dir: &Path,
+    job_id: &str,
+    state: JobState,
+    message: &str,
+    progress: f32,
+    details: Option<JobEventDetails>,
+) -> anyhow::Result<()> {
     let event = JobEvent {
         job_id: job_id.to_string(),
         state,
         message: message.to_string(),
         progress,
         observed_at: now(),
+        details,
     };
     let line = serde_json::to_string(&event)?;
     println!("{line}");
@@ -1697,6 +1880,14 @@ mod tests {
             Some("addFolder")
         );
         assert_eq!(parse_realityscan_command("Detected 40000 features"), None);
+    }
+
+    #[test]
+    fn realityscan_instance_name_is_short_and_space_free() {
+        assert_eq!(
+            realityscan_instance_name("9939ec30-9435-46fd", 1, "model save"),
+            "rslogic_9939ec30_01_model_save"
+        );
     }
 
     #[test]

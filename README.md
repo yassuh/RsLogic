@@ -28,7 +28,21 @@ cargo run -p rslogic-agent -- --management-url http://127.0.0.1:8080 --state-dir
 
 The agent is designed to connect outbound to the management server. Runtime control should not rely on inbound SSH or a static client IP.
 
-Set `RSLOGIC_DATABASE_URL` to use the Postgres-backed server store. Without it, the server uses in-memory state for local development.
+Use the durable Docker dev stack when testing jobs, clients, or dashboard state:
+
+```sh
+docker compose -f compose.dev.yml up -d postgres
+$env:RSLOGIC_DATABASE_URL="postgres://rslogic:rslogic@127.0.0.1:54329/rslogic"
+cargo run -p rslogic-server -- --bind 127.0.0.1:8080
+```
+
+Or run the API in Docker against the same database:
+
+```sh
+docker compose -f compose.dev.yml --profile api up api
+```
+
+Without `RSLOGIC_DATABASE_URL`, the server uses in-memory state. That path is useful for unit tests and throwaway smoke checks only; it will lose clients, jobs, events, and artifacts on restart.
 
 For CloudFront signed input manifests, configure the management server with:
 

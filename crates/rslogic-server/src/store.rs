@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use rslogic_protocol::{
     new_id, now, AgentStatus, Challenge, DesiredState, EnrollmentApproval, EnrollmentRequest,
     EnrollmentRequestRecord, EnrollmentStatus, JobEvent, JobState, MachineTelemetry, PipelineJob,
-    ServerCommand, SessionToken, UploadedArtifact,
+    ServerCommand, SessionToken, UploadedArtifact, WorkerStatus,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -53,6 +53,7 @@ pub struct AdminClientRecord {
     pub revoked_at: Option<chrono::DateTime<Utc>>,
     pub enrollment: Option<EnrollmentRequest>,
     pub latest_status: Option<AgentStatus>,
+    pub latest_worker_status: Option<WorkerStatus>,
     pub latest_telemetry: Option<MachineTelemetry>,
     pub last_heartbeat_at: Option<chrono::DateTime<Utc>>,
 }
@@ -118,6 +119,7 @@ pub trait Store: Send + Sync {
         telemetry: MachineTelemetry,
     ) -> Result<()>;
     async fn record_agent_status(&self, client_id: &str, status: AgentStatus) -> Result<()>;
+    async fn record_worker_status(&self, client_id: &str, status: WorkerStatus) -> Result<()>;
     async fn record_job_assignment(&self, client_id: &str, job: PipelineJob) -> Result<JobRecord>;
     async fn record_job_event(&self, client_id: &str, event: JobEvent) -> Result<()>;
     async fn list_job_events(&self, job_id: Option<&str>, limit: u32) -> Result<Vec<JobEvent>>;
@@ -143,6 +145,7 @@ struct ServerState {
     sessions: HashMap<String, SessionToken>,
     commands: HashMap<String, Vec<QueuedCommand>>,
     latest_agent_status: HashMap<String, AgentStatus>,
+    latest_worker_status: HashMap<String, WorkerStatus>,
     latest_telemetry: HashMap<String, (chrono::DateTime<Utc>, MachineTelemetry)>,
     jobs: HashMap<String, JobRecord>,
     artifacts: HashMap<String, UploadedArtifact>,
@@ -263,6 +266,10 @@ impl Store for InMemoryStore {
                     revoked_at: client.revoked_at,
                     enrollment,
                     latest_status: guard.latest_agent_status.get(&client.client_id).cloned(),
+                    latest_worker_status: guard
+                        .latest_worker_status
+                        .get(&client.client_id)
+                        .cloned(),
                     latest_telemetry: guard
                         .latest_telemetry
                         .get(&client.client_id)
@@ -413,6 +420,14 @@ impl Store for InMemoryStore {
         );
         guard
             .latest_agent_status
+            .insert(client_id.to_string(), status);
+        Ok(())
+    }
+
+    async fn record_worker_status(&self, client_id: &str, status: WorkerStatus) -> Result<()> {
+        let mut guard = self.inner.write().await;
+        guard
+            .latest_worker_status
             .insert(client_id.to_string(), status);
         Ok(())
     }
@@ -686,7 +701,8 @@ impl Store for PostgresStore {
                    e.request_payload,
                    s.heartbeat_at,
                    s.telemetry_payload,
-                   s.status_payload
+                   s.status_payload,
+                   s.worker_status_payload
             FROM clients c
             LEFT JOIN client_enrollment_requests e ON e.client_id = c.client_id
             LEFT JOIN client_runtime_status s ON s.client_id = c.client_id
@@ -923,6 +939,25 @@ impl Store for PostgresStore {
         Ok(())
     }
 
+    async fn record_worker_status(&self, client_id: &str, status: WorkerStatus) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO client_runtime_status
+              (client_id, worker_status_payload, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (client_id) DO UPDATE
+            SET worker_status_payload = EXCLUDED.worker_status_payload,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(client_id)
+        .bind(serde_json::to_value(status)?)
+        .bind(now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn record_job_assignment(&self, client_id: &str, job: PipelineJob) -> Result<JobRecord> {
         let assigned_at = now();
         let record = JobRecord {
@@ -1136,6 +1171,7 @@ fn admin_client_from_row(row: PgRow) -> Result<AdminClientRecord> {
     let request_payload: Option<serde_json::Value> = row.try_get("request_payload")?;
     let telemetry_payload: Option<serde_json::Value> = row.try_get("telemetry_payload")?;
     let status_payload: Option<serde_json::Value> = row.try_get("status_payload")?;
+    let worker_status_payload: Option<serde_json::Value> = row.try_get("worker_status_payload")?;
     Ok(AdminClientRecord {
         client_id: row.try_get("client_id")?,
         public_key: row.try_get("public_key")?,
@@ -1144,6 +1180,9 @@ fn admin_client_from_row(row: PgRow) -> Result<AdminClientRecord> {
         revoked_at: row.try_get("revoked_at")?,
         enrollment: request_payload.map(serde_json::from_value).transpose()?,
         latest_status: status_payload.map(serde_json::from_value).transpose()?,
+        latest_worker_status: worker_status_payload
+            .map(serde_json::from_value)
+            .transpose()?,
         latest_telemetry: telemetry_payload.map(serde_json::from_value).transpose()?,
         last_heartbeat_at: row.try_get("heartbeat_at")?,
     })

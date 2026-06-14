@@ -95,6 +95,13 @@ type AgentStatus = {
   telemetry: MachineTelemetry
 }
 
+type WorkerStatus = {
+  worker_version: string
+  process_state: string
+  active_job_id?: string | null
+  supports_job_events_jsonl?: boolean
+}
+
 type EnrollmentRequest = {
   hostname: string
   machine_id: string
@@ -119,6 +126,7 @@ type ApiClientRecord = {
   revoked_at?: string | null
   enrollment?: EnrollmentRequest | null
   latest_status?: AgentStatus | null
+  latest_worker_status?: WorkerStatus | null
   latest_telemetry?: MachineTelemetry | null
   last_heartbeat_at?: string | null
 }
@@ -156,6 +164,24 @@ type JobEvent = {
   message: string
   progress: number
   observed_at: string
+  details?: JobEventDetails | null
+}
+
+type JobEventDetails = {
+  kind: string
+  stage_id?: string | null
+  phase_id?: string | null
+  phase_index?: number | null
+  phase_count?: number | null
+  command?: string | null
+  status_progress?: number | null
+  runtime_seconds?: number | null
+  eta_seconds?: number | null
+  raw_status?: string | null
+  stdout_log_path?: string | null
+  stderr_log_path?: string | null
+  output_path?: string | null
+  fatal_pattern?: string | null
 }
 
 type TimelineRow = {
@@ -225,6 +251,7 @@ type AdminStreamMessage = {
 type ApiHealth = {
   status: string
   version?: string
+  protocol_version?: string
   build_sha?: string | null
   capabilities?: {
     admin_job_events?: boolean
@@ -233,6 +260,7 @@ type ApiHealth = {
     cloudfront_manifests?: boolean
     postgres_store?: boolean
     studio_api?: boolean
+    worker_status?: boolean
   }
 }
 
@@ -341,6 +369,7 @@ const fallbackClients: ApiClientRecord[] = [
       },
     },
     latest_status: null,
+    latest_worker_status: null,
     latest_telemetry: null,
     last_heartbeat_at: null,
   },
@@ -731,6 +760,10 @@ export function App() {
               value={apiBuildLabel(apiHealth, apiHealthError)}
             />
             <InfoLine
+              label="proto"
+              value={apiProtocolLabel(apiHealth, apiHealthError)}
+            />
+            <InfoLine
               label="events"
               value={apiEventsCapabilityLabel(apiHealth, apiHealthError)}
             />
@@ -1015,7 +1048,11 @@ function ClientsView({
                               ? `${clientJobs} active`
                               : "paused"}
                           </Td>
-                          <Td>{client.latest_status?.worker_state ?? "-"}</Td>
+                          <Td>
+                            {client.latest_worker_status?.process_state ??
+                              client.latest_status?.worker_state ??
+                              "-"}
+                          </Td>
                           <Td>
                             {client.latest_telemetry?.container_runtime ??
                               client.enrollment?.hardware.container_runtime ??
@@ -1126,7 +1163,27 @@ function HostTelemetryRow({
           />
           <InfoLine
             label="worker"
-            value={client.latest_status?.worker_state ?? "unknown"}
+            value={
+              client.latest_worker_status?.process_state ??
+              client.latest_status?.worker_state ??
+              "unknown"
+            }
+          />
+          <InfoLine
+            label="active"
+            value={
+              client.latest_worker_status?.active_job_id
+                ? shortId(client.latest_worker_status.active_job_id)
+                : "-"
+            }
+          />
+          <InfoLine
+            label="events"
+            value={
+              client.latest_worker_status?.supports_job_events_jsonl
+                ? "jsonl"
+                : "unknown"
+            }
           />
           <InfoLine
             label="uptime"
@@ -2552,7 +2609,7 @@ function RecentJobEvents({
             no worker events recorded yet
           </div>
         ) : (
-          <table className="w-full min-w-[620px] border-collapse text-left">
+          <table className="w-full min-w-[820px] border-collapse text-left">
             <tbody>
               {recentEvents.map((event) => (
                 <tr
@@ -2566,7 +2623,15 @@ function RecentJobEvents({
                     <StatusPill state={event.state} />
                   </Td>
                   <Td>{formatPercent(event.progress)}</Td>
-                  <Td className="max-w-[34rem] truncate">{event.message}</Td>
+                  <Td className="whitespace-nowrap text-muted-foreground">
+                    {jobEventKindLabel(event)}
+                  </Td>
+                  <Td className="max-w-48 truncate">
+                    {jobEventDetailLabel(event)}
+                  </Td>
+                  <Td className="max-w-[34rem] truncate">
+                    <span title={event.message}>{event.message}</span>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -3902,12 +3967,35 @@ function clientSourceLabel(source: ClientSource) {
   return "fixture"
 }
 
+function jobEventKindLabel(event: JobEvent) {
+  return formatStage(event.details?.kind ?? "lifecycle")
+}
+
+function jobEventDetailLabel(event: JobEvent) {
+  const details = event.details
+  if (!details) return "-"
+  const parts = [
+    details.phase_id ?? details.stage_id,
+    details.command,
+    details.status_progress != null
+      ? `status ${formatPercent(details.status_progress)}`
+      : null,
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(" / ") : "-"
+}
+
 function apiBuildLabel(health: ApiHealth | null, error: string | null) {
   if (error) return "offline"
   if (!health) return "checking"
   const version = health.version ?? "unknown"
   const sha = health.build_sha ? ` ${health.build_sha.slice(0, 7)}` : ""
   return `v${version}${sha}`
+}
+
+function apiProtocolLabel(health: ApiHealth | null, error: string | null) {
+  if (error) return "unknown"
+  if (!health) return "checking"
+  return health.protocol_version ?? "unknown"
 }
 
 function apiEventsCapabilityLabel(

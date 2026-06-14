@@ -490,6 +490,7 @@ fn spawn_worker_job(
                     worker_version: env!("CARGO_PKG_VERSION").to_string(),
                     process_state,
                     active_job_id: None,
+                    supports_job_events_jsonl: true,
                 },
             })
             .await
@@ -574,6 +575,7 @@ async fn run_worker_job(
                 worker_version: env!("CARGO_PKG_VERSION").to_string(),
                 process_state: WorkerProcessState::Running,
                 active_job_id: Some(job.job_id.clone()),
+                supports_job_events_jsonl: true,
             },
         })
         .await
@@ -622,6 +624,7 @@ async fn run_worker_job(
                         message: "worker process cancelled by management command".to_string(),
                         progress: 0.0,
                         observed_at: now(),
+                        details: None,
                     },
                 })
                 .await
