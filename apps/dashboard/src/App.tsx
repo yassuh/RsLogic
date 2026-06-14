@@ -192,6 +192,17 @@ type TimelineRow = {
   detail?: string
 }
 
+type TimelineStepState = {
+  activeRowId: string | null
+  activeProgress: number
+  completedRowIds: Set<string>
+}
+
+type TimelineEventPosition = {
+  rowId: string
+  progress: number
+}
+
 type JobTemplate = {
   template_id: string
   name: string
@@ -2502,15 +2513,18 @@ function JobStageTimeline({
   const rows = useMemo(() => jobTimelineRows(job), [job])
   const sortedEvents = useMemo(() => sortJobEvents(events), [events])
   const latestEvent = sortedEvents.at(-1) ?? null
-  const progress = jobProgress(job, latestEvent)
-  const currentIndex = currentTimelineIndex(rows, progress)
+  const overallProgress = jobProgress(job, latestEvent)
+  const stepState = useMemo(
+    () => timelineStepState(job, rows, sortedEvents, overallProgress),
+    [job, rows, sortedEvents, overallProgress]
+  )
   const latestMessage = latestEvent?.message ?? job.state
 
   return (
     <div className="min-w-0 border bg-background/35">
       <PanelHeader
         title="stage progress"
-        right={`${formatPercent(progress)} / ${formatClock(latestEvent?.observed_at ?? job.updated_at)}`}
+        right={`overall ${formatPercent(overallProgress)} / ${formatClock(latestEvent?.observed_at ?? job.updated_at)}`}
       />
       <div className="border-b px-3 py-2 text-[11px] text-muted-foreground">
         <span className="font-medium text-foreground">
@@ -2521,11 +2535,15 @@ function JobStageTimeline({
       <div className="relative px-3 py-3">
         <div className="grid gap-2">
           {rows.map((row, index) => {
-            const status = timelineRowStatus(row, index, currentIndex, progress)
-            const localProgress = timelineRowLocalProgress(row, progress)
-            const connectorProgress = timelineConnectorProgress(
+            const status = timelineRowStatus(row, stepState)
+            const localProgress = timelineRowLocalProgress(
+              row,
               status,
-              localProgress
+              stepState
+            )
+            const connectorProgress = timelineConnectorProgress(
+              row,
+              overallProgress
             )
             return (
               <div
@@ -4300,7 +4318,7 @@ function jobTimelineRows(job: JobRecord): TimelineRow[] {
     },
   ]
 
-  rows.push(...realityScanTimelineRows(stages))
+  rows.push(...stageTimelineRows(stages))
 
   rows.push(
     {
@@ -4329,100 +4347,48 @@ function jobTimelineRows(job: JobRecord): TimelineRow[] {
   return rows
 }
 
-function realityScanTimelineRows(stages: string[]): TimelineRow[] {
+function stageTimelineRows(stages: string[]): TimelineRow[] {
   const effectiveStages = stages.length > 0 ? stages : realityScanStageOrder
-  const shouldSplit =
-    effectiveStages.some(isSplitTriggerTimelineStage) &&
-    effectiveStages.some(isAlignmentTimelineStage)
-
-  if (!shouldSplit) {
-    return [
-      {
-        id: "single",
-        label: "RealityScan",
-        start: 40,
-        end: 80,
-        detail: timelineStageSummary(effectiveStages),
-      },
-    ]
-  }
-
-  const phaseDefs = [
-    {
-      id: "align-save",
-      label: "align / save",
-      stages: effectiveStages.filter(isAlignmentTimelineStage),
-    },
-    {
-      id: "model-save",
-      label: "model / save",
-      stages: effectiveStages.filter(isModelTimelineStage),
-    },
-    {
-      id: "outputs",
-      label: "outputs",
-      stages: effectiveStages.filter(isOutputTimelineStage),
-    },
-  ].filter((phase) => phase.stages.length > 0)
-
-  if (phaseDefs.length === 0) {
-    return [
-      {
-        id: "single",
-        label: "RealityScan",
-        start: 40,
-        end: 80,
-        detail: timelineStageSummary(effectiveStages),
-      },
-    ]
-  }
-
-  const phaseSpan = 40 / phaseDefs.length
-  return phaseDefs.map((phase, index) => {
-    const start = 40 + phaseSpan * index
+  const stageSpan = 40 / effectiveStages.length
+  return effectiveStages.map((stage, index) => {
+    const start = 40 + stageSpan * index
     return {
-      id: phase.id,
-      label: phase.label,
+      id: stage,
+      label: formatStage(stage),
       start,
-      end: start + phaseSpan,
-      detail: timelineStageSummary(phase.stages),
+      end: start + stageSpan,
+      detail: realityScanStageDetail(stage),
     }
   })
 }
 
-function isAlignmentTimelineStage(stage: string) {
-  return ["set_intrinsics", "align", "select_maximal_component"].includes(stage)
-}
-
-function isModelTimelineStage(stage: string) {
-  return [
-    "set_reconstruction_region_auto",
-    "calculate_preview_model",
-    "calculate_normal_model",
-    "calculate_high_model",
-  ].includes(stage)
-}
-
-function isOutputTimelineStage(stage: string) {
-  return [
-    "calculate_texture",
-    "calculate_ortho_projection",
-    "export_ortho_projection",
-    "save_project",
-  ].includes(stage)
-}
-
-function isSplitTriggerTimelineStage(stage: string) {
-  return [
-    "calculate_texture",
-    "calculate_ortho_projection",
-    "export_ortho_projection",
-  ].includes(stage)
-}
-
-function timelineStageSummary(stages: string[]) {
-  if (stages.length === 0) return undefined
-  return stages.map(formatStage).join(", ")
+function realityScanStageDetail(stage: string) {
+  switch (stage) {
+    case "set_intrinsics":
+      return "apply camera calibration"
+    case "align":
+      return "feature detection and camera alignment"
+    case "select_maximal_component":
+      return "keep largest aligned component"
+    case "set_reconstruction_region_auto":
+      return "derive reconstruction region"
+    case "calculate_preview_model":
+      return "preview mesh reconstruction"
+    case "calculate_normal_model":
+      return "normal detail reconstruction"
+    case "calculate_high_model":
+      return "high detail reconstruction"
+    case "calculate_texture":
+      return "texture generation"
+    case "calculate_ortho_projection":
+      return "orthographic projection"
+    case "export_ortho_projection":
+      return "write orthomosaic GeoTIFF"
+    case "save_project":
+      return "persist RealityScan project"
+    default:
+      return undefined
+  }
 }
 
 function jobProgress(job: JobRecord, latestEvent: JobEvent | null) {
@@ -4459,36 +4425,297 @@ function progressForJobState(state: string) {
   }
 }
 
-function currentTimelineIndex(rows: TimelineRow[], progress: number) {
-  if (progress >= 100) return rows.length - 1
-  const index = rows.findIndex(
-    (row) => progress >= row.start && progress < row.end
-  )
-  if (index !== -1) return index
-  return rows.findIndex((row) => progress < row.end)
+function timelineStepState(
+  job: JobRecord,
+  rows: TimelineRow[],
+  events: JobEvent[],
+  overallProgress: number
+): TimelineStepState {
+  const completedRowIds = completedRowsFromEvents(rows, events)
+  const stateRowId = timelineRowIdForJobState(job.state)
+  if (stateRowId) {
+    markRowsBefore(rows, stateRowId, completedRowIds)
+    if (job.state === "completed") {
+      rows.forEach((row) => completedRowIds.add(row.id))
+      return { activeRowId: null, activeProgress: 100, completedRowIds }
+    }
+    return {
+      activeRowId: stateRowId,
+      activeProgress: timelineStateLocalProgress(
+        rowById(rows, stateRowId),
+        overallProgress
+      ),
+      completedRowIds,
+    }
+  }
+
+  const position = latestTimelineEventPosition(events, rows)
+  if (position) {
+    markRowsBefore(rows, position.rowId, completedRowIds)
+    return {
+      activeRowId: position.rowId,
+      activeProgress: position.progress,
+      completedRowIds,
+    }
+  }
+
+  return {
+    activeRowId: null,
+    activeProgress: 0,
+    completedRowIds,
+  }
 }
 
-function timelineRowStatus(
-  row: TimelineRow,
-  index: number,
-  currentIndex: number,
-  progress: number
+function completedRowsFromEvents(rows: TimelineRow[], events: JobEvent[]) {
+  const completedRowIds = new Set<string>()
+  for (const event of events) {
+    const position = timelineEventPosition(event, rows)
+    if (position?.progress === 100) {
+      completedRowIds.add(position.rowId)
+    }
+    const phaseId = event.details?.phase_id ?? event.details?.stage_id
+    if (
+      event.details?.kind === "lifecycle" &&
+      event.message.startsWith("completed RealityScan phase") &&
+      phaseId
+    ) {
+      for (const stageId of stageIdsForPhase(phaseId)) {
+        if (rows.some((row) => row.id === stageId)) {
+          completedRowIds.add(stageId)
+        }
+      }
+    }
+  }
+  return completedRowIds
+}
+
+function latestTimelineEventPosition(
+  events: JobEvent[],
+  rows: TimelineRow[]
+): TimelineEventPosition | null {
+  for (const event of [...events].reverse()) {
+    const position = timelineEventPosition(event, rows)
+    if (position) return position
+  }
+  return null
+}
+
+function timelineEventPosition(
+  event: JobEvent,
+  rows: TimelineRow[]
+): TimelineEventPosition | null {
+  const rowIds = new Set(rows.map((row) => row.id))
+  const stageId = normalizedTimelineStageId(event.details?.stage_id)
+  const commandStageId = commandTimelineStageId(
+    event.details?.command,
+    event.details?.phase_id ?? event.details?.stage_id
+  )
+  const rowId =
+    stageId && rowIds.has(stageId)
+      ? stageId
+      : commandStageId && rowIds.has(commandStageId)
+        ? commandStageId
+        : null
+  if (!rowId) return null
+  return {
+    rowId,
+    progress: timelineEventLocalProgress(event),
+  }
+}
+
+function normalizedTimelineStageId(stageId?: string | null) {
+  switch (stageId) {
+    case "feature_detection":
+    case "alignment":
+      return "align"
+    case "align-save":
+    case "model-save":
+    case "outputs":
+    case "single":
+      return null
+    default:
+      return stageId ?? null
+  }
+}
+
+function commandTimelineStageId(
+  command?: string | null,
+  phaseId?: string | null
 ) {
-  if (progress >= row.end || index < currentIndex) return "complete"
-  if (index === currentIndex) return "current"
+  switch (command) {
+    case "selectAllImages":
+    case "selectImage":
+    case "editInputSelection":
+      return "set_intrinsics"
+    case "addFolder":
+    case "align":
+      return "align"
+    case "selectMaximalComponent":
+      return "select_maximal_component"
+    case "setReconstructionRegionAuto":
+      return "set_reconstruction_region_auto"
+    case "calculatePreviewModel":
+      return "calculate_preview_model"
+    case "calculateNormalModel":
+      return "calculate_normal_model"
+    case "calculateHighModel":
+      return "calculate_high_model"
+    case "calculateTexture":
+      return "calculate_texture"
+    case "calculateOrthoProjection":
+      return "calculate_ortho_projection"
+    case "exportOrthoProjection":
+      return "export_ortho_projection"
+    case "save":
+      return phaseId?.includes("outputs") || phaseId?.includes("single")
+        ? "save_project"
+        : null
+    default:
+      return null
+  }
+}
+
+function timelineEventLocalProgress(event: JobEvent) {
+  const statusProgress = event.details?.status_progress
+  if (statusProgress != null) {
+    if (event.details?.stage_id === "feature_detection") {
+      return clampPercent(statusProgress * 0.35)
+    }
+    return clampPercent(statusProgress)
+  }
+  const commandProgress = commandTimelineProgress(event.details?.command)
+  if (commandProgress !== null) return commandProgress
+  return event.message.includes("completed") ? 100 : 0
+}
+
+function commandTimelineProgress(command?: string | null) {
+  switch (command) {
+    case "selectAllImages":
+      return 12
+    case "selectImage":
+    case "editInputSelection":
+      return 45
+    case "addFolder":
+      return 10
+    case "align":
+      return 35
+    case "selectMaximalComponent":
+      return 84
+    case "setReconstructionRegionAuto":
+      return 25
+    case "calculatePreviewModel":
+    case "calculateNormalModel":
+    case "calculateHighModel":
+      return 45
+    case "calculateTexture":
+      return 18
+    case "calculateOrthoProjection":
+      return 52
+    case "exportOrthoProjection":
+      return 78
+    case "save":
+      return 92
+    default:
+      return null
+  }
+}
+
+function stageIdsForPhase(phaseId: string) {
+  if (phaseId.includes("align-save")) {
+    return ["set_intrinsics", "align", "select_maximal_component"]
+  }
+  if (phaseId.includes("model-save")) {
+    return [
+      "set_reconstruction_region_auto",
+      "calculate_preview_model",
+      "calculate_normal_model",
+      "calculate_high_model",
+    ]
+  }
+  if (phaseId.includes("outputs")) {
+    return [
+      "calculate_texture",
+      "calculate_ortho_projection",
+      "export_ortho_projection",
+      "save_project",
+    ]
+  }
+  return []
+}
+
+function timelineRowIdForJobState(state: string) {
+  switch (state) {
+    case "assigned":
+    case "accepted":
+      return "accepted"
+    case "resolving_inputs":
+    case "downloading":
+    case "verifying":
+      return "inputs"
+    case "staging":
+      return "prepare_realityscan"
+    case "collecting_outputs":
+      return "collecting_outputs"
+    case "uploading_outputs":
+      return "uploading_outputs"
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return "completed"
+    default:
+      return null
+  }
+}
+
+function markRowsBefore(
+  rows: TimelineRow[],
+  rowId: string,
+  completedRowIds: Set<string>
+) {
+  for (const row of rows) {
+    if (row.id === rowId) return
+    completedRowIds.add(row.id)
+  }
+}
+
+function rowById(rows: TimelineRow[], rowId: string) {
+  return rows.find((row) => row.id === rowId) ?? null
+}
+
+function timelineStateLocalProgress(
+  row: TimelineRow | null,
+  overallProgress: number
+) {
+  if (!row) return 0
+  if (overallProgress >= row.end) return 100
+  if (overallProgress <= row.start) return 0
+  return clampPercent(
+    ((overallProgress - row.start) / (row.end - row.start)) * 100
+  )
+}
+
+function timelineRowStatus(row: TimelineRow, stepState: TimelineStepState) {
+  if (stepState.completedRowIds.has(row.id)) return "complete"
+  if (row.id === stepState.activeRowId) return "current"
   return "pending"
 }
 
-function timelineRowLocalProgress(row: TimelineRow, progress: number) {
-  if (progress >= row.end) return 100
-  if (progress <= row.start) return 0
-  return clampPercent(((progress - row.start) / (row.end - row.start)) * 100)
+function timelineRowLocalProgress(
+  row: TimelineRow,
+  status: string,
+  stepState: TimelineStepState
+) {
+  if (status === "complete") return 100
+  if (row.id === stepState.activeRowId) return stepState.activeProgress
+  return 0
 }
 
-function timelineConnectorProgress(status: string, localProgress: number) {
-  if (status === "complete") return 1
-  if (status === "current") return localProgress / 100
-  return 0
+function timelineConnectorProgress(row: TimelineRow, overallProgress: number) {
+  if (overallProgress >= row.end) return 1
+  if (overallProgress <= row.start) return 0
+  return clampPercent(
+    ((overallProgress - row.start) / (row.end - row.start)) * 100
+  ) / 100
 }
 
 function timelineRowLabel(status: string) {

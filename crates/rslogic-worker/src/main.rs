@@ -644,6 +644,8 @@ async fn monitor_realityscan_stdout(
                     phase_count,
                 );
                 details.command = Some(command.to_string());
+                details.stage_id = realityscan_command_stage_id(command, &phase_name)
+                    .map(ToString::to_string);
                 details.raw_status = Some(line.trim().to_string());
                 emit_with_details(
                     &job_dir,
@@ -820,7 +822,7 @@ fn realityscan_phase_details(
 ) -> JobEventDetails {
     JobEventDetails {
         kind,
-        stage_id: Some(phase_name.to_string()),
+        stage_id: None,
         phase_id: Some(format!("{phase_index:02}-{phase_name}")),
         phase_index: Some(phase_index as u32),
         phase_count: Some(phase_count as u32),
@@ -883,7 +885,10 @@ fn parse_realityscan_command(line: &str) -> Option<&str> {
 fn should_emit_realityscan_command(command: &str) -> bool {
     matches!(
         command,
-        "addFolder"
+        "selectAllImages"
+            | "selectImage"
+            | "editInputSelection"
+            | "addFolder"
             | "align"
             | "selectMaximalComponent"
             | "setReconstructionRegionAuto"
@@ -906,6 +911,8 @@ fn should_emit_feature_progress(detected_images: usize, input_count: usize) -> b
 
 fn command_progress_hint(command: &str) -> f32 {
     match command {
+        "selectAllImages" => 0.03,
+        "selectImage" | "editInputSelection" => 0.06,
         "addFolder" => 0.03,
         "align" => 0.36,
         "selectMaximalComponent" => 0.84,
@@ -917,6 +924,23 @@ fn command_progress_hint(command: &str) -> f32 {
         "save" => 0.92,
         "load" => 0.02,
         _ => 0.05,
+    }
+}
+
+fn realityscan_command_stage_id(command: &str, phase_name: &str) -> Option<&'static str> {
+    match command {
+        "selectAllImages" | "selectImage" | "editInputSelection" => Some("set_intrinsics"),
+        "addFolder" | "align" => Some("align"),
+        "selectMaximalComponent" => Some("select_maximal_component"),
+        "setReconstructionRegionAuto" => Some("set_reconstruction_region_auto"),
+        "calculatePreviewModel" => Some("calculate_preview_model"),
+        "calculateNormalModel" => Some("calculate_normal_model"),
+        "calculateHighModel" => Some("calculate_high_model"),
+        "calculateTexture" => Some("calculate_texture"),
+        "calculateOrthoProjection" => Some("calculate_ortho_projection"),
+        "exportOrthoProjection" => Some("export_ortho_projection"),
+        "save" if phase_name == "outputs" || phase_name == "single" => Some("save_project"),
+        _ => None,
     }
 }
 
@@ -1880,6 +1904,38 @@ mod tests {
             Some("addFolder")
         );
         assert_eq!(parse_realityscan_command("Detected 40000 features"), None);
+    }
+
+    #[test]
+    fn realityscan_command_stage_id_maps_submitted_steps() {
+        assert_eq!(
+            realityscan_command_stage_id("calculateOrthoProjection", "outputs"),
+            Some("calculate_ortho_projection")
+        );
+        assert_eq!(
+            realityscan_command_stage_id("editInputSelection", "align-save"),
+            Some("set_intrinsics")
+        );
+        assert_eq!(
+            realityscan_command_stage_id("save", "outputs"),
+            Some("save_project")
+        );
+        assert_eq!(realityscan_command_stage_id("save", "model-save"), None);
+        assert_eq!(realityscan_command_stage_id("load", "outputs"), None);
+    }
+
+    #[test]
+    fn realityscan_emits_intrinsics_command_events() {
+        assert!(should_emit_realityscan_command("selectAllImages"));
+        assert!(should_emit_realityscan_command("selectImage"));
+        assert!(should_emit_realityscan_command("editInputSelection"));
+    }
+
+    #[test]
+    fn realityscan_phase_details_keep_phase_out_of_stage_id() {
+        let details = realityscan_phase_details(JobEventKind::Lifecycle, "outputs", 2, 3);
+        assert_eq!(details.phase_id.as_deref(), Some("02-outputs"));
+        assert_eq!(details.stage_id, None);
     }
 
     #[test]
