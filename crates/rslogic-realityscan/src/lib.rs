@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -46,6 +47,8 @@ pub struct RealityScanRunConfig {
     pub max_runtime_secs: Option<u64>,
     #[serde(default)]
     pub liveness_check_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub fatal_output_patterns: Vec<String>,
     #[serde(skip)]
     pub stdout_line_tx: Option<mpsc::UnboundedSender<String>>,
     #[serde(skip)]
@@ -57,6 +60,13 @@ pub struct RealityScanRunResult {
     pub exit_code: i32,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct FatalOutputLine {
+    stream: &'static str,
+    pattern: String,
+    line: String,
 }
 
 #[async_trait]
@@ -143,15 +153,23 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("{} stderr was not piped", config.runtime.binary()))?;
+        let fatal_patterns = Arc::new(config.fatal_output_patterns.clone());
+        let (fatal_line_tx, mut fatal_line_rx) = mpsc::unbounded_channel();
         let stdout_task = tokio::spawn(stream_to_log_file(
+            "stdout",
             stdout,
             stdout_path.clone(),
             config.stdout_line_tx.clone(),
+            fatal_line_tx.clone(),
+            fatal_patterns.clone(),
         ));
         let stderr_task = tokio::spawn(stream_to_log_file(
+            "stderr",
             stderr,
             stderr_path.clone(),
             config.stderr_line_tx.clone(),
+            fatal_line_tx,
+            fatal_patterns,
         ));
         let started_at = Instant::now();
         let check_interval =
@@ -164,6 +182,21 @@ impl RealityScanRunner for ContainerRealityScanRunner {
                 .with_context(|| format!("polling {}", config.runtime.binary()))?
             {
                 break status;
+            }
+            if let Ok(fatal) = fatal_line_rx.try_recv() {
+                warn!(
+                    container_name,
+                    stream = fatal.stream,
+                    pattern = fatal.pattern,
+                    line = fatal.line,
+                    "RealityScan emitted fatal output; removing container"
+                );
+                remove_container(&config.runtime, &container_name)
+                    .await
+                    .ok();
+                child.wait().await.ok();
+                await_log_tasks(stdout_task, stderr_task).await.ok();
+                return Err(fatal_output_error(&fatal, &stdout_path, &stderr_path));
             }
             if let Some(max_runtime) = max_runtime {
                 if started_at.elapsed() > max_runtime {
@@ -206,6 +239,9 @@ impl RealityScanRunner for ContainerRealityScanRunner {
 
         let exit_code = status.code().unwrap_or(-1);
         await_log_tasks(stdout_task, stderr_task).await?;
+        if let Ok(fatal) = fatal_line_rx.try_recv() {
+            return Err(fatal_output_error(&fatal, &stdout_path, &stderr_path));
+        }
         if !status.success() {
             return Err(anyhow!(
                 "RealityScan container exited with status {exit_code}; stdout={}; stderr={}",
@@ -222,9 +258,12 @@ impl RealityScanRunner for ContainerRealityScanRunner {
 }
 
 async fn stream_to_log_file<R>(
+    stream: &'static str,
     reader: R,
     path: PathBuf,
     line_tx: Option<mpsc::UnboundedSender<String>>,
+    fatal_line_tx: mpsc::UnboundedSender<FatalOutputLine>,
+    fatal_patterns: Arc<Vec<String>>,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -234,12 +273,47 @@ where
     while let Some(line) = lines.next_line().await? {
         file.write_all(line.as_bytes()).await?;
         file.write_all(b"\n").await?;
+        if let Some(pattern) = matched_fatal_output_pattern(&line, &fatal_patterns) {
+            fatal_line_tx
+                .send(FatalOutputLine {
+                    stream,
+                    pattern,
+                    line: line.clone(),
+                })
+                .ok();
+        }
         if let Some(line_tx) = &line_tx {
             line_tx.send(line).ok();
         }
     }
     file.flush().await?;
     Ok(())
+}
+
+fn fatal_output_error(
+    fatal: &FatalOutputLine,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> anyhow::Error {
+    anyhow!(
+        "RealityScan fatal output matched '{}' on {}: {}; stdout={}; stderr={}",
+        fatal.pattern,
+        fatal.stream,
+        fatal.line,
+        stdout_path.display(),
+        stderr_path.display()
+    )
+}
+
+fn matched_fatal_output_pattern(line: &str, patterns: &[String]) -> Option<String> {
+    let line = line.to_ascii_lowercase();
+    patterns
+        .iter()
+        .find(|pattern| {
+            let pattern = pattern.trim();
+            !pattern.is_empty() && line.contains(&pattern.to_ascii_lowercase())
+        })
+        .cloned()
 }
 
 async fn await_log_tasks(
@@ -381,5 +455,30 @@ PID STAT COMMAND COMMAND
             container_name(&path, Some("00 align/save")),
             "rslogic-job-abc-123-00-align-save"
         );
+    }
+
+    #[test]
+    fn detects_fatal_realityscan_output_case_insensitively() {
+        let patterns = vec![
+            "processing failed:".to_string(),
+            "operation failed.".to_string(),
+        ];
+
+        assert_eq!(
+            matched_fatal_output_pattern("Processing failed: Operation failed.", &patterns)
+                .as_deref(),
+            Some("processing failed:")
+        );
+    }
+
+    #[test]
+    fn ignores_nonfatal_realityscan_output() {
+        let patterns = vec!["processing failed:".to_string()];
+
+        assert!(matched_fatal_output_pattern(
+            "Feature detection completed in 120.000 seconds.",
+            &patterns
+        )
+        .is_none());
     }
 }

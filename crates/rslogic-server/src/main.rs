@@ -272,6 +272,24 @@ enum AdminStreamMessage {
     },
 }
 
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    version: &'static str,
+    build_sha: Option<&'static str>,
+    capabilities: HealthCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+struct HealthCapabilities {
+    admin_job_events: bool,
+    admin_websocket_job_events: bool,
+    artifacts: bool,
+    cloudfront_manifests: bool,
+    postgres_store: bool,
+    studio_api: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -381,8 +399,20 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn healthz() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn healthz() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        build_sha: option_env!("RSLOGIC_BUILD_SHA"),
+        capabilities: HealthCapabilities {
+            admin_job_events: true,
+            admin_websocket_job_events: true,
+            artifacts: true,
+            cloudfront_manifests: true,
+            postgres_store: true,
+            studio_api: true,
+        },
+    })
 }
 
 async fn create_enrollment_request(

@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
+    time,
 };
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -32,6 +33,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
 const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
+const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
 const JOB_EVENTS_LOG: &str = "job-events.jsonl";
 
 #[derive(Debug, Parser)]
@@ -135,7 +137,14 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
         }
     }
 
-    emit(&job_dir, &job.job_id, JobState::Accepted, "job accepted", 0.0).await?;
+    emit(
+        &job_dir,
+        &job.job_id,
+        JobState::Accepted,
+        "job accepted",
+        0.0,
+    )
+    .await?;
     download_inputs(&http, &job.manifest, &job_dir, &args.state_dir).await?;
     run_realityscan(args, &job, &job_dir).await?;
     let outputs = collect_outputs(&job, &job_dir).await?;
@@ -471,6 +480,13 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             40.0 + ((index as f32) / phase_count) * 40.0,
         )
         .await?;
+        let realityscan_log_prefix = format!("realityscan-{file_stem}");
+        let stdout_log_path = job_dir
+            .join("logs")
+            .join(format!("{realityscan_log_prefix}.stdout.log"));
+        let stderr_log_path = job_dir
+            .join("logs")
+            .join(format!("{realityscan_log_prefix}.stderr.log"));
         let (stdout_line_tx, stdout_line_rx) = mpsc::unbounded_channel();
         let progress_task = tokio::spawn(monitor_realityscan_stdout(
             job.job_id.clone(),
@@ -480,6 +496,17 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             job.manifest.inputs.len(),
             job_dir.to_path_buf(),
             stdout_line_rx,
+        ));
+        let (heartbeat_stop_tx, heartbeat_stop_rx) = oneshot::channel();
+        let heartbeat_task = tokio::spawn(emit_realityscan_phase_heartbeats(
+            job.job_id.clone(),
+            phase.name.clone(),
+            index,
+            phases.len(),
+            job_dir.to_path_buf(),
+            stdout_log_path,
+            stderr_log_path,
+            heartbeat_stop_rx,
         ));
         let run_result = runner
             .run(RealityScanRunConfig {
@@ -491,15 +518,33 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                     format!("/job/work/run-realityscan-{file_stem}.sh"),
                 ],
                 gpu: true,
-                log_prefix: Some(format!("realityscan-{file_stem}")),
+                log_prefix: Some(realityscan_log_prefix),
                 max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+                fatal_output_patterns: realityscan_fatal_output_patterns(),
                 stdout_line_tx: Some(stdout_line_tx),
                 stderr_line_tx: None,
             })
             .await;
+        let _ = heartbeat_stop_tx.send(());
+        heartbeat_task.await.ok();
         progress_task.await.ok();
-        run_result.with_context(|| format!("RealityScan phase {} failed", phase.name))?;
+        match run_result {
+            Ok(_) => {}
+            Err(error) => {
+                emit(
+                    job_dir,
+                    &job.job_id,
+                    JobState::Failed,
+                    &format!("RealityScan phase {} failed: {error:#}", phase.name),
+                    realityscan_phase_progress(index, phases.len(), 1.0),
+                )
+                .await
+                .ok();
+                return Err(error)
+                    .with_context(|| format!("RealityScan phase {} failed", phase.name));
+            }
+        }
         emit(
             job_dir,
             &job.job_id,
@@ -595,6 +640,65 @@ async fn monitor_realityscan_stdout(
             .ok();
         }
     }
+}
+
+async fn emit_realityscan_phase_heartbeats(
+    job_id: String,
+    phase_name: String,
+    phase_index: usize,
+    phase_count: usize,
+    job_dir: PathBuf,
+    stdout_log_path: PathBuf,
+    stderr_log_path: PathBuf,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    let mut interval = time::interval(Duration::from_secs(REALITYSCAN_PHASE_HEARTBEAT_SECS));
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            _ = interval.tick() => {
+                let stdout_age = file_age_seconds(&stdout_log_path).await;
+                let stderr_age = file_age_seconds(&stderr_log_path).await;
+                let outputs_age = file_age_seconds(&job_dir.join("outputs")).await;
+                let message = format!(
+                    "RealityScan {phase_name}: heartbeat stdout_age={} stderr_age={} outputs_age={}",
+                    format_age_seconds(stdout_age),
+                    format_age_seconds(stderr_age),
+                    format_age_seconds(outputs_age),
+                );
+                emit(
+                    &job_dir,
+                    &job_id,
+                    JobState::RunningRealityscan,
+                    &message,
+                    realityscan_phase_progress(phase_index, phase_count, 0.05),
+                )
+                .await
+                .ok();
+            }
+        }
+    }
+}
+
+async fn file_age_seconds(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).await.ok()?;
+    let modified = metadata.modified().ok()?;
+    modified.elapsed().ok().map(|elapsed| elapsed.as_secs())
+}
+
+fn format_age_seconds(value: Option<u64>) -> String {
+    value
+        .map(|seconds| format!("{seconds}s"))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn realityscan_fatal_output_patterns() -> Vec<String> {
+    vec![
+        "processing failed:".to_string(),
+        "operation failed.".to_string(),
+        " failed after ".to_string(),
+    ]
 }
 
 fn parse_realityscan_command(line: &str) -> Option<&str> {

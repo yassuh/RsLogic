@@ -222,6 +222,20 @@ type AdminStreamMessage = {
   job_events?: JobEvent[]
 }
 
+type ApiHealth = {
+  status: string
+  version?: string
+  build_sha?: string | null
+  capabilities?: {
+    admin_job_events?: boolean
+    admin_websocket_job_events?: boolean
+    artifacts?: boolean
+    cloudfront_manifests?: boolean
+    postgres_store?: boolean
+    studio_api?: boolean
+  }
+}
+
 type ClientSource =
   | "loading"
   | "api"
@@ -341,6 +355,8 @@ export function App() {
   const [jobTemplates, setJobTemplates] = useState<JobTemplate[]>([])
   const [jobError, setJobError] = useState<string | null>(null)
   const [jobEventsError, setJobEventsError] = useState<string | null>(null)
+  const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null)
+  const [apiHealthError, setApiHealthError] = useState<string | null>(null)
   const [clientSource, setClientSource] = useState<ClientSource>("loading")
   const [clientError, setClientError] = useState<string | null>(null)
   const [imageryAssets, setImageryAssets] = useState<StudioImageAsset[]>([])
@@ -385,6 +401,28 @@ export function App() {
     },
     []
   )
+
+  const loadApiHealth = useCallback(async () => {
+    try {
+      const response = await fetch("/healthz", {
+        headers: { Accept: "application/json" },
+      })
+      if (!response.ok) {
+        throw new Error(`healthz ${response.status}`)
+      }
+      const health = (await response.json()) as ApiHealth
+      setApiHealth(health)
+      setApiHealthError(null)
+      if (health.capabilities?.admin_job_events === false) {
+        setJobEventsError("server reports job events disabled")
+      }
+    } catch (error) {
+      setApiHealth(null)
+      setApiHealthError(
+        error instanceof Error ? error.message : "health unavailable"
+      )
+    }
+  }, [])
 
   const loadClients = useCallback(async () => {
     setClientSource("loading")
@@ -510,12 +548,13 @@ export function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      void loadApiHealth()
       void loadClients()
       void loadJobTemplates()
     }, 0)
 
     return () => window.clearTimeout(timer)
-  }, [loadClients, loadJobTemplates])
+  }, [loadApiHealth, loadClients, loadJobTemplates])
 
   useEffect(() => {
     let socket: WebSocket | null = null
@@ -687,6 +726,14 @@ export function App() {
             <InfoLine label="mode" value="dev" />
             <InfoLine label="transport" value={streamStateLabel(streamState)} />
             <InfoLine label="api" value={clientSourceLabel(clientSource)} />
+            <InfoLine
+              label="build"
+              value={apiBuildLabel(apiHealth, apiHealthError)}
+            />
+            <InfoLine
+              label="events"
+              value={apiEventsCapabilityLabel(apiHealth, apiHealthError)}
+            />
             <InfoLine
               label="last"
               value={lastStreamAt ? formatClock(lastStreamAt) : "-"}
@@ -3853,6 +3900,31 @@ function clientSourceLabel(source: ClientSource) {
   if (source === "ws") return "live ws"
   if (source === "ws-empty") return "live empty"
   return "fixture"
+}
+
+function apiBuildLabel(health: ApiHealth | null, error: string | null) {
+  if (error) return "offline"
+  if (!health) return "checking"
+  const version = health.version ?? "unknown"
+  const sha = health.build_sha ? ` ${health.build_sha.slice(0, 7)}` : ""
+  return `v${version}${sha}`
+}
+
+function apiEventsCapabilityLabel(
+  health: ApiHealth | null,
+  error: string | null
+) {
+  if (error) return "unknown"
+  if (!health?.capabilities) return "unknown"
+  if (
+    health.capabilities.admin_job_events &&
+    health.capabilities.admin_websocket_job_events
+  ) {
+    return "http+ws"
+  }
+  if (health.capabilities.admin_job_events) return "http only"
+  if (health.capabilities.admin_websocket_job_events) return "ws only"
+  return "disabled"
 }
 
 function streamStateLabel(state: StreamState) {
