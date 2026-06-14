@@ -216,7 +216,6 @@ struct BuildJobRequest {
     custom_template: Option<JobTemplate>,
     job_name: Option<String>,
     source: JobImageSelection,
-    max_inputs: Option<usize>,
     ttl_seconds: Option<i64>,
     realityscan_image: Option<String>,
     dry_run: Option<bool>,
@@ -718,15 +717,6 @@ async fn build_job_from_imagery(
             .cmp(&right.captured_at)
             .then_with(|| left.filename().cmp(&right.filename()))
     });
-    let selected_before_limit = selected_assets.len();
-    let max_inputs = request.max_inputs.unwrap_or(64).clamp(1, 10_000);
-    selected_assets.truncate(max_inputs);
-    if selected_before_limit > selected_assets.len() {
-        warnings.push(format!(
-            "selected {selected_before_limit} assets; limited job to {} inputs",
-            selected_assets.len()
-        ));
-    }
     if selected_assets.is_empty() {
         return Err(ApiError::bad_request(
             "image selection did not match any Studio assets",
