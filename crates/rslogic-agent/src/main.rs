@@ -265,6 +265,7 @@ impl Agent {
             .await?;
 
         let mut heartbeat = time::interval(Duration::from_secs(self.args.heartbeat_seconds));
+        let mut cpu_sampler = CpuSampler::new();
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
@@ -273,7 +274,7 @@ impl Agent {
                     } else {
                         WorkerProcessState::Stopped
                     };
-                    let telemetry = telemetry(&self.args.state_dir);
+                    let telemetry = telemetry(&self.args.state_dir, &mut cpu_sampler);
                     let event = ClientEvent::Heartbeat {
                         client_id: client_id.to_string(),
                         observed_at: now(),
@@ -735,16 +736,18 @@ fn hardware_summary() -> HardwareSummary {
     }
 }
 
-fn telemetry(state_dir: &Path) -> MachineTelemetry {
+fn telemetry(state_dir: &Path, cpu_sampler: &mut CpuSampler) -> MachineTelemetry {
     let load_average = load_average();
     let memory = memory_info();
     let disk = disk_info(state_dir);
     let gpu = gpu_info();
+    let cpu_core_usage_percent = cpu_sampler.sample();
     MachineTelemetry {
         hostname: hostname(),
         cpu_count: std::thread::available_parallelism()
             .ok()
             .and_then(|value| u32::try_from(value.get()).ok()),
+        cpu_core_usage_percent,
         uptime_seconds: uptime_seconds(),
         load_average_1m: load_average.map(|load| load.one_minute),
         load_average_5m: load_average.map(|load| load.five_minutes),
@@ -817,6 +820,36 @@ struct GpuInfo {
     memory_used_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CpuCounters {
+    idle: u64,
+    total: u64,
+}
+
+#[derive(Debug, Default)]
+struct CpuSampler {
+    previous: Option<Vec<CpuCounters>>,
+}
+
+impl CpuSampler {
+    fn new() -> Self {
+        Self {
+            previous: cpu_counters(),
+        }
+    }
+
+    fn sample(&mut self) -> Option<Vec<f64>> {
+        let current = cpu_counters()?;
+        let previous = self.previous.replace(current.clone())?;
+        let usage = cpu_usage_percentages(&previous, &current);
+        if usage.is_empty() {
+            None
+        } else {
+            Some(usage)
+        }
+    }
+}
+
 fn uptime_seconds() -> Option<u64> {
     fs::read_to_string("/proc/uptime")
         .ok()?
@@ -825,6 +858,61 @@ fn uptime_seconds() -> Option<u64> {
         .parse::<f64>()
         .ok()
         .map(|value| value.max(0.0) as u64)
+}
+
+fn cpu_counters() -> Option<Vec<CpuCounters>> {
+    let raw = fs::read_to_string("/proc/stat").ok()?;
+    parse_cpu_counters(&raw)
+}
+
+fn parse_cpu_counters(raw: &str) -> Option<Vec<CpuCounters>> {
+    let counters: Vec<CpuCounters> = raw
+        .lines()
+        .filter_map(parse_cpu_counter_line)
+        .collect();
+    if counters.is_empty() {
+        None
+    } else {
+        Some(counters)
+    }
+}
+
+fn parse_cpu_counter_line(line: &str) -> Option<CpuCounters> {
+    let mut parts = line.split_whitespace();
+    let label = parts.next()?;
+    if !label.starts_with("cpu") || label == "cpu" {
+        return None;
+    }
+    if !label[3..].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let values: Vec<u64> = parts.filter_map(|part| part.parse::<u64>().ok()).collect();
+    if values.len() < 4 {
+        return None;
+    }
+    let idle = values
+        .get(3)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(values.get(4).copied().unwrap_or(0));
+    let total = values.iter().copied().sum();
+    Some(CpuCounters { idle, total })
+}
+
+fn cpu_usage_percentages(previous: &[CpuCounters], current: &[CpuCounters]) -> Vec<f64> {
+    previous
+        .iter()
+        .zip(current.iter())
+        .filter_map(|(previous, current)| {
+            let total_delta = current.total.saturating_sub(previous.total);
+            if total_delta == 0 {
+                return None;
+            }
+            let idle_delta = current.idle.saturating_sub(previous.idle);
+            let busy_delta = total_delta.saturating_sub(idle_delta);
+            Some(((busy_delta as f64 / total_delta as f64) * 100.0).clamp(0.0, 100.0))
+        })
+        .collect()
 }
 
 fn load_average() -> Option<LoadAverage> {
@@ -994,6 +1082,63 @@ mod tests {
             meminfo_bytes("MemAvailable:   123456 kB", "MemAvailable:"),
             Some(123_456 * 1024)
         );
+    }
+
+    #[test]
+    fn proc_stat_cpu_lines_are_parsed_per_core() {
+        let raw = "\
+cpu  4705 0 2254 1056293 74 0 115 0 0 0
+cpu0 102 0 30 900 2 0 0 0 0 0
+cpu1 200 0 60 800 4 0 0 0 0 0
+intr 0
+";
+        let counters = parse_cpu_counters(raw).unwrap();
+
+        assert_eq!(counters.len(), 2);
+        assert_eq!(
+            counters[0],
+            CpuCounters {
+                idle: 902,
+                total: 1034
+            }
+        );
+        assert_eq!(
+            counters[1],
+            CpuCounters {
+                idle: 804,
+                total: 1064
+            }
+        );
+    }
+
+    #[test]
+    fn cpu_usage_percentages_are_computed_from_deltas() {
+        let previous = vec![
+            CpuCounters {
+                idle: 100,
+                total: 200,
+            },
+            CpuCounters {
+                idle: 100,
+                total: 200,
+            },
+        ];
+        let current = vec![
+            CpuCounters {
+                idle: 150,
+                total: 300,
+            },
+            CpuCounters {
+                idle: 120,
+                total: 300,
+            },
+        ];
+
+        let usage = cpu_usage_percentages(&previous, &current);
+
+        assert_eq!(usage.len(), 2);
+        assert!((usage[0] - 50.0).abs() < 0.001);
+        assert!((usage[1] - 80.0).abs() < 0.001);
     }
 
     #[test]

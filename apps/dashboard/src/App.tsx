@@ -70,6 +70,7 @@ type DesiredState = {
 type MachineTelemetry = {
   hostname: string
   cpu_count?: number | null
+  cpu_core_usage_percent?: number[] | null
   uptime_seconds?: number | null
   load_average_1m?: number | null
   load_average_5m?: number | null
@@ -1309,6 +1310,61 @@ function ClientDetails({
           <SparklineRow label="gpu" samples={history} metric="gpuPercent" />
         </div>
       </div>
+      <div className="border bg-background/35 xl:col-span-4">
+        <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
+          cores
+        </div>
+        <CoreUsageGrid telemetry={telemetry} />
+      </div>
+    </div>
+  )
+}
+
+function CoreUsageGrid({
+  telemetry,
+}: {
+  telemetry?: MachineTelemetry | null
+}) {
+  const cores = coreUsageCells(telemetry)
+  const reported = telemetry?.cpu_core_usage_percent?.length ?? 0
+  return (
+    <div className="p-2">
+      <div className="mb-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span>
+          {cores.length > 0
+            ? `${cores.length} logical cores`
+            : "no core inventory"}
+        </span>
+        <span>
+          {reported > 0 ? "live per-core usage" : "waiting for agent samples"}
+        </span>
+      </div>
+      {cores.length === 0 ? (
+        <div className="py-3 text-muted-foreground">
+          per-core telemetry unavailable
+        </div>
+      ) : (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(1rem,1fr))] gap-1">
+          {cores.map((usage, index) => {
+            const percent = usage === null ? 0 : clampPercent(usage)
+            return (
+              <div
+                key={index}
+                className="relative h-7 min-w-4 overflow-hidden border bg-muted/40"
+                title={`core ${index}: ${usage === null ? "waiting for sample" : formatPercent(percent)}`}
+                aria-label={`core ${index} ${usage === null ? "waiting for sample" : formatPercent(percent)}`}
+              >
+                <div
+                  className={`absolute inset-x-0 bottom-0 transition-[height,background-color,opacity] duration-700 ${
+                    usage === null ? "bg-muted-foreground/20" : coreUsageColor(percent)
+                  }`}
+                  style={{ height: `${usage === null ? 14 : percent}%` }}
+                />
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -4193,6 +4249,25 @@ function gpuMemoryLabel(telemetry?: MachineTelemetry | null) {
 function loadPercent(telemetry?: MachineTelemetry | null) {
   if (!telemetry?.load_average_1m || !telemetry.cpu_count) return null
   return clampPercent((telemetry.load_average_1m / telemetry.cpu_count) * 100)
+}
+
+function coreUsageCells(telemetry?: MachineTelemetry | null) {
+  const reported = telemetry?.cpu_core_usage_percent
+  if (reported && reported.length > 0) {
+    return reported.map((value) =>
+      Number.isFinite(value) ? clampPercent(value) : null
+    )
+  }
+  const cpuCount = telemetry?.cpu_count
+  if (!cpuCount || cpuCount <= 0) return []
+  return Array.from({ length: cpuCount }, () => null)
+}
+
+function coreUsageColor(percent: number) {
+  if (percent >= 90) return "bg-destructive"
+  if (percent >= 65) return "bg-primary"
+  if (percent >= 35) return "bg-primary/70"
+  return "bg-primary/45"
 }
 
 function memoryUsedPercent(telemetry?: MachineTelemetry | null) {

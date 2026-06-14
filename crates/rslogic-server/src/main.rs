@@ -2250,6 +2250,7 @@ mod tests {
         MachineTelemetry {
             hostname: "yassuh-1".to_string(),
             cpu_count: Some(64),
+            cpu_core_usage_percent: Some(vec![12.0, 34.0, 56.0, 78.0]),
             uptime_seconds: Some(123),
             load_average_1m: Some(0.5),
             load_average_5m: Some(0.4),

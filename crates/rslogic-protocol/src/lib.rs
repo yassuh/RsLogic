@@ -194,6 +194,8 @@ impl Default for DesiredState {
 pub struct MachineTelemetry {
     pub hostname: String,
     pub cpu_count: Option<u32>,
+    #[serde(default)]
+    pub cpu_core_usage_percent: Option<Vec<f64>>,
     pub uptime_seconds: Option<u64>,
     pub load_average_1m: Option<f64>,
     pub load_average_5m: Option<f64>,
