@@ -4300,17 +4300,7 @@ function jobTimelineRows(job: JobRecord): TimelineRow[] {
     },
   ]
 
-  const stageSpan = stages.length > 0 ? 40 / stages.length : 40
-  stages.forEach((stage, index) => {
-    const start = 40 + stageSpan * index
-    rows.push({
-      id: stage,
-      label: formatStage(stage),
-      start,
-      end: start + stageSpan,
-      detail: realityScanStageDetail(stage),
-    })
-  })
+  rows.push(...realityScanTimelineRows(stages))
 
   rows.push(
     {
@@ -4337,6 +4327,102 @@ function jobTimelineRows(job: JobRecord): TimelineRow[] {
   )
 
   return rows
+}
+
+function realityScanTimelineRows(stages: string[]): TimelineRow[] {
+  const effectiveStages = stages.length > 0 ? stages : realityScanStageOrder
+  const shouldSplit =
+    effectiveStages.some(isSplitTriggerTimelineStage) &&
+    effectiveStages.some(isAlignmentTimelineStage)
+
+  if (!shouldSplit) {
+    return [
+      {
+        id: "single",
+        label: "RealityScan",
+        start: 40,
+        end: 80,
+        detail: timelineStageSummary(effectiveStages),
+      },
+    ]
+  }
+
+  const phaseDefs = [
+    {
+      id: "align-save",
+      label: "align / save",
+      stages: effectiveStages.filter(isAlignmentTimelineStage),
+    },
+    {
+      id: "model-save",
+      label: "model / save",
+      stages: effectiveStages.filter(isModelTimelineStage),
+    },
+    {
+      id: "outputs",
+      label: "outputs",
+      stages: effectiveStages.filter(isOutputTimelineStage),
+    },
+  ].filter((phase) => phase.stages.length > 0)
+
+  if (phaseDefs.length === 0) {
+    return [
+      {
+        id: "single",
+        label: "RealityScan",
+        start: 40,
+        end: 80,
+        detail: timelineStageSummary(effectiveStages),
+      },
+    ]
+  }
+
+  const phaseSpan = 40 / phaseDefs.length
+  return phaseDefs.map((phase, index) => {
+    const start = 40 + phaseSpan * index
+    return {
+      id: phase.id,
+      label: phase.label,
+      start,
+      end: start + phaseSpan,
+      detail: timelineStageSummary(phase.stages),
+    }
+  })
+}
+
+function isAlignmentTimelineStage(stage: string) {
+  return ["set_intrinsics", "align", "select_maximal_component"].includes(stage)
+}
+
+function isModelTimelineStage(stage: string) {
+  return [
+    "set_reconstruction_region_auto",
+    "calculate_preview_model",
+    "calculate_normal_model",
+    "calculate_high_model",
+  ].includes(stage)
+}
+
+function isOutputTimelineStage(stage: string) {
+  return [
+    "calculate_texture",
+    "calculate_ortho_projection",
+    "export_ortho_projection",
+    "save_project",
+  ].includes(stage)
+}
+
+function isSplitTriggerTimelineStage(stage: string) {
+  return [
+    "calculate_texture",
+    "calculate_ortho_projection",
+    "export_ortho_projection",
+  ].includes(stage)
+}
+
+function timelineStageSummary(stages: string[]) {
+  if (stages.length === 0) return undefined
+  return stages.map(formatStage).join(", ")
 }
 
 function jobProgress(job: JobRecord, latestEvent: JobEvent | null) {
@@ -4416,35 +4502,6 @@ function timelineStatusLabel(state: string) {
   if (state === "failed") return "failed"
   if (state === "cancelled") return "cancelled"
   return "running"
-}
-
-function realityScanStageDetail(stage: string) {
-  switch (stage) {
-    case "set_intrinsics":
-      return "apply camera priors"
-    case "align":
-      return "features, matching, component solve"
-    case "select_maximal_component":
-      return "keep largest component"
-    case "set_reconstruction_region_auto":
-      return "derive model bounds"
-    case "calculate_preview_model":
-      return "preview mesh"
-    case "calculate_normal_model":
-      return "normal mesh"
-    case "calculate_high_model":
-      return "high mesh"
-    case "calculate_texture":
-      return "texture generation"
-    case "calculate_ortho_projection":
-      return "orthographic projection"
-    case "export_ortho_projection":
-      return "orthomosaic export"
-    case "save_project":
-      return "write rsproj"
-    default:
-      return undefined
-  }
 }
 
 function terminalTimelineDetail(state: string) {
