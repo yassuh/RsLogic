@@ -159,6 +159,23 @@
   color: var(--foreground);
 }
 
+@keyframes rslogic-indeterminate-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  50% {
+    transform: translateX(180%);
+  }
+  100% {
+    transform: translateX(-120%);
+  }
+}
+
+.rslogic-indeterminate-progress {
+  width: 36%;
+  animation: rslogic-indeterminate-progress 1.25s ease-in-out infinite;
+}
+
 .maplibregl-popup-content {
   border: 1px solid var(--border);
   border-radius: 0;

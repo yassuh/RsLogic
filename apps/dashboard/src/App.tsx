@@ -194,13 +194,13 @@ type TimelineRow = {
 
 type TimelineStepState = {
   activeRowId: string | null
-  activeProgress: number
+  activeProgress: number | null
   completedRowIds: Set<string>
 }
 
 type TimelineEventPosition = {
   rowId: string
-  progress: number
+  progress: number | null
 }
 
 type JobTemplate = {
@@ -2580,10 +2580,14 @@ function JobStageTimeline({
                   </div>
                   {status === "current" ? (
                     <div className="mt-1 h-1 max-w-72 overflow-hidden bg-muted">
-                      <div
-                        className="h-full bg-primary transition-[width] duration-700"
-                        style={{ width: `${localProgress}%` }}
-                      />
+                      {localProgress === null ? (
+                        <div className="rslogic-indeterminate-progress h-full bg-primary" />
+                      ) : (
+                        <div
+                          className="h-full bg-primary transition-[width] duration-700"
+                          style={{ width: `${localProgress}%` }}
+                        />
+                      )}
                     </div>
                   ) : null}
                   {row.detail ? (
@@ -4452,6 +4456,17 @@ function timelineStepState(
   const position = latestTimelineEventPosition(events, rows)
   if (position) {
     markRowsBefore(rows, position.rowId, completedRowIds)
+    if (position.progress === 100) {
+      completedRowIds.add(position.rowId)
+      const nextRow = nextTimelineRow(rows, position.rowId, completedRowIds)
+      if (nextRow) {
+        return {
+          activeRowId: nextRow.id,
+          activeProgress: null,
+          completedRowIds,
+        }
+      }
+    }
     return {
       activeRowId: position.rowId,
       activeProgress: position.progress,
@@ -4585,7 +4600,7 @@ function timelineEventLocalProgress(event: JobEvent) {
   }
   const commandProgress = commandTimelineProgress(event.details?.command)
   if (commandProgress !== null) return commandProgress
-  return event.message.includes("completed") ? 100 : 0
+  return event.message.includes("completed") ? 100 : null
 }
 
 function commandTimelineProgress(command?: string | null) {
@@ -4676,6 +4691,16 @@ function markRowsBefore(
     if (row.id === rowId) return
     completedRowIds.add(row.id)
   }
+}
+
+function nextTimelineRow(
+  rows: TimelineRow[],
+  rowId: string,
+  completedRowIds: Set<string>
+) {
+  const index = rows.findIndex((row) => row.id === rowId)
+  if (index === -1) return null
+  return rows.slice(index + 1).find((row) => !completedRowIds.has(row.id))
 }
 
 function rowById(rows: TimelineRow[], rowId: string) {

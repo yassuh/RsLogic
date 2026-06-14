@@ -1,7 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -35,6 +39,8 @@ const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
 const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
 const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
+const REALITYSCAN_PHASE_STALE_SECS: u64 = 10 * 60;
+const PHASE_FRACTION_SCALE: f32 = 10_000.0;
 const JOB_EVENTS_LOG: &str = "job-events.jsonl";
 
 #[derive(Debug, Parser)]
@@ -499,6 +505,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             .join("logs")
             .join(format!("{realityscan_log_prefix}.stderr.log"));
         let (stdout_line_tx, stdout_line_rx) = mpsc::unbounded_channel();
+        let phase_fraction = Arc::new(AtomicU32::new(0));
         let progress_task = tokio::spawn(monitor_realityscan_stdout(
             job.job_id.clone(),
             phase.name.clone(),
@@ -507,6 +514,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             job.manifest.inputs.len(),
             job_dir.to_path_buf(),
             stdout_line_rx,
+            phase_fraction.clone(),
         ));
         let (heartbeat_stop_tx, heartbeat_stop_rx) = oneshot::channel();
         let heartbeat_task = tokio::spawn(emit_realityscan_phase_heartbeats(
@@ -517,6 +525,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
             job_dir.to_path_buf(),
             stdout_log_path.clone(),
             stderr_log_path.clone(),
+            phase_fraction,
             heartbeat_stop_rx,
         ));
         let run_result = runner
@@ -594,10 +603,14 @@ async fn monitor_realityscan_stdout(
     input_count: usize,
     job_dir: PathBuf,
     mut lines: mpsc::UnboundedReceiver<String>,
+    phase_fraction: Arc<AtomicU32>,
 ) {
     let mut detected_images = 0_usize;
+    let mut completed_stage_ids = HashSet::<&'static str>::new();
     while let Some(line) = lines.recv().await {
         if let Some(status) = parse_realityscan_status(&line) {
+            let phase_fraction_value = status.progress_percent / 100.0;
+            record_phase_fraction(&phase_fraction, phase_fraction_value);
             let mut details = realityscan_phase_details(
                 JobEventKind::RealityScanStatus,
                 &phase_name,
@@ -620,7 +633,7 @@ async fn monitor_realityscan_stdout(
                 realityscan_phase_progress(
                     phase_index,
                     phase_count,
-                    status.progress_percent / 100.0,
+                    phase_fraction_value,
                 ),
                 Some(details),
             )
@@ -632,11 +645,10 @@ async fn monitor_realityscan_stdout(
         if let Some(command) = parse_realityscan_command(&line) {
             if should_emit_realityscan_command(command) {
                 let message = format!("RealityScan {phase_name}: command {command}");
-                let progress = realityscan_phase_progress(
-                    phase_index,
-                    phase_count,
-                    command_progress_hint(command),
-                );
+                let phase_fraction_value = command_progress_hint(command);
+                record_phase_fraction(&phase_fraction, phase_fraction_value);
+                let progress =
+                    realityscan_phase_progress(phase_index, phase_count, phase_fraction_value);
                 let mut details = realityscan_phase_details(
                     JobEventKind::RealityScanCommand,
                     &phase_name,
@@ -661,6 +673,39 @@ async fn monitor_realityscan_stdout(
             continue;
         }
 
+        if let Some(completion) = parse_realityscan_completion(&line) {
+            if completed_stage_ids.insert(completion.stage_id) {
+                record_phase_fraction(&phase_fraction, completion.phase_fraction);
+                let mut details = realityscan_phase_details(
+                    JobEventKind::RealityScanStatus,
+                    &phase_name,
+                    phase_index,
+                    phase_count,
+                );
+                details.stage_id = Some(completion.stage_id.to_string());
+                details.status_progress = Some(100.0);
+                details.raw_status = Some(line.trim().to_string());
+                emit_with_details(
+                    &job_dir,
+                    &job_id,
+                    JobState::RunningRealityscan,
+                    &format!(
+                        "RealityScan {phase_name}: {} completed",
+                        format_stage_event_id(completion.stage_id)
+                    ),
+                    realityscan_phase_progress(
+                        phase_index,
+                        phase_count,
+                        completion.phase_fraction,
+                    ),
+                    Some(details),
+                )
+                .await
+                .ok();
+            }
+            continue;
+        }
+
         if line.contains("features in image") {
             detected_images += 1;
             if should_emit_feature_progress(detected_images, input_count) {
@@ -674,6 +719,7 @@ async fn monitor_realityscan_stdout(
                 } else {
                     0.2
                 };
+                record_phase_fraction(&phase_fraction, fraction);
                 let mut details = realityscan_phase_details(
                     JobEventKind::RealityScanStatus,
                     &phase_name,
@@ -698,6 +744,7 @@ async fn monitor_realityscan_stdout(
         }
 
         if line.contains("Feature detection completed") {
+            record_phase_fraction(&phase_fraction, 0.38);
             let mut details = realityscan_phase_details(
                 JobEventKind::RealityScanStatus,
                 &phase_name,
@@ -721,6 +768,7 @@ async fn monitor_realityscan_stdout(
         }
 
         if line.contains("Alignment completed") {
+            record_phase_fraction(&phase_fraction, 0.82);
             let mut details = realityscan_phase_details(
                 JobEventKind::RealityScanStatus,
                 &phase_name,
@@ -752,6 +800,7 @@ async fn emit_realityscan_phase_heartbeats(
     job_dir: PathBuf,
     stdout_log_path: PathBuf,
     stderr_log_path: PathBuf,
+    phase_fraction: Arc<AtomicU32>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
     let mut interval = time::interval(Duration::from_secs(REALITYSCAN_PHASE_HEARTBEAT_SECS));
@@ -763,12 +812,25 @@ async fn emit_realityscan_phase_heartbeats(
                 let stdout_age = file_age_seconds(&stdout_log_path).await;
                 let stderr_age = file_age_seconds(&stderr_log_path).await;
                 let outputs_age = file_age_seconds(&job_dir.join("outputs")).await;
-                let message = format!(
-                    "RealityScan {phase_name}: heartbeat stdout_age={} stderr_age={} outputs_age={}",
-                    format_age_seconds(stdout_age),
-                    format_age_seconds(stderr_age),
-                    format_age_seconds(outputs_age),
-                );
+                let latest_fraction =
+                    phase_fraction_from_units(phase_fraction.load(Ordering::Relaxed));
+                let stale = realityscan_phase_is_stale(stdout_age, outputs_age);
+                let message = if stale {
+                    format!(
+                        "RealityScan {phase_name}: stale heartbeat stdout_age={} stderr_age={} outputs_age={} stale_after={}",
+                        format_age_seconds(stdout_age),
+                        format_age_seconds(stderr_age),
+                        format_age_seconds(outputs_age),
+                        format_age_seconds(Some(REALITYSCAN_PHASE_STALE_SECS)),
+                    )
+                } else {
+                    format!(
+                        "RealityScan {phase_name}: heartbeat stdout_age={} stderr_age={} outputs_age={}",
+                        format_age_seconds(stdout_age),
+                        format_age_seconds(stderr_age),
+                        format_age_seconds(outputs_age),
+                    )
+                };
                 let mut details = realityscan_phase_details(
                     JobEventKind::RealityScanHeartbeat,
                     &phase_name,
@@ -784,7 +846,7 @@ async fn emit_realityscan_phase_heartbeats(
                     &job_id,
                     JobState::RunningRealityscan,
                     &message,
-                    realityscan_phase_progress(phase_index, phase_count, 0.05),
+                    realityscan_phase_progress(phase_index, phase_count, latest_fraction),
                     Some(details),
                 )
                 .await
@@ -909,6 +971,41 @@ fn should_emit_feature_progress(detected_images: usize, input_count: usize) -> b
         || (input_count > 0 && detected_images == input_count)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RealityScanCompletion {
+    stage_id: &'static str,
+    phase_fraction: f32,
+}
+
+fn parse_realityscan_completion(line: &str) -> Option<RealityScanCompletion> {
+    let line = line.trim();
+    if line.contains("Texturing Model completed") {
+        return Some(RealityScanCompletion {
+            stage_id: "calculate_texture",
+            phase_fraction: 0.35,
+        });
+    }
+    if line.contains("Calculating Orthographic Projection completed") {
+        return Some(RealityScanCompletion {
+            stage_id: "calculate_ortho_projection",
+            phase_fraction: 0.62,
+        });
+    }
+    if line.contains("Exporting Orthographic Projection completed") {
+        return Some(RealityScanCompletion {
+            stage_id: "export_ortho_projection",
+            phase_fraction: 0.88,
+        });
+    }
+    if line.contains("Saving Project completed") || line.contains("Save Project completed") {
+        return Some(RealityScanCompletion {
+            stage_id: "save_project",
+            phase_fraction: 0.98,
+        });
+    }
+    None
+}
+
 fn command_progress_hint(command: &str) -> f32 {
     match command {
         "selectAllImages" => 0.03,
@@ -942,6 +1039,27 @@ fn realityscan_command_stage_id(command: &str, phase_name: &str) -> Option<&'sta
         "save" if phase_name == "outputs" || phase_name == "single" => Some("save_project"),
         _ => None,
     }
+}
+
+fn format_stage_event_id(stage_id: &str) -> String {
+    stage_id.replace('_', " ")
+}
+
+fn record_phase_fraction(phase_fraction: &AtomicU32, fraction: f32) {
+    phase_fraction.fetch_max(phase_fraction_units(fraction), Ordering::Relaxed);
+}
+
+fn phase_fraction_units(fraction: f32) -> u32 {
+    (fraction.clamp(0.0, 1.0) * PHASE_FRACTION_SCALE).round() as u32
+}
+
+fn phase_fraction_from_units(units: u32) -> f32 {
+    (units as f32 / PHASE_FRACTION_SCALE).clamp(0.0, 1.0)
+}
+
+fn realityscan_phase_is_stale(stdout_age: Option<u64>, outputs_age: Option<u64>) -> bool {
+    stdout_age.is_some_and(|age| age >= REALITYSCAN_PHASE_STALE_SECS)
+        && outputs_age.is_some_and(|age| age >= REALITYSCAN_PHASE_STALE_SECS)
 }
 
 fn realityscan_phase_progress(phase_index: usize, phase_count: usize, phase_fraction: f32) -> f32 {
@@ -1922,6 +2040,56 @@ mod tests {
         );
         assert_eq!(realityscan_command_stage_id("save", "model-save"), None);
         assert_eq!(realityscan_command_stage_id("load", "outputs"), None);
+    }
+
+    #[test]
+    fn realityscan_completion_is_parsed_from_stdout_line() {
+        assert_eq!(
+            parse_realityscan_completion(
+                "Exporting Orthographic Projection completed in 0.029 seconds."
+            ),
+            Some(RealityScanCompletion {
+                stage_id: "export_ortho_projection",
+                phase_fraction: 0.88,
+            })
+        );
+        assert_eq!(
+            parse_realityscan_completion(
+                "Calculating Orthographic Projection completed in 6.060 seconds."
+            ),
+            Some(RealityScanCompletion {
+                stage_id: "calculate_ortho_projection",
+                phase_fraction: 0.62,
+            })
+        );
+        assert_eq!(parse_realityscan_completion("Loading Project completed"), None);
+    }
+
+    #[test]
+    fn realityscan_heartbeat_stale_detection_requires_stdout_and_outputs() {
+        assert!(realityscan_phase_is_stale(
+            Some(REALITYSCAN_PHASE_STALE_SECS),
+            Some(REALITYSCAN_PHASE_STALE_SECS + 1)
+        ));
+        assert!(!realityscan_phase_is_stale(
+            Some(REALITYSCAN_PHASE_STALE_SECS),
+            Some(30)
+        ));
+        assert!(!realityscan_phase_is_stale(
+            None,
+            Some(REALITYSCAN_PHASE_STALE_SECS)
+        ));
+    }
+
+    #[test]
+    fn phase_fraction_tracker_only_moves_forward() {
+        let phase_fraction = AtomicU32::new(0);
+        record_phase_fraction(&phase_fraction, 0.88);
+        record_phase_fraction(&phase_fraction, 0.05);
+        assert!(
+            (phase_fraction_from_units(phase_fraction.load(Ordering::Relaxed)) - 0.88).abs()
+                < 0.001
+        );
     }
 
     #[test]
