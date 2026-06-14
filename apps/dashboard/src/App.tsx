@@ -2269,33 +2269,68 @@ function JobDetails({
   const inputs = job.job.manifest?.inputs ?? []
   const pipeline = job.job.pipeline
   return (
-    <div className="grid gap-3 text-[11px] xl:grid-cols-[1fr_1fr]">
-      <div className="xl:col-span-2">
+    <div className="grid gap-3 text-[11px] xl:grid-cols-[23rem_minmax(0,1fr)]">
+      <div className="min-w-0 xl:row-span-3 xl:w-[23rem] xl:self-start">
         <JobStageTimeline job={job} events={events} />
       </div>
-      <DetailBlock
-        title="pipeline"
-        rows={[
-          ["name", job.job.job_name ?? "-"],
-          ["template", pipeline?.template_id ?? "-"],
-          ["image", job.job.realityscan_image ?? "-"],
-          ["stage count", String(pipeline?.stages?.length ?? 0)],
-          ["project", pipeline?.project_filename ?? "-"],
-          ["ortho", pipeline?.orthomosaic_filename ?? "-"],
-        ]}
-      />
-      <DetailBlock
-        title="runtime"
-        rows={[
-          ["job_id", job.job_id],
-          ["client_id", job.client_id],
-          ["state", job.state],
-          ["assigned", formatDateTime(job.assigned_at)],
-          ["updated", formatDateTime(job.updated_at)],
-          ["completed", formatDateTime(job.completed_at)],
-        ]}
-      />
-      <div className="min-w-0 border bg-background/35">
+      <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:col-start-2">
+        <DetailBlock
+          title="pipeline"
+          rows={[
+            ["name", job.job.job_name ?? "-"],
+            ["template", pipeline?.template_id ?? "-"],
+            ["image", job.job.realityscan_image ?? "-"],
+            ["stage count", String(pipeline?.stages?.length ?? 0)],
+            ["project", pipeline?.project_filename ?? "-"],
+            ["ortho", pipeline?.orthomosaic_filename ?? "-"],
+          ]}
+        />
+        <DetailBlock
+          title="runtime"
+          rows={[
+            ["job_id", job.job_id],
+            ["client_id", job.client_id],
+            ["state", job.state],
+            ["assigned", formatDateTime(job.assigned_at)],
+            ["updated", formatDateTime(job.updated_at)],
+            ["completed", formatDateTime(job.completed_at)],
+          ]}
+        />
+      </div>
+      <div className="grid min-w-0 gap-3 xl:col-start-2 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <RecentJobEvents events={events} />
+        <div className="min-w-0 border bg-background/35">
+          <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
+            artifacts / {artifacts.length}
+          </div>
+          <div className="max-h-48 overflow-auto">
+            {artifacts.length === 0 ? (
+              <div className="px-2 py-3 text-muted-foreground">
+                no artifact events yet
+              </div>
+            ) : (
+              <table className="w-full min-w-[620px] border-collapse text-left">
+                <tbody>
+                  {artifacts.map((artifact) => (
+                    <tr
+                      key={artifact.artifact_id}
+                      className="border-b last:border-b-0"
+                    >
+                      <Td className="font-medium">{artifact.filename}</Td>
+                      <Td>{formatFileBytes(artifact.size_bytes)}</Td>
+                      <Td>{artifact.content_type ?? "-"}</Td>
+                      <Td className="max-w-72 truncate">
+                        {artifact.storage_uri ?? "-"}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="min-w-0 border bg-background/35 xl:col-start-2">
         <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
           inputs / {inputs.length}
         </div>
@@ -2319,37 +2354,6 @@ function JobDetails({
           )}
         </div>
       </div>
-      <RecentJobEvents events={events} />
-      <div className="min-w-0 border bg-background/35">
-        <div className="border-b bg-muted/30 px-2 py-1 text-muted-foreground uppercase">
-          artifacts / {artifacts.length}
-        </div>
-        <div className="max-h-48 overflow-auto">
-          {artifacts.length === 0 ? (
-            <div className="px-2 py-3 text-muted-foreground">
-              no artifact events yet
-            </div>
-          ) : (
-            <table className="w-full min-w-[620px] border-collapse text-left">
-              <tbody>
-                {artifacts.map((artifact) => (
-                  <tr
-                    key={artifact.artifact_id}
-                    className="border-b last:border-b-0"
-                  >
-                    <Td className="font-medium">{artifact.filename}</Td>
-                    <Td>{formatFileBytes(artifact.size_bytes)}</Td>
-                    <Td>{artifact.content_type ?? "-"}</Td>
-                    <Td className="max-w-72 truncate">
-                      {artifact.storage_uri ?? "-"}
-                    </Td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
     </div>
   )
 }
@@ -2366,7 +2370,6 @@ function JobStageTimeline({
   const latestEvent = sortedEvents.at(-1) ?? null
   const progress = jobProgress(job, latestEvent)
   const currentIndex = currentTimelineIndex(rows, progress)
-  const railProgress = timelineRailProgress(rows, progress)
   const latestMessage = latestEvent?.message ?? job.state
 
   return (
@@ -2382,23 +2385,30 @@ function JobStageTimeline({
         / {latestMessage}
       </div>
       <div className="relative px-3 py-3">
-        <div
-          className="absolute top-5 left-[1.16rem] w-px bg-primary transition-[height] duration-700"
-          style={{
-            height: `calc((100% - 2.5rem) * ${railProgress})`,
-          }}
-        />
         <div className="grid gap-2">
           {rows.map((row, index) => {
             const status = timelineRowStatus(row, index, currentIndex, progress)
             const localProgress = timelineRowLocalProgress(row, progress)
+            const connectorProgress = timelineConnectorProgress(
+              status,
+              localProgress
+            )
             return (
               <div
                 key={row.id}
-                className="relative grid grid-cols-[1.75rem_1fr_auto] items-start gap-2"
+                className="relative grid grid-cols-[1.5rem_minmax(0,1fr)_2.75rem] items-start gap-2 [--timeline-dot-center-y:0.5625rem] [--timeline-dot-center:0.3125rem] [--timeline-row-gap:0.5rem]"
               >
+                {index < rows.length - 1 && connectorProgress > 0 ? (
+                  <span
+                    className="absolute top-[var(--timeline-dot-center-y)] left-[var(--timeline-dot-center)] z-0 w-px -translate-x-1/2 bg-primary transition-[height] duration-700"
+                    style={{
+                      height: `calc((100% + var(--timeline-row-gap)) * ${connectorProgress})`,
+                    }}
+                    aria-hidden="true"
+                  />
+                ) : null}
                 <span
-                  className={`relative z-10 mt-1 size-2.5 rounded-full border ${
+                  className={`relative z-10 mt-1 size-2.5 justify-self-start rounded-full border ${
                     status === "complete"
                       ? "border-primary bg-primary"
                       : status === "current"
@@ -4189,16 +4199,10 @@ function timelineRowLocalProgress(row: TimelineRow, progress: number) {
   return clampPercent(((progress - row.start) / (row.end - row.start)) * 100)
 }
 
-function timelineRailProgress(rows: TimelineRow[], progress: number) {
-  if (rows.length <= 1) return 0
-  const currentIndex = currentTimelineIndex(rows, progress)
-  if (currentIndex < 0) return 0
-  const currentRow = rows[currentIndex]
-  const localProgress = timelineRowLocalProgress(currentRow, progress) / 100
-  return Math.min(
-    1,
-    Math.max(0, (currentIndex + localProgress) / (rows.length - 1))
-  )
+function timelineConnectorProgress(status: string, localProgress: number) {
+  if (status === "complete") return 1
+  if (status === "current") return localProgress / 100
+  return 0
 }
 
 function timelineRowLabel(status: string) {
