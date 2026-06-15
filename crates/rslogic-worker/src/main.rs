@@ -1370,7 +1370,23 @@ fn realityscan_ortho_color_type(method: &OrthoRenderMethod) -> &'static str {
     }
 }
 
+fn ortho_region_scale_command(pipeline: &RealityScanPipeline) -> Option<String> {
+    let raw_xml = pipeline.ortho_projection_params_xml.as_deref()?;
+    let (width, height, depth) = parse_reconstruction_region_dimensions(raw_xml)?;
+    Some(format!(
+        "-scaleReconstructionRegion {} {} {} center absolute",
+        format_decimal(width),
+        format_decimal(height),
+        format_decimal(depth)
+    ))
+}
+
 fn parse_reconstruction_region_footprint(xml: &str) -> Option<(f64, f64)> {
+    let (width, height, _) = parse_reconstruction_region_dimensions(xml)?;
+    Some((width, height))
+}
+
+fn parse_reconstruction_region_dimensions(xml: &str) -> Option<(f64, f64, f64)> {
     let values_text = if let Some(value_start) = xml.find("widthHeightDepth=\"") {
         let value_start = value_start + "widthHeightDepth=\"".len();
         let value_end = value_start + xml[value_start..].find('"')?;
@@ -1386,8 +1402,14 @@ fn parse_reconstruction_region_footprint(xml: &str) -> Option<(f64, f64)> {
         .collect();
     let width = *values.first()?;
     let height = *values.get(1)?;
-    (width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0)
-        .then_some((width, height))
+    let depth = *values.get(2)?;
+    (width.is_finite()
+        && width > 0.0
+        && height.is_finite()
+        && height > 0.0
+        && depth.is_finite()
+        && depth > 0.0)
+        .then_some((width, height, depth))
 }
 
 fn replace_xml_attribute_in_tag(
@@ -1468,13 +1490,15 @@ fn realityscan_stage_commands(
         RealityScanStage::Align => Ok(vec!["-align".to_string()]),
         RealityScanStage::SelectMaximalComponent => Ok(vec!["-selectMaximalComponent".to_string()]),
         RealityScanStage::SetReconstructionRegionAuto if uses_auto_ortho_region_box(pipeline) => {
-            Ok(vec![
-                "-setReconstructionRegionAuto".to_string(),
-                format!(
-                    "-exportReconstructionRegion {}",
-                    rscmd_quote("Z:\\job\\outputs\\auto-ortho-region.rsbox")
-                ),
-            ])
+            let mut commands = vec!["-setReconstructionRegionAuto".to_string()];
+            if let Some(command) = ortho_region_scale_command(pipeline) {
+                commands.push(command);
+            }
+            commands.push(format!(
+                "-exportReconstructionRegion {}",
+                rscmd_quote("Z:\\job\\outputs\\auto-ortho-region.rsbox")
+            ));
+            Ok(commands)
         }
         RealityScanStage::SetReconstructionRegionAuto => {
             Ok(vec!["-setReconstructionRegionAuto".to_string()])
@@ -2534,6 +2558,7 @@ mod tests {
         assert!(
             script.contains("-exportReconstructionRegion \"Z:\\job\\outputs\\auto-ortho-region.rsbox\"")
         );
+        assert!(script.contains("-scaleReconstructionRegion 10 12 3 center absolute"));
         assert!(script.contains(
             "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\auto-ortho-region.rsbox\""
         ));
