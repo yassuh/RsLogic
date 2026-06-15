@@ -1331,6 +1331,10 @@ fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result
             realityscan_ortho_color_type(method),
         )?;
     }
+    xml = replace_xml_attribute_in_tag(&xml, "OrthoProjection", "projectionType", "3")?;
+    xml = replace_xml_attribute_in_tag(&xml, "OrthoProjection", "bEmpty", "0")?;
+    xml = remove_xml_attribute_in_tag(&xml, "OrthoProjection", "modelGuid")?;
+    xml = remove_xml_attribute_in_tag(&xml, "Residual", "ownerId")?;
     if let Some(pixel_size) = pipeline.ortho_pixel_size_meters {
         if let Some((width_meters, height_meters)) = parse_reconstruction_region_footprint(&xml) {
             let width = (width_meters / pixel_size).ceil().max(1.0) as u64;
@@ -1361,10 +1365,16 @@ fn realityscan_ortho_color_type(method: &OrthoRenderMethod) -> &'static str {
 }
 
 fn parse_reconstruction_region_footprint(xml: &str) -> Option<(f64, f64)> {
-    let marker = "widthHeightDepth=\"";
-    let value_start = xml.find(marker)? + marker.len();
-    let value_end = value_start + xml[value_start..].find('"')?;
-    let values: Vec<f64> = xml[value_start..value_end]
+    let values_text = if let Some(value_start) = xml.find("widthHeightDepth=\"") {
+        let value_start = value_start + "widthHeightDepth=\"".len();
+        let value_end = value_start + xml[value_start..].find('"')?;
+        &xml[value_start..value_end]
+    } else {
+        let value_start = xml.find("<widthHeightDepth>")? + "<widthHeightDepth>".len();
+        let value_end = value_start + xml[value_start..].find("</widthHeightDepth>")?;
+        &xml[value_start..value_end]
+    };
+    let values: Vec<f64> = values_text
         .split_whitespace()
         .filter_map(|value| value.parse::<f64>().ok())
         .collect();
@@ -1410,6 +1420,35 @@ fn replace_xml_attribute_in_tag(
     updated.push_str(value);
     updated.push('"');
     updated.push_str(&xml[tag_end..]);
+    Ok(updated)
+}
+
+fn remove_xml_attribute_in_tag(xml: &str, tag: &str, attr: &str) -> anyhow::Result<String> {
+    let Some(tag_start) = xml.find(&format!("<{tag}")) else {
+        return Ok(xml.to_string());
+    };
+    let relative_tag_end = xml[tag_start..]
+        .find('>')
+        .with_context(|| format!("unterminated XML tag {tag}"))?;
+    let tag_end = tag_start + relative_tag_end;
+    let tag_contents = &xml[tag_start..tag_end];
+    let attr_marker = format!("{attr}=\"");
+    let Some(relative_attr_start) = tag_contents.find(&attr_marker) else {
+        return Ok(xml.to_string());
+    };
+    let mut attr_start = tag_start + relative_attr_start;
+    while attr_start > tag_start && xml.as_bytes()[attr_start - 1].is_ascii_whitespace() {
+        attr_start -= 1;
+    }
+    let value_start = tag_start + relative_attr_start + attr_marker.len();
+    let value_end = value_start
+        + xml[value_start..]
+            .find('"')
+            .with_context(|| format!("unterminated XML attribute {attr}"))?
+        + 1;
+    let mut updated = String::with_capacity(xml.len());
+    updated.push_str(&xml[..attr_start]);
+    updated.push_str(&xml[value_end..]);
     Ok(updated)
 }
 
@@ -2393,15 +2432,17 @@ mod tests {
             inputs: Vec::new(),
         };
         let ortho_params = r#"<OrthoProjection width="1000" height="1000" name="Ortho projection 1" modelName="Model 1"
-   colorType="coloring" boxSideConerIndex="21" bEmpty="0" backFaceColorType="1" backFaceColor="2130706687"
+   modelGuid="{0573054B-851B-4ED6-B7A9-CC9953656DB4}" colorType="coloring"
+   boxSideConerIndex="21" bEmpty="1" backFaceColorType="1" backFaceColor="2130706687"
    projectionType="0" bShowOrthoProjection="1">
   <Header magic="5787472" version="2"/>
 </OrthoProjection>
-<ReconstructionRegion globalCoordinateSystem="+proj=geocent +ellps=WGS84 +no_defs"
-   globalCoordinateSystemName="local:1 - Euclidean" isGeoreferenced="1"
-   isLatLon="0" widthHeightDepth="10 12 3">
-  <yawPitchRoll>0 0 0</yawPitchRoll>
+<ReconstructionRegion globalCoordinateSystem="+proj=longlat +datum=WGS84 +no_defs"
+   globalCoordinateSystemName="epsg:4326 - GPS (WGS 84)" isGeoreferenced="1" isLatLon="1">
+  <yawPitchRoll>0.000670706172590691 8.25126196690305e-05 0.000216933504214264</yawPitchRoll>
+  <widthHeightDepth>10 12 3</widthHeightDepth>
   <Header magic="5395016" version="2"/>
+  <Residual R="1 0 0 0 1 0 0 0 1" t="0 0 0" s="1" ownerId="{650355CD-CD02-4AA7-B5BE-6CE234F28984}"/>
 </ReconstructionRegion>"#;
         let pipeline = RealityScanPipeline {
             template_id: "aerial".to_string(),
@@ -2424,8 +2465,12 @@ mod tests {
         assert!(script
             .contains("-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\""));
         assert!(launcher.contains(r#"colorType="aerial mosaicing""#));
+        assert!(launcher.contains(r#"projectionType="3""#));
+        assert!(launcher.contains(r#"bEmpty="0""#));
         assert!(launcher.contains(r#"width="200""#));
         assert!(launcher.contains(r#"height="240""#));
+        assert!(!launcher.contains("modelGuid="));
+        assert!(!launcher.contains("ownerId="));
         assert!(launcher.contains("cat > /job/outputs/calculate-ortho.rsortho"));
     }
 
