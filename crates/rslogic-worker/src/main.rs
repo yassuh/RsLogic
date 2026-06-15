@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::ErrorKind,
+    io::{self, ErrorKind, Write as _},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -2313,6 +2313,7 @@ async fn emit_with_details(
     };
     let line = serde_json::to_string(&event)?;
     println!("{line}");
+    let _ = io::stdout().flush();
     append_job_event(job_dir, &line).await?;
     Ok(())
 }
