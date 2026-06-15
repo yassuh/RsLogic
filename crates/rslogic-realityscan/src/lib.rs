@@ -461,6 +461,8 @@ async fn poll_realityscan_status(
         .arg(container_name)
         .arg("/opt/realityscan/bin/realityscan-cli")
         .arg("-headless")
+        .arg("-silent")
+        .arg("Z:\\job\\logs\\realityscan-crash-reports")
         .arg("-stdConsole")
         .arg("-getStatus")
         .arg(instance_name);

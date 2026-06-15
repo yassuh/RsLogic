@@ -1225,7 +1225,7 @@ fn realityscan_cli_script(
     let ortho_export_config = ortho_export_config_xml(pipeline);
     let ortho_projection_params = ortho_projection_params_xml(pipeline)?;
     let mut script = r#"set -euo pipefail
-mkdir -p /job/outputs /job/logs /tmp/runtime-rslogic
+mkdir -p /job/outputs /job/logs/realityscan-crash-reports /tmp/runtime-rslogic
 chmod 700 /tmp/runtime-rslogic
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/job/logs/xvfb.log 2>&1 &
 xvfb_pid=$!
@@ -1245,7 +1245,8 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
         script.push_str(&params);
     }
     script.push_str(&format!(
-        "XML\n/opt/realityscan/bin/realityscan-cli -headless -stdConsole -execRSCMD {}\n",
+        "XML\n/opt/realityscan/bin/realityscan-cli -headless -silent {} -stdConsole -execRSCMD {}\n",
+        shell_quote("Z:\\job\\logs\\realityscan-crash-reports"),
         shell_quote(windows_commands_path)
     ));
     Ok(script)
@@ -2418,6 +2419,9 @@ mod tests {
         assert!(launcher.contains(r#"<entry key="exportOrthoAsBigTiff" value="true"/>"#));
         assert!(launcher.contains(r#"<entry key="exportProjectionParametersFile" value="true"/>"#));
         assert!(launcher.contains(r#"<entry key="orthoPixelSize" value="0.05"/>"#));
+        assert!(launcher.contains(
+            "-headless -silent 'Z:\\job\\logs\\realityscan-crash-reports' -stdConsole"
+        ));
         assert!(launcher.contains("-execRSCMD 'Z:\\job\\work\\commands.rscmd'"));
         assert!(script.contains(
             "-exportOrthoProjection \"Z:\\job\\outputs\\seaforth-5cm-orthomosaic.tif\" \"Z:\\job\\outputs\\export-ortho-config.xml\""
