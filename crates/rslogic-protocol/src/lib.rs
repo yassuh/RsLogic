@@ -359,6 +359,8 @@ pub struct RealityScanPipeline {
     pub ortho_render_method: Option<OrthoRenderMethod>,
     #[serde(default)]
     pub ortho_projection_params_xml: Option<String>,
+    #[serde(default)]
+    pub alignment_settings: Option<RealityScanAlignmentSettings>,
 }
 
 impl Default for RealityScanPipeline {
@@ -380,8 +382,69 @@ impl Default for RealityScanPipeline {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RealityScanAlignmentSettings {
+    #[serde(default)]
+    pub feature_detection_quality: Option<String>,
+    #[serde(default)]
+    pub max_features_per_mpx: Option<u32>,
+    #[serde(default)]
+    pub max_features_per_image: Option<u32>,
+    #[serde(default)]
+    pub images_overlap: Option<String>,
+    #[serde(default)]
+    pub image_downscale_factor: Option<u32>,
+    #[serde(default)]
+    pub max_feature_reprojection_error: Option<f64>,
+    #[serde(default)]
+    pub detector_sensitivity: Option<String>,
+    #[serde(default)]
+    pub preselector_features: Option<u32>,
+    #[serde(default)]
+    pub force_component_rematch: Option<bool>,
+    #[serde(default)]
+    pub merge_georeferenced_components: Option<bool>,
+    #[serde(default)]
+    pub enable_camera_prior: Option<bool>,
+    #[serde(default)]
+    pub camera_prior_accuracy_x: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_accuracy_y: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_accuracy_z: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_weight: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_accuracy_yaw: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_accuracy_pitch: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_accuracy_roll: Option<f64>,
+    #[serde(default)]
+    pub camera_prior_weight_orientation: Option<f64>,
+    #[serde(default)]
+    pub input_relative_pose: Option<u8>,
+    #[serde(default)]
+    pub input_absolute_pose: Option<u8>,
+    #[serde(default)]
+    pub input_prior_accuracy_source: Option<u8>,
+    #[serde(default)]
+    pub input_position_accuracy_x: Option<f64>,
+    #[serde(default)]
+    pub input_position_accuracy_y: Option<f64>,
+    #[serde(default)]
+    pub input_position_accuracy_z: Option<f64>,
+    #[serde(default)]
+    pub input_yaw_accuracy: Option<f64>,
+    #[serde(default)]
+    pub input_pitch_accuracy: Option<f64>,
+    #[serde(default)]
+    pub input_roll_accuracy: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

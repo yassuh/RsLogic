@@ -25,8 +25,9 @@ use rslogic_protocol::{
     new_id, now, verify_challenge_signature, CameraIntrinsics, Challenge, ClientEvent,
     CloudfrontInput, DesiredState, EnrollmentApproval, EnrollmentRejection, EnrollmentRequest,
     EnrollmentRequestRecord, JobEvent, JobInputManifest, OrthoRenderMethod, OutputUploadTarget,
-    PipelineJob, RealityScanPipeline, RealityScanStage, ServerCommand, SessionRequest,
-    SessionToken, UploadedArtifact, PROTOCOL_VERSION, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
+    PipelineJob, RealityScanAlignmentSettings, RealityScanPipeline, RealityScanStage,
+    ServerCommand, SessionRequest, SessionToken, UploadedArtifact, PROTOCOL_VERSION,
+    YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
 };
 use serde::{Deserialize, Serialize};
 use store::{
@@ -210,6 +211,8 @@ struct JobTemplate {
     ortho_render_method: Option<OrthoRenderMethod>,
     #[serde(default)]
     ortho_projection_params_xml: Option<String>,
+    #[serde(default)]
+    alignment_settings: Option<RealityScanAlignmentSettings>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -780,6 +783,7 @@ async fn build_job_from_imagery(
             ortho_pixel_size_meters: template.ortho_pixel_size_meters,
             ortho_render_method: template.ortho_render_method,
             ortho_projection_params_xml: template.ortho_projection_params_xml,
+            alignment_settings: template.alignment_settings,
         },
     };
 
@@ -831,6 +835,7 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         },
         JobTemplate {
             template_id: "align_normal_orthomosaic".to_string(),
@@ -854,6 +859,7 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         },
         JobTemplate {
             template_id: "align_only".to_string(),
@@ -870,6 +876,7 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         },
     ]
 }

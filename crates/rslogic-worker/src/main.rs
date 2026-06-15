@@ -1089,10 +1089,9 @@ fn realityscan_phases(
     }
 
     let mut phases = Vec::new();
-    let mut align_commands = vec![
-        "-newScene".to_string(),
-        "-addFolder \"Z:\\job\\inputs\"".to_string(),
-    ];
+    let mut align_commands = vec!["-newScene".to_string()];
+    align_commands.extend(realityscan_alignment_setting_commands(pipeline));
+    align_commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
     for stage in stages.iter().filter(|stage| is_alignment_stage(stage)) {
         align_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
     }
@@ -1153,10 +1152,9 @@ fn combined_realityscan_commands(
     manifest: &JobInputManifest,
     stages: &[RealityScanStage],
 ) -> anyhow::Result<Vec<String>> {
-    let mut commands = vec![
-        "-newScene".to_string(),
-        "-addFolder \"Z:\\job\\inputs\"".to_string(),
-    ];
+    let mut commands = vec!["-newScene".to_string()];
+    commands.extend(realityscan_alignment_setting_commands(pipeline));
+    commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
     for stage in stages {
         commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
     }
@@ -1268,7 +1266,12 @@ fn realityscan_rscmd_script(
     } else {
         pipeline.stages.clone()
     };
-    let mut script = String::from("-newScene\n-addFolder \"Z:\\job\\inputs\"\n");
+    let mut script = String::from("-newScene\n");
+    for command in realityscan_alignment_setting_commands(pipeline) {
+        script.push_str(&command);
+        script.push('\n');
+    }
+    script.push_str("-addFolder \"Z:\\job\\inputs\"\n");
     for stage in stages {
         for command in realityscan_stage_commands(&stage, pipeline, manifest)? {
             script.push_str(&command);
@@ -1489,7 +1492,11 @@ fn realityscan_stage_commands(
 ) -> anyhow::Result<Vec<String>> {
     match stage {
         RealityScanStage::SetIntrinsics => realityscan_intrinsics_commands(manifest),
-        RealityScanStage::Align => Ok(vec!["-align".to_string()]),
+        RealityScanStage::Align => {
+            let mut commands = realityscan_input_alignment_commands(pipeline);
+            commands.push("-align".to_string());
+            Ok(commands)
+        }
         RealityScanStage::SelectMaximalComponent => Ok(vec!["-selectMaximalComponent".to_string()]),
         RealityScanStage::SetReconstructionRegionAuto if uses_auto_ortho_region_box(pipeline) => {
             let mut commands = vec!["-setReconstructionRegionAuto".to_string()];
@@ -1538,6 +1545,147 @@ fn realityscan_stage_commands(
             rscmd_quote(&windows_output_path(&pipeline.project_filename))
         )]),
     }
+}
+
+fn realityscan_alignment_setting_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
+    let Some(settings) = &pipeline.alignment_settings else {
+        return Vec::new();
+    };
+
+    let mut pairs = Vec::<(&'static str, String)>::new();
+    push_string_setting(
+        &mut pairs,
+        "sfmFeatureDetectionQuality",
+        settings.feature_detection_quality.as_deref(),
+    );
+    push_u32_setting(
+        &mut pairs,
+        "sfmMaxFeaturesPerMpx",
+        settings.max_features_per_mpx,
+    );
+    push_u32_setting(
+        &mut pairs,
+        "sfmMaxFeaturesPerImage",
+        settings.max_features_per_image,
+    );
+    push_string_setting(
+        &mut pairs,
+        "sfmImagesOverlap",
+        settings.images_overlap.as_deref(),
+    );
+    push_u32_setting(
+        &mut pairs,
+        "sfmImageDownscaleFactor",
+        settings.image_downscale_factor,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmMaxFeatureReprojectionError",
+        settings.max_feature_reprojection_error,
+    );
+    push_string_setting(
+        &mut pairs,
+        "sfmDetectorSensitivity",
+        settings.detector_sensitivity.as_deref(),
+    );
+    push_u32_setting(
+        &mut pairs,
+        "sfmPreselectorFeatures",
+        settings.preselector_features,
+    );
+    push_bool_setting(
+        &mut pairs,
+        "sfmForceComponentRematch",
+        settings.force_component_rematch,
+    );
+    push_bool_setting(
+        &mut pairs,
+        "sfmMergeGeoreferencedComponents",
+        settings.merge_georeferenced_components,
+    );
+    push_bool_setting(
+        &mut pairs,
+        "sfmEnableCameraPrior",
+        settings.enable_camera_prior,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyX",
+        settings.camera_prior_accuracy_x,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyY",
+        settings.camera_prior_accuracy_y,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyZ",
+        settings.camera_prior_accuracy_z,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorWeight",
+        settings.camera_prior_weight,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyYaw",
+        settings.camera_prior_accuracy_yaw,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyPitch",
+        settings.camera_prior_accuracy_pitch,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorAccuracyRoll",
+        settings.camera_prior_accuracy_roll,
+    );
+    push_float_setting(
+        &mut pairs,
+        "sfmCameraPriorWeightOrientation",
+        settings.camera_prior_weight_orientation,
+    );
+
+    pairs
+        .into_iter()
+        .map(|(key, value)| format!("-set {}", rscmd_quote(&format!("{key}={value}"))))
+        .collect()
+}
+
+fn realityscan_input_alignment_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
+    let Some(settings) = &pipeline.alignment_settings else {
+        return Vec::new();
+    };
+
+    let mut pairs = Vec::<(&'static str, String)>::new();
+    push_u8_setting(
+        &mut pairs,
+        "inpPosePriorRelative",
+        settings.input_relative_pose,
+    );
+    push_u8_setting(&mut pairs, "inpPose", settings.input_absolute_pose);
+    push_u8_setting(
+        &mut pairs,
+        "inpPriorAccuracyInh",
+        settings.input_prior_accuracy_source,
+    );
+    push_float_setting(&mut pairs, "inpuTx", settings.input_position_accuracy_x);
+    push_float_setting(&mut pairs, "inpuTy", settings.input_position_accuracy_y);
+    push_float_setting(&mut pairs, "inpuTz", settings.input_position_accuracy_z);
+    push_float_setting(&mut pairs, "inpuRx", settings.input_yaw_accuracy);
+    push_float_setting(&mut pairs, "inpuRy", settings.input_pitch_accuracy);
+    push_float_setting(&mut pairs, "inpuRz", settings.input_roll_accuracy);
+
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut commands = vec!["-selectAllImages".to_string()];
+    commands.extend(edit_input_selection_commands(&pairs));
+    commands
 }
 
 fn realityscan_intrinsics_commands(manifest: &JobInputManifest) -> anyhow::Result<Vec<String>> {
@@ -1623,11 +1771,8 @@ fn input_intrinsics_settings(
         }) {
             settings.push(("inpCalibrationGroup", group.to_string()));
         }
-        if let Some(prior) = intrinsics
-            .calibration_prior
-            .or_else(|| has_calibration_parameters.then_some(1))
-        {
-            settings.push(("inpCalibration", prior.to_string()));
+        if intrinsics.calibration_prior.is_some() || has_calibration_parameters {
+            settings.push(("inpCalibration", "1".to_string()));
         }
         push_float_setting(&mut settings, "inpFocal", intrinsics.focal_length_35mm);
         push_float_setting(&mut settings, "inpPPX", intrinsics.principal_point_x_mm);
@@ -1648,11 +1793,8 @@ fn input_intrinsics_settings(
         }) {
             settings.push(("inpLensGroup", group.to_string()));
         }
-        if let Some(prior) = intrinsics
-            .distortion_prior
-            .or_else(|| has_distortion_parameters.then_some(1))
-        {
-            settings.push(("inpDistortion", prior.to_string()));
+        if intrinsics.distortion_prior.is_some() || has_distortion_parameters {
+            settings.push(("inpDistortion", "1".to_string()));
         }
         if let Some(model) = intrinsics.distortion_model {
             settings.push(("inpDistortionModel", model.to_string()));
@@ -1677,7 +1819,47 @@ fn push_float_setting(
         return;
     };
     if value.is_finite() {
+        settings.push((key, format_decimal(value)));
+    }
+}
+
+fn push_u32_setting(
+    settings: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<u32>,
+) {
+    if let Some(value) = value {
         settings.push((key, value.to_string()));
+    }
+}
+
+fn push_u8_setting(
+    settings: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<u8>,
+) {
+    if let Some(value) = value {
+        settings.push((key, value.to_string()));
+    }
+}
+
+fn push_bool_setting(
+    settings: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<bool>,
+) {
+    if let Some(value) = value {
+        settings.push((key, value.to_string()));
+    }
+}
+
+fn push_string_setting(
+    settings: &mut Vec<(&'static str, String)>,
+    key: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        settings.push((key, value.trim().to_string()));
     }
 }
 
@@ -2159,7 +2341,9 @@ async fn emit_artifact_uploaded(artifact: UploadedArtifact) -> anyhow::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rslogic_protocol::{CameraIntrinsics, CloudfrontInput, UploadHeader};
+    use rslogic_protocol::{
+        CameraIntrinsics, CloudfrontInput, RealityScanAlignmentSettings, UploadHeader,
+    };
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -2271,7 +2455,10 @@ mod tests {
             None
         );
         assert_eq!(
-            parse_realityscan_completion("Saving Project completed in 0.535 seconds.", "align-save"),
+            parse_realityscan_completion(
+                "Saving Project completed in 0.535 seconds.",
+                "align-save"
+            ),
             None
         );
         assert_eq!(
@@ -2379,6 +2566,7 @@ mod tests {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2388,15 +2576,92 @@ mod tests {
         assert!(select_index < align_index);
         assert!(!script.contains("-selectImage \"Z:\\job\\inputs\\image-1.jpg\" set"));
         assert!(script.contains("-editInputSelection \"inpCalibrationGroup=1\""));
-        assert!(script.contains("-editInputSelection \"inpCalibration=2\""));
+        assert!(script.contains("-editInputSelection \"inpCalibration=1\""));
         assert!(script.contains("-editInputSelection \"inpFocal=24\""));
         assert!(script.contains("-editInputSelection \"inpPPX=0.12\""));
         assert!(script.contains("-editInputSelection \"inpPPY=-0.08\""));
         assert!(script.contains("-editInputSelection \"inpLensGroup=1\""));
-        assert!(script.contains("-editInputSelection \"inpDistortion=2\""));
+        assert!(script.contains("-editInputSelection \"inpDistortion=1\""));
         assert!(script.contains("-editInputSelection \"inpDistortionModel=2\""));
         assert!(script.contains("-editInputSelection \"inpRadial1=-0.01\""));
         assert!(script.contains("-editInputSelection \"inpRadial2=0.001\""));
+    }
+
+    #[test]
+    fn realityscan_script_applies_aggressive_alignment_priors() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "aggressive".to_string(),
+            stages: vec![RealityScanStage::Align],
+            project_filename: "aligned.rsproj".to_string(),
+            orthomosaic_filename: None,
+            ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
+            alignment_settings: Some(RealityScanAlignmentSettings {
+                feature_detection_quality: Some("High".to_string()),
+                max_features_per_mpx: Some(20_000),
+                max_features_per_image: Some(80_000),
+                images_overlap: Some("Low".to_string()),
+                image_downscale_factor: Some(1),
+                max_feature_reprojection_error: Some(3.0),
+                detector_sensitivity: Some("Ultra".to_string()),
+                preselector_features: Some(30_000),
+                force_component_rematch: Some(true),
+                merge_georeferenced_components: Some(true),
+                enable_camera_prior: Some(true),
+                camera_prior_accuracy_x: Some(1.0),
+                camera_prior_accuracy_y: Some(1.0),
+                camera_prior_accuracy_z: Some(3.0),
+                camera_prior_weight: Some(0.25),
+                camera_prior_accuracy_yaw: Some(45.0),
+                camera_prior_accuracy_pitch: Some(45.0),
+                camera_prior_accuracy_roll: Some(45.0),
+                camera_prior_weight_orientation: Some(0.05),
+                input_relative_pose: Some(0),
+                input_absolute_pose: Some(1),
+                input_prior_accuracy_source: Some(1),
+                input_position_accuracy_x: Some(1.0),
+                input_position_accuracy_y: Some(1.0),
+                input_position_accuracy_z: Some(3.0),
+                input_yaw_accuracy: Some(45.0),
+                input_pitch_accuracy: Some(45.0),
+                input_roll_accuracy: Some(45.0),
+            }),
+        };
+
+        let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
+
+        let settings_index = script
+            .find("-set \"sfmFeatureDetectionQuality=High\"")
+            .unwrap();
+        let add_folder_index = script.find("-addFolder \"Z:\\job\\inputs\"").unwrap();
+        let input_prior_index = script.find("-editInputSelection \"inpPose=1\"").unwrap();
+        let align_index = script.find("-align").unwrap();
+        assert!(settings_index < add_folder_index);
+        assert!(add_folder_index < input_prior_index);
+        assert!(input_prior_index < align_index);
+        assert!(script.contains("-set \"sfmImagesOverlap=Low\""));
+        assert!(script.contains("-set \"sfmDetectorSensitivity=Ultra\""));
+        assert!(script.contains("-set \"sfmMaxFeaturesPerMpx=20000\""));
+        assert!(script.contains("-set \"sfmMaxFeaturesPerImage=80000\""));
+        assert!(script.contains("-set \"sfmMaxFeatureReprojectionError=3\""));
+        assert!(script.contains("-set \"sfmForceComponentRematch=true\""));
+        assert!(script.contains("-set \"sfmMergeGeoreferencedComponents=true\""));
+        assert!(script.contains("-set \"sfmEnableCameraPrior=true\""));
+        assert!(script.contains("-set \"sfmCameraPriorAccuracyX=1\""));
+        assert!(script.contains("-set \"sfmCameraPriorAccuracyZ=3\""));
+        assert!(script.contains("-set \"sfmCameraPriorWeight=0.25\""));
+        assert!(script.contains("-set \"sfmCameraPriorWeightOrientation=0.05\""));
+        assert!(script.contains("-editInputSelection \"inpPosePriorRelative=0\""));
+        assert!(script.contains("-editInputSelection \"inpPriorAccuracyInh=1\""));
+        assert!(script.contains("-editInputSelection \"inpuTx=1\""));
+        assert!(script.contains("-editInputSelection \"inpuTz=3\""));
+        assert!(script.contains("-editInputSelection \"inpuRx=45\""));
     }
 
     #[test]
@@ -2443,6 +2708,7 @@ mod tests {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2469,6 +2735,7 @@ mod tests {
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         };
 
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
@@ -2477,9 +2744,8 @@ mod tests {
         assert!(launcher.contains(r#"<entry key="exportOrthoAsBigTiff" value="true"/>"#));
         assert!(launcher.contains(r#"<entry key="exportProjectionParametersFile" value="true"/>"#));
         assert!(launcher.contains(r#"<entry key="orthoPixelSize" value="0.05"/>"#));
-        assert!(launcher.contains(
-            "-headless -silent 'Z:\\job\\logs\\realityscan-crash-reports' -stdConsole"
-        ));
+        assert!(launcher
+            .contains("-headless -silent 'Z:\\job\\logs\\realityscan-crash-reports' -stdConsole"));
         assert!(launcher.contains("-execRSCMD 'Z:\\job\\work\\commands.rscmd'"));
         assert!(script.contains(
             "-exportOrthoProjection \"Z:\\job\\outputs\\seaforth-5cm-orthomosaic.tif\" \"Z:\\job\\outputs\\export-ortho-config.xml\""
@@ -2518,6 +2784,7 @@ mod tests {
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
+            alignment_settings: None,
         };
 
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
@@ -2566,13 +2833,13 @@ mod tests {
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
+            alignment_settings: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
 
-        assert!(
-            script.contains("-exportReconstructionRegion \"Z:\\job\\outputs\\auto-ortho-region.rsbox\"")
-        );
+        assert!(script
+            .contains("-exportReconstructionRegion \"Z:\\job\\outputs\\auto-ortho-region.rsbox\""));
         assert!(script.contains("-scaleReconstructionRegion 10 12 3 center absolute"));
         assert!(script.contains(
             "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\auto-ortho-region.rsbox\""
@@ -2604,6 +2871,7 @@ mod tests {
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();
@@ -2658,6 +2926,7 @@ mod tests {
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
+            alignment_settings: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();
