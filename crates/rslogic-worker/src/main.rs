@@ -1308,6 +1308,11 @@ fn has_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn uses_auto_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
+    has_ortho_projection_params(pipeline)
+        && effective_stages(pipeline).contains(&RealityScanStage::SetReconstructionRegionAuto)
+}
+
 fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
     let Some(raw_xml) = pipeline.ortho_projection_params_xml.as_deref() else {
         return Ok(None);
@@ -1462,6 +1467,15 @@ fn realityscan_stage_commands(
         RealityScanStage::SetIntrinsics => realityscan_intrinsics_commands(manifest),
         RealityScanStage::Align => Ok(vec!["-align".to_string()]),
         RealityScanStage::SelectMaximalComponent => Ok(vec!["-selectMaximalComponent".to_string()]),
+        RealityScanStage::SetReconstructionRegionAuto if uses_auto_ortho_region_box(pipeline) => {
+            Ok(vec![
+                "-setReconstructionRegionAuto".to_string(),
+                format!(
+                    "-exportReconstructionRegion {}",
+                    rscmd_quote("Z:\\job\\outputs\\auto-ortho-region.rsbox")
+                ),
+            ])
+        }
         RealityScanStage::SetReconstructionRegionAuto => {
             Ok(vec!["-setReconstructionRegionAuto".to_string()])
         }
@@ -1470,10 +1484,15 @@ fn realityscan_stage_commands(
         RealityScanStage::CalculateHighModel => Ok(vec!["-calculateHighModel".to_string()]),
         RealityScanStage::CalculateTexture => Ok(vec!["-calculateTexture".to_string()]),
         RealityScanStage::CalculateOrthoProjection if has_ortho_projection_params(pipeline) => {
-            Ok(vec![format!(
+            let mut command = format!(
                 "-calculateOrthoProjection {}",
                 rscmd_quote("Z:\\job\\outputs\\calculate-ortho.rsortho")
-            )])
+            );
+            if uses_auto_ortho_region_box(pipeline) {
+                command.push(' ');
+                command.push_str(&rscmd_quote("Z:\\job\\outputs\\auto-ortho-region.rsbox"));
+            }
+            Ok(vec![command])
         }
         RealityScanStage::CalculateOrthoProjection => {
             Ok(vec!["-calculateOrthoProjection".to_string()])
@@ -2476,6 +2495,48 @@ mod tests {
         assert!(!launcher.contains("modelGuid="));
         assert!(!launcher.contains("ownerId="));
         assert!(launcher.contains("cat > /job/outputs/calculate-ortho.rsortho"));
+    }
+
+    #[test]
+    fn realityscan_script_passes_auto_region_box_to_ortho_params() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let ortho_params = r#"<OrthoProjection width="1000" height="1000" name="Ortho projection 1" modelName="Model 1"
+   colorType="aerial mosaicing" projectionType="3" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+<ReconstructionRegion globalCoordinateSystem="+proj=longlat +datum=WGS84 +no_defs"
+   globalCoordinateSystemName="epsg:4326 - GPS (WGS 84)" isGeoreferenced="1" isLatLon="1">
+  <widthHeightDepth>10 12 3</widthHeightDepth>
+  <Header magic="5395016" version="2"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SetReconstructionRegionAuto,
+                RealityScanStage::CalculateNormalModel,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "aerial.rsproj".to_string(),
+            orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: Some(ortho_params.to_string()),
+        };
+
+        let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
+
+        assert!(
+            script.contains("-exportReconstructionRegion \"Z:\\job\\outputs\\auto-ortho-region.rsbox\"")
+        );
+        assert!(script.contains(
+            "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\auto-ortho-region.rsbox\""
+        ));
     }
 
     #[test]
