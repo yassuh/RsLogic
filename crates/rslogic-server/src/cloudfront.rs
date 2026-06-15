@@ -22,7 +22,7 @@ pub enum CloudFrontSignError {
 #[derive(Debug, Clone)]
 pub struct CloudFrontUrlSigner {
     key_pair_id: String,
-    private_key: RsaPrivateKey,
+    signing_key: SigningKey<Sha256>,
 }
 
 impl CloudFrontUrlSigner {
@@ -35,7 +35,7 @@ impl CloudFrontUrlSigner {
             .map_err(|_| CloudFrontSignError::PrivateKey)?;
         Ok(Self {
             key_pair_id: key_pair_id.into(),
-            private_key,
+            signing_key: SigningKey::<Sha256>::new(private_key),
         })
     }
 
@@ -55,8 +55,7 @@ impl CloudFrontUrlSigner {
             }],
         };
         let policy_json = serde_json::to_string(&policy)?;
-        let signing_key = SigningKey::<Sha256>::new(self.private_key.clone());
-        let signature = signing_key.sign(policy_json.as_bytes());
+        let signature = self.signing_key.sign(policy_json.as_bytes());
         let separator = query_separator(resource_url);
         Ok(format!(
             "{resource_url}{separator}Policy={}&Signature={}&Key-Pair-Id={}&Hash-Algorithm=SHA256",
