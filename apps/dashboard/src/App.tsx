@@ -2370,11 +2370,12 @@ function JobsTable({
   onToggleJob: (jobId: string) => void
   headerRight?: import("react").ReactNode
 }) {
+  const runtimeNow = useRuntimeClock()
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col border bg-card">
       <PanelHeader title="jobs" right={headerRight ?? `${jobs.length} known`} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full min-w-[860px] border-collapse text-left text-xs">
+        <table className="w-full min-w-[940px] border-collapse text-left text-xs">
           <thead className="sticky top-0 z-10 bg-muted/40 text-[11px] text-muted-foreground uppercase">
             <tr className="border-b">
               <Th className="w-8" />
@@ -2384,13 +2385,14 @@ function JobsTable({
               <Th>template</Th>
               <Th>inputs</Th>
               <Th>artifacts</Th>
+              <Th>runtime</Th>
               <Th>updated</Th>
             </tr>
           </thead>
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td className="px-3 py-6 text-muted-foreground" colSpan={8}>
+                <td className="px-3 py-6 text-muted-foreground" colSpan={9}>
                   no jobs recorded
                 </td>
               </tr>
@@ -2431,11 +2433,12 @@ function JobsTable({
                       <Td>{jobTemplateLabel(job)}</Td>
                       <Td>{job.job.manifest?.inputs?.length ?? 0}</Td>
                       <Td>{jobArtifacts.length}</Td>
+                      <Td>{formatJobRuntime(job, runtimeNow)}</Td>
                       <Td>{formatDateTime(job.updated_at)}</Td>
                     </tr>
                     {expanded ? (
                       <tr className="border-b bg-muted/10">
-                        <td colSpan={8} className="px-3 py-3">
+                        <td colSpan={9} className="px-3 py-3">
                           <JobDetails
                             job={job}
                             artifacts={jobArtifacts}
@@ -4201,6 +4204,40 @@ function formatClock(value: string) {
     minute: "2-digit",
     second: "2-digit",
   }).format(date)
+}
+
+function useRuntimeClock() {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(interval)
+  }, [])
+  return now
+}
+
+function formatJobRuntime(job: JobRecord, nowMs: number) {
+  const startMs = Date.parse(job.assigned_at)
+  if (Number.isNaN(startMs)) return "-"
+  const completedMs = job.completed_at ? Date.parse(job.completed_at) : NaN
+  const updatedMs = Date.parse(job.updated_at)
+  const endMs = Number.isFinite(completedMs)
+    ? completedMs
+    : isTerminalJobState(job.state) && Number.isFinite(updatedMs)
+      ? updatedMs
+      : nowMs
+  return formatElapsedMilliseconds(Math.max(0, endMs - startMs))
+}
+
+function formatElapsedMilliseconds(milliseconds: number) {
+  const totalSeconds = Math.floor(milliseconds / 1000)
+  const days = Math.floor(totalSeconds / 86_400)
+  const hours = Math.floor((totalSeconds % 86_400) / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
 }
 
 function formatBytes(value?: number | null) {
