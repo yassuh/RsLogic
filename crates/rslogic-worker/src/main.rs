@@ -669,7 +669,7 @@ async fn monitor_realityscan_stdout(
             continue;
         }
 
-        if let Some(completion) = parse_realityscan_completion(&line) {
+        if let Some(completion) = parse_realityscan_completion(&line, &phase_name) {
             if completed_stage_ids.insert(completion.stage_id) {
                 record_phase_fraction(&phase_fraction, completion.phase_fraction);
                 let mut details = realityscan_phase_details(
@@ -969,7 +969,7 @@ struct RealityScanCompletion {
     phase_fraction: f32,
 }
 
-fn parse_realityscan_completion(line: &str) -> Option<RealityScanCompletion> {
+fn parse_realityscan_completion(line: &str, phase_name: &str) -> Option<RealityScanCompletion> {
     let line = line.trim();
     if line.contains("Texturing Model completed") {
         return Some(RealityScanCompletion {
@@ -989,7 +989,9 @@ fn parse_realityscan_completion(line: &str) -> Option<RealityScanCompletion> {
             phase_fraction: 0.88,
         });
     }
-    if line.contains("Saving Project completed") || line.contains("Save Project completed") {
+    if (phase_name == "outputs" || phase_name == "single")
+        && (line.contains("Saving Project completed") || line.contains("Save Project completed"))
+    {
         return Some(RealityScanCompletion {
             stage_id: "save_project",
             phase_fraction: 0.98,
@@ -2246,7 +2248,8 @@ mod tests {
     fn realityscan_completion_is_parsed_from_stdout_line() {
         assert_eq!(
             parse_realityscan_completion(
-                "Exporting Orthographic Projection completed in 0.029 seconds."
+                "Exporting Orthographic Projection completed in 0.029 seconds.",
+                "outputs",
             ),
             Some(RealityScanCompletion {
                 stage_id: "export_ortho_projection",
@@ -2255,7 +2258,8 @@ mod tests {
         );
         assert_eq!(
             parse_realityscan_completion(
-                "Calculating Orthographic Projection completed in 6.060 seconds."
+                "Calculating Orthographic Projection completed in 6.060 seconds.",
+                "outputs",
             ),
             Some(RealityScanCompletion {
                 stage_id: "calculate_ortho_projection",
@@ -2263,8 +2267,19 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_realityscan_completion("Loading Project completed"),
+            parse_realityscan_completion("Loading Project completed", "outputs"),
             None
+        );
+        assert_eq!(
+            parse_realityscan_completion("Saving Project completed in 0.535 seconds.", "align-save"),
+            None
+        );
+        assert_eq!(
+            parse_realityscan_completion("Saving Project completed in 0.535 seconds.", "outputs"),
+            Some(RealityScanCompletion {
+                stage_id: "save_project",
+                phase_fraction: 0.98,
+            })
         );
     }
 

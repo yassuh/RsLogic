@@ -4595,7 +4595,10 @@ function timelineEventPosition(
   rows: TimelineRow[]
 ): TimelineEventPosition | null {
   const rowIds = new Set(rows.map((row) => row.id))
-  const stageId = normalizedTimelineStageId(event.details?.stage_id)
+  const stageId = normalizedTimelineStageId(
+    event.details?.stage_id,
+    event.details?.phase_id
+  )
   const commandStageId = commandTimelineStageId(
     event.details?.command,
     event.details?.phase_id ?? event.details?.stage_id
@@ -4613,11 +4616,18 @@ function timelineEventPosition(
   }
 }
 
-function normalizedTimelineStageId(stageId?: string | null) {
+function normalizedTimelineStageId(
+  stageId?: string | null,
+  phaseId?: string | null
+) {
   switch (stageId) {
     case "feature_detection":
     case "alignment":
       return "align"
+    case "save_project":
+      return phaseId?.includes("outputs") || phaseId?.includes("single")
+        ? "save_project"
+        : null
     case "align-save":
     case "model-save":
     case "outputs":
