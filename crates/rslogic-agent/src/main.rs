@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
@@ -67,6 +68,8 @@ enum WorkerRunOutcome {
     Completed,
     Cancelled,
 }
+
+type SeenJobEvents = Arc<Mutex<HashSet<String>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -582,6 +585,22 @@ async fn run_worker_job(
         .await
         .ok();
 
+    let seen_job_events = Arc::new(Mutex::new(HashSet::new()));
+    let job_events_path = worker_state_dir
+        .join("jobs")
+        .join(&job.job_id)
+        .join("logs")
+        .join("job-events.jsonl");
+    let (job_events_stop_tx, job_events_stop_rx) = oneshot::channel();
+    let mut job_events_stop_tx = Some(job_events_stop_tx);
+    let job_events_task = tokio::spawn(relay_worker_job_events_jsonl(
+        job.job_id.clone(),
+        job_events_path,
+        outbound.clone(),
+        seen_job_events.clone(),
+        job_events_stop_rx,
+    ));
+
     let mut child = TokioCommand::new(&worker_bin)
         .arg("--state-dir")
         .arg(&worker_state_dir)
@@ -601,6 +620,7 @@ async fn run_worker_job(
             "stdout",
             stdout,
             outbound.clone(),
+            seen_job_events.clone(),
         ))
     });
     let stderr_task = child.stderr.take().map(|stderr| {
@@ -609,6 +629,7 @@ async fn run_worker_job(
             "stderr",
             stderr,
             outbound.clone(),
+            seen_job_events.clone(),
         ))
     });
 
@@ -636,6 +657,10 @@ async fn run_worker_job(
             if let Some(task) = stderr_task {
                 let _ = task.await;
             }
+            if let Some(stop_tx) = job_events_stop_tx.take() {
+                let _ = stop_tx.send(());
+            }
+            let _ = job_events_task.await;
             return Ok(WorkerRunOutcome::Cancelled);
         }
     };
@@ -645,6 +670,10 @@ async fn run_worker_job(
     if let Some(task) = stderr_task {
         let _ = task.await;
     }
+    if let Some(stop_tx) = job_events_stop_tx.take() {
+        let _ = stop_tx.send(());
+    }
+    let _ = job_events_task.await;
     if !status.success() {
         return Err(anyhow!("worker exited with status {status}"));
     }
@@ -656,6 +685,7 @@ async fn stream_worker_lines<R>(
     stream: &'static str,
     reader: R,
     outbound: mpsc::Sender<ClientEvent>,
+    seen_job_events: SeenJobEvents,
 ) -> anyhow::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -664,7 +694,7 @@ where
     while let Some(line) = lines.next_line().await? {
         if stream == "stdout" {
             if let Some(event) = client_event_from_worker_stdout(&line) {
-                outbound.send(event).await.ok();
+                forward_client_event(event, &outbound, &seen_job_events).await;
                 continue;
             }
         }
@@ -678,6 +708,80 @@ where
             .ok();
     }
     Ok(())
+}
+
+async fn relay_worker_job_events_jsonl(
+    job_id: String,
+    path: PathBuf,
+    outbound: mpsc::Sender<ClientEvent>,
+    seen_job_events: SeenJobEvents,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    let mut interval = time::interval(Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => {
+                relay_job_events_from_file(&job_id, &path, &outbound, &seen_job_events).await;
+                break;
+            }
+            _ = interval.tick() => {
+                relay_job_events_from_file(&job_id, &path, &outbound, &seen_job_events).await;
+            }
+        }
+    }
+}
+
+async fn relay_job_events_from_file(
+    job_id: &str,
+    path: &Path,
+    outbound: &mpsc::Sender<ClientEvent>,
+    seen_job_events: &SeenJobEvents,
+) {
+    let raw = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            warn!(job_id, path = %path.display(), %error, "failed to read worker job event log");
+            return;
+        }
+    };
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let event = match serde_json::from_str::<JobEvent>(line) {
+            Ok(event) => event,
+            Err(error) => {
+                warn!(job_id, path = %path.display(), %error, "failed to parse worker job event log line");
+                continue;
+            }
+        };
+        if event.job_id != job_id {
+            continue;
+        }
+        forward_client_event(ClientEvent::JobEvent { event }, outbound, seen_job_events).await;
+    }
+}
+
+async fn forward_client_event(
+    event: ClientEvent,
+    outbound: &mpsc::Sender<ClientEvent>,
+    seen_job_events: &SeenJobEvents,
+) {
+    let should_forward = match &event {
+        ClientEvent::JobEvent { event } => {
+            let signature = job_event_signature(event);
+            seen_job_events.lock().await.insert(signature)
+        }
+        _ => true,
+    };
+    if should_forward {
+        outbound.send(event).await.ok();
+    }
+}
+
+fn job_event_signature(event: &JobEvent) -> String {
+    format!(
+        "{}|{}|{:?}|{}|{}",
+        event.job_id, event.observed_at, event.state, event.progress, event.message
+    )
 }
 
 fn client_event_from_worker_stdout(line: &str) -> Option<ClientEvent> {
@@ -866,10 +970,7 @@ fn cpu_counters() -> Option<Vec<CpuCounters>> {
 }
 
 fn parse_cpu_counters(raw: &str) -> Option<Vec<CpuCounters>> {
-    let counters: Vec<CpuCounters> = raw
-        .lines()
-        .filter_map(parse_cpu_counter_line)
-        .collect();
+    let counters: Vec<CpuCounters> = raw.lines().filter_map(parse_cpu_counter_line).collect();
     if counters.is_empty() {
         None
     } else {
@@ -1070,6 +1171,37 @@ mod tests {
         let parsed = client_event_from_worker_stdout(&line).unwrap();
 
         assert_eq!(parsed, ClientEvent::ArtifactUploaded { artifact });
+    }
+
+    #[tokio::test]
+    async fn job_events_jsonl_relay_forwards_unseen_events_once() {
+        let dir =
+            std::env::temp_dir().join(format!("rslogic-agent-job-events-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("job-events.jsonl");
+        let event = JobEvent {
+            job_id: "job-1".to_string(),
+            state: rslogic_protocol::JobState::RunningRealityscan,
+            message: "RealityScan model-save: heartbeat".to_string(),
+            progress: 42.0,
+            observed_at: now(),
+            details: None,
+        };
+        tokio::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .await
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let seen = Arc::new(Mutex::new(HashSet::new()));
+
+        relay_job_events_from_file("job-1", &path, &tx, &seen).await;
+        relay_job_events_from_file("job-1", &path, &tx, &seen).await;
+
+        assert_eq!(rx.recv().await.unwrap(), ClientEvent::JobEvent { event });
+        assert!(rx.try_recv().is_err());
+        tokio::fs::remove_dir_all(&dir).await.ok();
     }
 
     #[test]

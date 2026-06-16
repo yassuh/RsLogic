@@ -11,7 +11,7 @@ use anyhow::Context;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        DefaultBodyLimit, Path, Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -38,6 +38,8 @@ use tokio::{sync::broadcast, time};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
+
+const ADMIN_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -204,6 +206,10 @@ struct JobTemplate {
     description: String,
     stages: Vec<RealityScanStage>,
     project_filename: String,
+    #[serde(default)]
+    resume_source_job_id: Option<String>,
+    #[serde(default)]
+    resume_project_filename: Option<String>,
     orthomosaic_filename: Option<String>,
     #[serde(default)]
     ortho_pixel_size_meters: Option<f64>,
@@ -213,6 +219,8 @@ struct JobTemplate {
     ortho_projection_params_xml: Option<String>,
     #[serde(default)]
     alignment_settings: Option<RealityScanAlignmentSettings>,
+    #[serde(default)]
+    print_progress_interval_seconds: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -403,6 +411,7 @@ fn router(state: AppState) -> Router {
         .route("/api/admin/job-events", get(list_job_events))
         .route("/api/admin/artifacts", get(list_artifacts))
         .route("/api/clients/:client_id/connect", get(client_websocket))
+        .layer(DefaultBodyLimit::max(ADMIN_BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -779,11 +788,14 @@ async fn build_job_from_imagery(
             template_id: template.template_id,
             stages: template.stages,
             project_filename: template.project_filename,
+            resume_source_job_id: template.resume_source_job_id,
+            resume_project_filename: template.resume_project_filename,
             orthomosaic_filename: template.orthomosaic_filename,
             ortho_pixel_size_meters: template.ortho_pixel_size_meters,
             ortho_render_method: template.ortho_render_method,
             ortho_projection_params_xml: template.ortho_projection_params_xml,
             alignment_settings: template.alignment_settings,
+            print_progress_interval_seconds: template.print_progress_interval_seconds,
         },
     };
 
@@ -831,11 +843,14 @@ fn job_templates() -> Vec<JobTemplate> {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "preview-ortho.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         },
         JobTemplate {
             template_id: "align_normal_orthomosaic".to_string(),
@@ -855,11 +870,14 @@ fn job_templates() -> Vec<JobTemplate> {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "normal-orthomosaic.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: Some("orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         },
         JobTemplate {
             template_id: "align_only".to_string(),
@@ -872,11 +890,14 @@ fn job_templates() -> Vec<JobTemplate> {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         },
     ]
 }
@@ -1516,16 +1537,20 @@ async fn persist_job_event(
         .store
         .record_job_event(client_id, event.clone())
         .await?;
-    if let Some(studio) = &state.studio {
-        if let Err(error) = studio.record_job_event(client_id, event).await {
-            warn!(
-                client_id,
-                job_id = %event.job_id,
-                state = ?event.state,
-                %error,
-                "failed to write job event to Studio API"
-            );
-        }
+    if let Some(studio) = state.studio.clone() {
+        let client_id = client_id.to_string();
+        let event = event.clone();
+        tokio::spawn(async move {
+            if let Err(error) = studio.record_job_event(&client_id, &event).await {
+                warn!(
+                    client_id,
+                    job_id = %event.job_id,
+                    state = ?event.state,
+                    %error,
+                    "failed to write job event to Studio API"
+                );
+            }
+        });
     }
     Ok(())
 }
@@ -1539,16 +1564,20 @@ async fn persist_uploaded_artifact(
         .store
         .record_uploaded_artifact(client_id, artifact.clone())
         .await?;
-    if let Some(studio) = &state.studio {
-        if let Err(error) = studio.record_uploaded_artifact(client_id, artifact).await {
-            warn!(
-                client_id,
-                job_id = %artifact.job_id,
-                artifact_id = %artifact.artifact_id,
-                %error,
-                "failed to write uploaded artifact to Studio API"
-            );
-        }
+    if let Some(studio) = state.studio.clone() {
+        let client_id = client_id.to_string();
+        let artifact = artifact.clone();
+        tokio::spawn(async move {
+            if let Err(error) = studio.record_uploaded_artifact(&client_id, &artifact).await {
+                warn!(
+                    client_id,
+                    job_id = %artifact.job_id,
+                    artifact_id = %artifact.artifact_id,
+                    %error,
+                    "failed to write uploaded artifact to Studio API"
+                );
+            }
+        });
     }
     Ok(())
 }

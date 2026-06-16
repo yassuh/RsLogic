@@ -153,6 +153,7 @@ async fn run_pipeline_job(args: &Args, job: PipelineJob) -> anyhow::Result<()> {
     )
     .await?;
     download_inputs(&http, &job.manifest, &job_dir, &args.state_dir).await?;
+    materialize_resume_project(&job.job_id, &job.pipeline, &job_dir, &args.state_dir).await?;
     run_realityscan(args, &job, &job_dir).await?;
     let outputs = collect_outputs(&job, &job_dir).await?;
     upload_outputs(&http, &job, &job_dir, &outputs).await?;
@@ -173,6 +174,101 @@ async fn prepare_job_dir(job_dir: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(job_dir.join("work")).await?;
     fs::create_dir_all(job_dir.join("outputs")).await?;
     fs::create_dir_all(job_dir.join("logs")).await?;
+    Ok(())
+}
+
+async fn materialize_resume_project(
+    job_id: &str,
+    pipeline: &RealityScanPipeline,
+    job_dir: &Path,
+    state_dir: &Path,
+) -> anyhow::Result<()> {
+    let Some(source_job_id) = pipeline.resume_source_job_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(project_filename) = pipeline.resume_project_filename.as_deref() else {
+        anyhow::bail!("resume_project_filename is required when resume_source_job_id is set");
+    };
+    validate_job_id_fragment(source_job_id)?;
+    validate_output_filename(project_filename)?;
+
+    let source_outputs = state_dir.join("jobs").join(source_job_id).join("outputs");
+    let target_outputs = job_dir.join("outputs");
+    let source_project = source_outputs.join(project_filename);
+    let target_project = target_outputs.join(project_filename);
+    if !source_project.is_file() {
+        anyhow::bail!("resume project {} was not found", source_project.display());
+    }
+
+    copy_file_if_changed(&source_project, &target_project).await?;
+
+    if let Some(stem) = Path::new(project_filename)
+        .file_stem()
+        .and_then(|value| value.to_str())
+    {
+        let source_sidecar = source_outputs.join(stem);
+        if source_sidecar.is_dir() {
+            let target_sidecar = target_outputs.join(stem);
+            copy_dir_recursive(&source_sidecar, &target_sidecar).await?;
+        }
+    }
+
+    emit(
+        job_dir,
+        job_id,
+        JobState::Staging,
+        &format!("staged resume project from job {source_job_id}"),
+        32.0,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn validate_job_id_fragment(value: &str) -> anyhow::Result<()> {
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        anyhow::bail!("invalid resume_source_job_id");
+    }
+    Ok(())
+}
+
+async fn copy_file_if_changed(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if let (Ok(source_meta), Ok(target_meta)) =
+        (fs::metadata(source).await, fs::metadata(target).await)
+    {
+        if source_meta.len() == target_meta.len() {
+            return Ok(());
+        }
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::copy(source, target)
+        .await
+        .with_context(|| format!("copying {} to {}", source.display(), target.display()))?;
+    Ok(())
+}
+
+async fn copy_dir_recursive(source: &Path, target: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(target).await?;
+    let mut entries = fs::read_dir(source).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = entry.metadata().await?;
+        if metadata.is_dir() {
+            Box::pin(copy_dir_recursive(&source_path, &target_path)).await?;
+        } else if metadata.is_file() {
+            copy_file_if_changed(&source_path, &target_path).await?;
+        }
+    }
     Ok(())
 }
 
@@ -946,9 +1042,11 @@ fn should_emit_realityscan_command(command: &str) -> bool {
             | "align"
             | "selectMaximalComponent"
             | "setReconstructionRegionAuto"
+            | "setReconstructionRegionByDensity"
             | "calculatePreviewModel"
             | "calculateNormalModel"
             | "calculateHighModel"
+            | "correctColors"
             | "calculateTexture"
             | "calculateOrthoProjection"
             | "exportOrthoProjection"
@@ -975,6 +1073,15 @@ fn parse_realityscan_completion(line: &str, phase_name: &str) -> Option<RealityS
         return Some(RealityScanCompletion {
             stage_id: "calculate_texture",
             phase_fraction: 0.35,
+        });
+    }
+    if line.contains("Color correction completed")
+        || line.contains("Correcting colors completed")
+        || line.contains("Correct Colors completed")
+    {
+        return Some(RealityScanCompletion {
+            stage_id: "correct_colors",
+            phase_fraction: 0.68,
         });
     }
     if line.contains("Calculating Orthographic Projection completed") {
@@ -1008,7 +1115,9 @@ fn command_progress_hint(command: &str) -> f32 {
         "align" => 0.36,
         "selectMaximalComponent" => 0.84,
         "setReconstructionRegionAuto" => 0.10,
+        "setReconstructionRegionByDensity" => 0.12,
         "calculatePreviewModel" | "calculateNormalModel" | "calculateHighModel" => 0.42,
+        "correctColors" => 0.62,
         "calculateTexture" => 0.18,
         "calculateOrthoProjection" => 0.52,
         "exportOrthoProjection" => 0.78,
@@ -1024,9 +1133,11 @@ fn realityscan_command_stage_id(command: &str, phase_name: &str) -> Option<&'sta
         "addFolder" | "align" => Some("align"),
         "selectMaximalComponent" => Some("select_maximal_component"),
         "setReconstructionRegionAuto" => Some("set_reconstruction_region_auto"),
+        "setReconstructionRegionByDensity" => Some("set_reconstruction_region_by_density"),
         "calculatePreviewModel" => Some("calculate_preview_model"),
         "calculateNormalModel" => Some("calculate_normal_model"),
         "calculateHighModel" => Some("calculate_high_model"),
+        "correctColors" => Some("correct_colors"),
         "calculateTexture" => Some("calculate_texture"),
         "calculateOrthoProjection" => Some("calculate_ortho_projection"),
         "exportOrthoProjection" => Some("export_ortho_projection"),
@@ -1079,8 +1190,13 @@ fn realityscan_phases(
     manifest: &JobInputManifest,
 ) -> anyhow::Result<Vec<RealityScanPhase>> {
     let stages = effective_stages(pipeline);
-    let should_split =
-        stages.iter().any(is_split_trigger_stage) && stages.iter().any(is_alignment_stage);
+    let has_alignment_stage = stages.iter().any(is_alignment_stage);
+    let resume_project = pipeline.resume_project_filename.as_deref();
+    if resume_project.is_some() && has_alignment_stage {
+        anyhow::bail!("resume_project_filename cannot be used with alignment stages");
+    }
+    let should_split = stages.iter().any(is_split_trigger_stage)
+        && (has_alignment_stage || resume_project.is_some());
     if !should_split {
         return Ok(vec![RealityScanPhase {
             name: "single".to_string(),
@@ -1089,27 +1205,30 @@ fn realityscan_phases(
     }
 
     let mut phases = Vec::new();
-    let mut align_commands = vec!["-newScene".to_string()];
-    align_commands.extend(realityscan_alignment_setting_commands(pipeline));
-    align_commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
-    for stage in stages.iter().filter(|stage| is_alignment_stage(stage)) {
-        align_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
-    }
-    align_commands.push(save_project_command("aligned.rsproj"));
-    align_commands.push("-quit".to_string());
-    phases.push(RealityScanPhase {
-        name: "align-save".to_string(),
-        commands: align_commands,
-    });
+    let mut latest_project = if has_alignment_stage {
+        let mut align_commands = new_scene_commands(pipeline);
+        for stage in stages.iter().filter(|stage| is_alignment_stage(stage)) {
+            align_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
+        }
+        align_commands.push(save_project_command("aligned.rsproj"));
+        align_commands.push("-quit".to_string());
+        phases.push(RealityScanPhase {
+            name: "align-save".to_string(),
+            commands: align_commands,
+        });
+        "aligned.rsproj"
+    } else {
+        resume_project.expect("resume project checked by should_split")
+    };
 
     let mut model_stage_commands = Vec::new();
     for stage in stages.iter().filter(|stage| is_model_stage(stage)) {
         model_stage_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
     }
     let has_output_stage = stages.iter().any(is_output_stage);
-    let mut latest_project = "aligned.rsproj";
     if !model_stage_commands.is_empty() {
         let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(print_progress_commands(pipeline));
         commands.extend(model_stage_commands);
         if has_output_stage {
             commands.push(save_project_command("modeled.rsproj"));
@@ -1128,6 +1247,7 @@ fn realityscan_phases(
     }
     if !output_stage_commands.is_empty() {
         let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(print_progress_commands(pipeline));
         commands.extend(output_stage_commands);
         commands.push("-quit".to_string());
         phases.push(RealityScanPhase {
@@ -1152,14 +1272,34 @@ fn combined_realityscan_commands(
     manifest: &JobInputManifest,
     stages: &[RealityScanStage],
 ) -> anyhow::Result<Vec<String>> {
-    let mut commands = vec!["-newScene".to_string()];
-    commands.extend(realityscan_alignment_setting_commands(pipeline));
-    commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
+    let mut commands = if let Some(project_filename) = pipeline.resume_project_filename.as_deref() {
+        if stages.iter().any(is_alignment_stage) {
+            anyhow::bail!("resume_project_filename cannot be used with alignment stages");
+        }
+        vec![load_project_command(project_filename)]
+    } else {
+        new_scene_commands(pipeline)
+    };
+    commands.extend(print_progress_commands(pipeline));
     for stage in stages {
         commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
     }
     commands.push("-quit".to_string());
     Ok(commands)
+}
+
+fn new_scene_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
+    let mut commands = vec!["-newScene".to_string()];
+    commands.extend(realityscan_alignment_setting_commands(pipeline));
+    commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
+    commands
+}
+
+fn print_progress_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
+    match pipeline.print_progress_interval_seconds {
+        Some(seconds) if seconds > 0 => vec![format!("-printProgress {seconds}")],
+        _ => Vec::new(),
+    }
 }
 
 fn is_alignment_stage(stage: &RealityScanStage) -> bool {
@@ -1175,9 +1315,11 @@ fn is_model_stage(stage: &RealityScanStage) -> bool {
     matches!(
         stage,
         RealityScanStage::SetReconstructionRegionAuto
+            | RealityScanStage::SetReconstructionRegionByDensity
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
+            | RealityScanStage::CorrectColors
     )
 }
 
@@ -1316,6 +1458,21 @@ fn has_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
 fn uses_auto_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
     has_ortho_projection_params(pipeline)
         && effective_stages(pipeline).contains(&RealityScanStage::SetReconstructionRegionAuto)
+}
+
+fn uses_density_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
+    has_ortho_projection_params(pipeline)
+        && effective_stages(pipeline).contains(&RealityScanStage::SetReconstructionRegionByDensity)
+}
+
+fn ortho_region_box_path(pipeline: &RealityScanPipeline) -> Option<&'static str> {
+    if uses_auto_ortho_region_box(pipeline) {
+        Some("Z:\\job\\outputs\\auto-ortho-region.rsbox")
+    } else if uses_density_ortho_region_box(pipeline) {
+        Some("Z:\\job\\outputs\\density-ortho-region.rsbox")
+    } else {
+        None
+    }
 }
 
 fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
@@ -1512,18 +1669,33 @@ fn realityscan_stage_commands(
         RealityScanStage::SetReconstructionRegionAuto => {
             Ok(vec!["-setReconstructionRegionAuto".to_string()])
         }
+        RealityScanStage::SetReconstructionRegionByDensity
+            if has_ortho_projection_params(pipeline) =>
+        {
+            Ok(vec![
+                "-setReconstructionRegionByDensity".to_string(),
+                format!(
+                    "-exportReconstructionRegion {}",
+                    rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
+                ),
+            ])
+        }
+        RealityScanStage::SetReconstructionRegionByDensity => {
+            Ok(vec!["-setReconstructionRegionByDensity".to_string()])
+        }
         RealityScanStage::CalculatePreviewModel => Ok(vec!["-calculatePreviewModel".to_string()]),
         RealityScanStage::CalculateNormalModel => Ok(vec!["-calculateNormalModel".to_string()]),
         RealityScanStage::CalculateHighModel => Ok(vec!["-calculateHighModel".to_string()]),
+        RealityScanStage::CorrectColors => Ok(vec!["-correctColors".to_string()]),
         RealityScanStage::CalculateTexture => Ok(vec!["-calculateTexture".to_string()]),
         RealityScanStage::CalculateOrthoProjection if has_ortho_projection_params(pipeline) => {
             let mut command = format!(
                 "-calculateOrthoProjection {}",
                 rscmd_quote("Z:\\job\\outputs\\calculate-ortho.rsortho")
             );
-            if uses_auto_ortho_region_box(pipeline) {
+            if let Some(region_box_path) = ortho_region_box_path(pipeline) {
                 command.push(' ');
-                command.push_str(&rscmd_quote("Z:\\job\\outputs\\auto-ortho-region.rsbox"));
+                command.push_str(&rscmd_quote(region_box_path));
             }
             Ok(vec![command])
         }
@@ -2563,11 +2735,14 @@ mod tests {
             template_id: "test".to_string(),
             stages: vec![RealityScanStage::SetIntrinsics, RealityScanStage::Align],
             project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2599,6 +2774,8 @@ mod tests {
             template_id: "aggressive".to_string(),
             stages: vec![RealityScanStage::Align],
             project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -2633,6 +2810,7 @@ mod tests {
                 input_pitch_accuracy: Some(45.0),
                 input_roll_accuracy: Some(45.0),
             }),
+            print_progress_interval_seconds: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2705,11 +2883,14 @@ mod tests {
             template_id: "test".to_string(),
             stages: vec![RealityScanStage::SetIntrinsics, RealityScanStage::Align],
             project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2732,11 +2913,14 @@ mod tests {
             template_id: "test".to_string(),
             stages: vec![RealityScanStage::ExportOrthoProjection],
             project_filename: "ortho.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: Some("seaforth-5cm-orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
@@ -2781,11 +2965,14 @@ mod tests {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aerial.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
@@ -2830,11 +3017,14 @@ mod tests {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aerial.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
@@ -2868,11 +3058,14 @@ mod tests {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "final.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: Some("ortho.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();
@@ -2923,11 +3116,14 @@ mod tests {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         };
 
         let phases = realityscan_phases(&pipeline, &manifest).unwrap();
@@ -2937,6 +3133,137 @@ mod tests {
         assert!(phases[0]
             .commands
             .contains(&"-save \"Z:\\job\\outputs\\aligned.rsproj\"".to_string()));
+    }
+
+    #[test]
+    fn realityscan_resume_project_runs_density_normal_color_and_outputs() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let ortho_params = r#"<OrthoProjection width="1000" height="1000" name="Ortho projection 1" modelName="Model 1"
+   colorType="aerial mosaicing" projectionType="3" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+<ReconstructionRegion globalCoordinateSystem="+proj=longlat +datum=WGS84 +no_defs"
+   globalCoordinateSystemName="epsg:4326 - GPS (WGS 84)" isGeoreferenced="1" isLatLon="1">
+  <widthHeightDepth>1490.13422254291 6520.2009561944 213.254882812728</widthHeightDepth>
+  <Header magic="5395016" version="2"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "resume-density-normal-color-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculateNormalModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "density-normal-color-aerial.rsproj".to_string(),
+            resume_source_job_id: Some("08fb2ede-481d-4b89-821f-52a726185643".to_string()),
+            resume_project_filename: Some("aligned.rsproj".to_string()),
+            orthomosaic_filename: Some("density-normal-color-aerial.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: Some(ortho_params.to_string()),
+            alignment_settings: None,
+            print_progress_interval_seconds: Some(60),
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "model-save");
+        assert_eq!(
+            phases[0].commands[0],
+            "-load \"Z:\\job\\outputs\\aligned.rsproj\" deleteAutosave"
+        );
+        assert!(phases[0]
+            .commands
+            .contains(&"-printProgress 60".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-setReconstructionRegionByDensity".to_string()));
+        assert!(phases[0].commands.contains(&format!(
+            "-exportReconstructionRegion {}",
+            rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
+        )));
+        assert!(phases[0]
+            .commands
+            .contains(&"-calculateNormalModel".to_string()));
+        assert!(phases[0].commands.contains(&"-correctColors".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
+        assert_eq!(phases[1].name, "outputs");
+        assert_eq!(
+            phases[1].commands[0],
+            "-load \"Z:\\job\\outputs\\modeled.rsproj\" deleteAutosave"
+        );
+        assert!(phases[1].commands.iter().any(|command| command.contains(
+            "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\density-ortho-region.rsbox\""
+        )));
+        assert!(phases[1].commands.iter().any(|command| command.contains(
+            "-exportOrthoProjection \"Z:\\job\\outputs\\density-normal-color-aerial.tif\""
+        )));
+        assert!(phases[1].commands.contains(
+            &"-save \"Z:\\job\\outputs\\density-normal-color-aerial.rsproj\"".to_string()
+        ));
+    }
+
+    #[tokio::test]
+    async fn materialize_resume_project_copies_project_and_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let source_outputs = state_dir.join("jobs").join("source-job").join("outputs");
+        fs::create_dir_all(source_outputs.join("aligned"))
+            .await
+            .unwrap();
+        fs::write(source_outputs.join("aligned.rsproj"), b"project")
+            .await
+            .unwrap();
+        fs::write(
+            source_outputs.join("aligned").join("component.dat"),
+            b"sidecar",
+        )
+        .await
+        .unwrap();
+        let job_dir = temp.path().join("jobs").join("target-job");
+        prepare_job_dir(&job_dir).await.unwrap();
+        let pipeline = RealityScanPipeline {
+            resume_source_job_id: Some("source-job".to_string()),
+            resume_project_filename: Some("aligned.rsproj".to_string()),
+            ..RealityScanPipeline::default()
+        };
+
+        materialize_resume_project("target-job", &pipeline, &job_dir, &state_dir)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read(job_dir.join("outputs").join("aligned.rsproj"))
+                .await
+                .unwrap(),
+            b"project"
+        );
+        assert_eq!(
+            fs::read(
+                job_dir
+                    .join("outputs")
+                    .join("aligned")
+                    .join("component.dat")
+            )
+            .await
+            .unwrap(),
+            b"sidecar"
+        );
+        let events = fs::read_to_string(job_dir.join("logs").join(JOB_EVENTS_LOG))
+            .await
+            .unwrap();
+        assert!(events.contains("\"job_id\":\"target-job\""));
+        assert!(events.contains("staged resume project from job source-job"));
     }
 
     #[tokio::test]

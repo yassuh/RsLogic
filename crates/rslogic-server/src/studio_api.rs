@@ -477,7 +477,10 @@ impl StudioCameraIntrinsicsRow {
         CameraIntrinsics {
             camera_id: self.camera_name,
             calibration_group: None,
-            calibration_prior: nonzero_prior_or_approximate(self.calibration_prior_state, has_calibration),
+            calibration_prior: nonzero_prior_or_approximate(
+                self.calibration_prior_state,
+                has_calibration,
+            ),
             focal_length_35mm: self.focal_length_35mm,
             principal_point_x_mm: self.principal_point_x_mm,
             principal_point_y_mm: self.principal_point_y_mm,

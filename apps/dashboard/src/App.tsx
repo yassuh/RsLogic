@@ -342,9 +342,11 @@ const realityScanStageOrder = [
   "align",
   "select_maximal_component",
   "set_reconstruction_region_auto",
+  "set_reconstruction_region_by_density",
   "calculate_preview_model",
   "calculate_normal_model",
   "calculate_high_model",
+  "correct_colors",
   "calculate_texture",
   "calculate_ortho_projection",
   "export_ortho_projection",
@@ -4488,12 +4490,16 @@ function realityScanStageDetail(stage: string) {
       return "keep largest aligned component"
     case "set_reconstruction_region_auto":
       return "derive reconstruction region"
+    case "set_reconstruction_region_by_density":
+      return "derive region from point cloud density"
     case "calculate_preview_model":
       return "preview mesh reconstruction"
     case "calculate_normal_model":
       return "normal detail reconstruction"
     case "calculate_high_model":
       return "high detail reconstruction"
+    case "correct_colors":
+      return "color balance aligned imagery"
     case "calculate_texture":
       return "texture generation"
     case "calculate_ortho_projection":
@@ -4691,12 +4697,16 @@ function commandTimelineStageId(
       return "select_maximal_component"
     case "setReconstructionRegionAuto":
       return "set_reconstruction_region_auto"
+    case "setReconstructionRegionByDensity":
+      return "set_reconstruction_region_by_density"
     case "calculatePreviewModel":
       return "calculate_preview_model"
     case "calculateNormalModel":
       return "calculate_normal_model"
     case "calculateHighModel":
       return "calculate_high_model"
+    case "correctColors":
+      return "correct_colors"
     case "calculateTexture":
       return "calculate_texture"
     case "calculateOrthoProjection":
@@ -4764,9 +4774,11 @@ function stageIdsForPhase(phaseId: string) {
   if (phaseId.includes("model-save")) {
     return [
       "set_reconstruction_region_auto",
+      "set_reconstruction_region_by_density",
       "calculate_preview_model",
       "calculate_normal_model",
       "calculate_high_model",
+      "correct_colors",
     ]
   }
   if (phaseId.includes("outputs")) {

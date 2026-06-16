@@ -352,6 +352,10 @@ pub struct RealityScanPipeline {
     pub stages: Vec<RealityScanStage>,
     pub project_filename: String,
     #[serde(default)]
+    pub resume_source_job_id: Option<String>,
+    #[serde(default)]
+    pub resume_project_filename: Option<String>,
+    #[serde(default)]
     pub orthomosaic_filename: Option<String>,
     #[serde(default)]
     pub ortho_pixel_size_meters: Option<f64>,
@@ -361,6 +365,8 @@ pub struct RealityScanPipeline {
     pub ortho_projection_params_xml: Option<String>,
     #[serde(default)]
     pub alignment_settings: Option<RealityScanAlignmentSettings>,
+    #[serde(default)]
+    pub print_progress_interval_seconds: Option<u32>,
 }
 
 impl Default for RealityScanPipeline {
@@ -378,11 +384,14 @@ impl Default for RealityScanPipeline {
                 RealityScanStage::SaveProject,
             ],
             project_filename: "preview-ortho.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            print_progress_interval_seconds: None,
         }
     }
 }
@@ -463,9 +472,11 @@ pub enum RealityScanStage {
     Align,
     SelectMaximalComponent,
     SetReconstructionRegionAuto,
+    SetReconstructionRegionByDensity,
     CalculatePreviewModel,
     CalculateNormalModel,
     CalculateHighModel,
+    CorrectColors,
     CalculateTexture,
     CalculateOrthoProjection,
     ExportOrthoProjection,
