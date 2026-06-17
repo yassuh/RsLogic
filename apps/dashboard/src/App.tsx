@@ -333,7 +333,77 @@ type StudioImageAsset = {
 
 type ImageryResponse = {
   image_assets: StudioImageAsset[]
+  total_assets?: number
+  matched_assets?: number
+  returned_assets?: number
+  offset?: number
+  limit?: number
+  next_offset?: number | null
+  refreshed_at?: string
+  cache_age_seconds?: number
 }
+
+type ImageryBoundsSummary = {
+  min_latitude: number
+  max_latitude: number
+  min_longitude: number
+  max_longitude: number
+}
+
+type ImageryGroupSummary = {
+  key: string
+  label: string
+  source: string
+  group_name?: string | null
+  asset_count: number
+  geocoded_count: number
+  size_bytes?: number | null
+  captured_start?: string | null
+  captured_end?: string | null
+  camera_summary?: string | null
+  bounds?: ImageryBoundsSummary | null
+}
+
+type ImageryGroupsResponse = {
+  total_assets: number
+  geocoded_assets: number
+  group_count: number
+  groups: ImageryGroupSummary[]
+  refreshed_at: string
+  cache_age_seconds: number
+}
+
+type ImageryAssetPage = {
+  assets: StudioImageAsset[]
+  totalAssets: number
+  matchedAssets: number
+  returnedAssets: number
+  offset: number
+  limit: number
+  nextOffset: number | null
+  refreshedAt: string | null
+  cacheAgeSeconds: number | null
+}
+
+type ImageryGroupAssetPage = ImageryAssetPage & {
+  loading: boolean
+  error: string | null
+}
+
+const emptyImageryAssetPage: ImageryAssetPage = {
+  assets: [],
+  totalAssets: 0,
+  matchedAssets: 0,
+  returnedAssets: 0,
+  offset: 0,
+  limit: 0,
+  nextOffset: null,
+  refreshedAt: null,
+  cacheAgeSeconds: null,
+}
+
+const imageryMapAssetLimit = 5000
+const imageryGroupAssetLimit = 1000
 
 const savedJobTemplatesStorageKey = "rslogic.dashboard.savedJobTemplates.v1"
 
@@ -403,6 +473,13 @@ export function App() {
   const [clientSource, setClientSource] = useState<ClientSource>("loading")
   const [clientError, setClientError] = useState<string | null>(null)
   const [imageryAssets, setImageryAssets] = useState<StudioImageAsset[]>([])
+  const [imageryAssetPage, setImageryAssetPage] = useState<ImageryAssetPage>(
+    emptyImageryAssetPage
+  )
+  const [imageryGroups, setImageryGroups] = useState<ImageryGroupSummary[]>([])
+  const [imageryGroupAssets, setImageryGroupAssets] = useState<
+    Record<string, ImageryGroupAssetPage>
+  >({})
   const [imagerySource, setImagerySource] = useState<ImagerySource>("idle")
   const [imageryError, setImageryError] = useState<string | null>(null)
   const [streamState, setStreamState] = useState<StreamState>("connecting")
@@ -566,28 +643,114 @@ export function App() {
     }
   }, [])
 
-  const loadImagery = useCallback(async () => {
+  const loadImagery = useCallback(async (refresh = false) => {
     setImagerySource("loading")
     setImageryError(null)
     try {
-      const response = await fetch("/api/admin/imagery/assets", {
-        headers: { Accept: "application/json" },
-      })
-      if (!response.ok) {
-        throw new Error(await apiErrorMessage(response, "studio imagery api"))
+      const refreshParam = refresh ? "?refresh=true" : ""
+      const groupsResponse = await fetch(
+        `/api/admin/imagery/groups${refreshParam}`,
+        {
+          headers: { Accept: "application/json" },
+        }
+      )
+      if (!groupsResponse.ok) {
+        throw new Error(
+          await apiErrorMessage(groupsResponse, "studio imagery groups api")
+        )
       }
-      const payload = (await response.json()) as ImageryResponse
-      const assets = payload.image_assets ?? []
-      setImageryAssets(assets)
-      setImagerySource(assets.length > 0 ? "api" : "api-empty")
+      const groupsPayload =
+        (await groupsResponse.json()) as ImageryGroupsResponse
+      const assetsResponse = await fetch(
+        `/api/admin/imagery/assets?geocoded=true&limit=${imageryMapAssetLimit}`,
+        {
+          headers: { Accept: "application/json" },
+        }
+      )
+      if (!assetsResponse.ok) {
+        throw new Error(
+          await apiErrorMessage(assetsResponse, "studio imagery assets api")
+        )
+      }
+      const assetsPayload = (await assetsResponse.json()) as ImageryResponse
+      const page = imageryAssetPageFromPayload(assetsPayload)
+      setImageryGroups(groupsPayload.groups ?? [])
+      setImageryAssets(page.assets)
+      setImageryAssetPage(page)
+      setImageryGroupAssets({})
+      setImagerySource(
+        groupsPayload.total_assets > 0 || page.assets.length > 0
+          ? "api"
+          : "api-empty"
+      )
     } catch (error) {
       setImageryAssets([])
+      setImageryAssetPage(emptyImageryAssetPage)
+      setImageryGroups([])
+      setImageryGroupAssets({})
       setImagerySource("error")
       setImageryError(
         error instanceof Error ? error.message : "studio api unavailable"
       )
     }
   }, [])
+
+  const loadImageryGroupAssets = useCallback(
+    async (group: ImageryGroupSummary, offset = 0) => {
+      const groupFilter = group.group_name ?? group.label
+      setImageryGroupAssets((current) => ({
+        ...current,
+        [group.key]: {
+          ...(current[group.key] ?? emptyImageryAssetPage),
+          assets: offset > 0 ? (current[group.key]?.assets ?? []) : [],
+          loading: true,
+          error: null,
+        },
+      }))
+      try {
+        const params = new URLSearchParams({
+          group_name: groupFilter,
+          limit: String(imageryGroupAssetLimit),
+          offset: String(offset),
+        })
+        const response = await fetch(`/api/admin/imagery/assets?${params}`, {
+          headers: { Accept: "application/json" },
+        })
+        if (!response.ok) {
+          throw new Error(
+            await apiErrorMessage(response, "studio imagery group assets api")
+          )
+        }
+        const payload = (await response.json()) as ImageryResponse
+        const page = imageryAssetPageFromPayload(payload)
+        setImageryGroupAssets((current) => ({
+          ...current,
+          [group.key]: {
+            ...page,
+            assets:
+              offset > 0
+                ? [...(current[group.key]?.assets ?? []), ...page.assets]
+                : page.assets,
+            loading: false,
+            error: null,
+          },
+        }))
+      } catch (error) {
+        setImageryGroupAssets((current) => ({
+          ...current,
+          [group.key]: {
+            ...(current[group.key] ?? emptyImageryAssetPage),
+            loading: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "group assets unavailable",
+          },
+        }))
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -740,7 +903,7 @@ export function App() {
               onClick={() => {
                 setActiveTab("imagery")
                 if (imagerySource === "idle")
-                  window.setTimeout(() => void loadImagery(), 0)
+                  window.setTimeout(() => void loadImagery(false), 0)
               }}
             />
             <NavButton
@@ -750,7 +913,7 @@ export function App() {
               onClick={() => {
                 setActiveTab("jobs")
                 if (imagerySource === "idle")
-                  window.setTimeout(() => void loadImagery(), 0)
+                  window.setTimeout(() => void loadImagery(false), 0)
                 if (jobTemplates.length === 0)
                   window.setTimeout(() => void loadJobTemplates(), 0)
                 window.setTimeout(() => void loadArtifacts(), 0)
@@ -863,9 +1026,13 @@ export function App() {
               ) : activeTab === "imagery" ? (
                 <ImageryView
                   assets={imageryAssets}
+                  assetPage={imageryAssetPage}
+                  groups={imageryGroups}
+                  groupAssets={imageryGroupAssets}
                   source={imagerySource}
                   error={imageryError}
-                  onRefresh={loadImagery}
+                  onRefresh={() => void loadImagery(true)}
+                  onLoadGroupAssets={loadImageryGroupAssets}
                 />
               ) : activeTab === "jobs" ? (
                 <JobsView
@@ -875,10 +1042,10 @@ export function App() {
                   clients={clients}
                   artifacts={artifacts}
                   templates={jobTemplates}
-                  imageryAssets={imageryAssets}
+                  imageryGroups={imageryGroups}
                   imagerySource={imagerySource}
                   error={jobError}
-                  onLoadImagery={loadImagery}
+                  onLoadImagery={() => void loadImagery(false)}
                   onRefresh={() => {
                     void loadClients()
                     void loadArtifacts()
@@ -1322,11 +1489,7 @@ function ClientDetails({
   )
 }
 
-function CoreUsageGrid({
-  telemetry,
-}: {
-  telemetry?: MachineTelemetry | null
-}) {
+function CoreUsageGrid({ telemetry }: { telemetry?: MachineTelemetry | null }) {
   const cores = coreUsageCells(telemetry)
   const reported = telemetry?.cpu_core_usage_percent?.length ?? 0
   return (
@@ -1358,7 +1521,9 @@ function CoreUsageGrid({
               >
                 <div
                   className={`absolute inset-x-0 bottom-0 transition-[height,background-color,opacity] duration-700 ${
-                    usage === null ? "bg-muted-foreground/20" : coreUsageColor(percent)
+                    usage === null
+                      ? "bg-muted-foreground/20"
+                      : coreUsageColor(percent)
                   }`}
                   style={{ height: `${usage === null ? 14 : percent}%` }}
                 />
@@ -1400,7 +1565,7 @@ function OverviewView({
           clients={clients}
           artifacts={[]}
           templates={[]}
-          imageryAssets={[]}
+          imageryGroups={[]}
           imagerySource="idle"
           error={null}
           onLoadImagery={() => undefined}
@@ -1420,7 +1585,7 @@ function JobsView({
   clients,
   artifacts,
   templates,
-  imageryAssets,
+  imageryGroups,
   imagerySource,
   error,
   onLoadImagery,
@@ -1433,7 +1598,7 @@ function JobsView({
   clients: ApiClientRecord[]
   artifacts: UploadedArtifact[]
   templates: JobTemplate[]
-  imageryAssets: StudioImageAsset[]
+  imageryGroups: ImageryGroupSummary[]
   imagerySource: ImagerySource
   error: string | null
   onLoadImagery: () => void
@@ -1445,8 +1610,12 @@ function JobsView({
     [clients]
   )
   const groupOptions = useMemo(
-    () => uniqueText(imageryAssets.map(frontendAssetGroupName)),
-    [imageryAssets]
+    () => uniqueText(imageryGroups.map(imageryGroupSelectionValue)),
+    [imageryGroups]
+  )
+  const imageryCatalogAssetCount = useMemo(
+    () => imageryGroups.reduce((total, group) => total + group.asset_count, 0),
+    [imageryGroups]
   )
   const artifactsByJob = useMemo(
     () => groupArtifactsByJob(artifacts),
@@ -1906,8 +2075,12 @@ function JobsView({
                     value={imagerySourceLabel(imagerySource)}
                   />
                   <InfoLine
-                    label="assets loaded"
-                    value={String(imageryAssets.length)}
+                    label="catalog assets"
+                    value={formatInteger(imageryCatalogAssetCount)}
+                  />
+                  <InfoLine
+                    label="groups"
+                    value={formatInteger(imageryGroups.length)}
                   />
                   <InfoLine
                     label="selection"
@@ -2790,53 +2963,70 @@ function Field({
 
 function ImageryView({
   assets,
+  assetPage,
+  groups,
+  groupAssets,
   source,
   error,
   onRefresh,
+  onLoadGroupAssets,
 }: {
   assets: StudioImageAsset[]
+  assetPage: ImageryAssetPage
+  groups: ImageryGroupSummary[]
+  groupAssets: Record<string, ImageryGroupAssetPage>
   source: ImagerySource
   error: string | null
   onRefresh: () => void
+  onLoadGroupAssets: (group: ImageryGroupSummary, offset?: number) => void
 }) {
   const geoAssets = useMemo(
     () => assets.filter(imageAssetWithLocation),
     [assets]
   )
-  const assetGroups = useMemo(() => groupImageryAssets(assets), [assets])
+  const loadedGroupAssets = useMemo(
+    () =>
+      Object.values(groupAssets).flatMap((page) => page.assets.filter(Boolean)),
+    [groupAssets]
+  )
+  const selectableAssets = useMemo(
+    () => [...assets, ...loadedGroupAssets],
+    [assets, loadedGroupAssets]
+  )
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[] | null>(
     null
   )
   const effectiveSelectedAssetId =
     selectedAssetId &&
-    assets.some((asset) => assetId(asset) === selectedAssetId)
+    selectableAssets.some((asset) => assetId(asset) === selectedAssetId)
       ? selectedAssetId
       : assets[0]
         ? assetId(geoAssets[0] ?? assets[0])
         : null
   const selectedAsset =
-    assets.find((asset) => assetId(asset) === effectiveSelectedAssetId) ??
+    selectableAssets.find(
+      (asset) => assetId(asset) === effectiveSelectedAssetId
+    ) ??
     geoAssets[0] ??
     assets[0] ??
     null
-  const selectedGroupKey = selectedAsset
-    ? imageAssetGroupIdentity(selectedAsset).key
-    : null
-  const defaultExpandedGroupKeys = selectedGroupKey
-    ? [selectedGroupKey]
-    : assetGroups[0]
-      ? [assetGroups[0].key]
-      : []
+  const defaultExpandedGroupKeys: string[] = []
   const visibleExpandedGroupKeys = expandedGroupKeys ?? defaultExpandedGroupKeys
 
-  const toggleImageGroup = (groupKey: string) => {
+  const toggleImageGroup = (group: ImageryGroupSummary) => {
     setExpandedGroupKeys((current) => {
       const base = current ?? defaultExpandedGroupKeys
-      return base.includes(groupKey)
-        ? base.filter((key) => key !== groupKey)
-        : [...base, groupKey]
+      return base.includes(group.key)
+        ? base.filter((key) => key !== group.key)
+        : [...base, group.key]
     })
+    if (
+      !visibleExpandedGroupKeys.includes(group.key) &&
+      !groupAssets[group.key]
+    ) {
+      onLoadGroupAssets(group)
+    }
   }
 
   return (
@@ -2878,25 +3068,41 @@ function ImageryView({
           <DetailBlock
             title="coverage"
             rows={[
-              ["assets", String(assets.length)],
-              ["geocoded", String(geoAssets.length)],
+              ["catalog_assets", formatInteger(assetPage.totalAssets)],
+              ["map_rows", formatInteger(geoAssets.length)],
               [
                 "missing_geo",
-                String(Math.max(0, assets.length - geoAssets.length)),
+                formatInteger(
+                  Math.max(0, assetPage.totalAssets - assetPage.matchedAssets)
+                ),
               ],
               ["source", imagerySourceLabel(source)],
+              [
+                "loaded",
+                `${formatInteger(assetPage.returnedAssets)} / ${formatInteger(
+                  assetPage.matchedAssets
+                )} map rows`,
+              ],
+              [
+                "catalog",
+                `${formatInteger(assetPage.totalAssets)} assets / ${formatInteger(
+                  groups.length
+                )} groups`,
+              ],
               ["bounds", imageryBoundsLabel(geoAssets)],
             ]}
           />
         </div>
 
         <ImageryGroupsPanel
-          groups={assetGroups}
+          groups={groups}
+          groupAssets={groupAssets}
           source={source}
           selectedAssetId={selectedAsset ? assetId(selectedAsset) : null}
           expandedGroupKeys={visibleExpandedGroupKeys}
           onToggleGroup={toggleImageGroup}
           onSelectAsset={setSelectedAssetId}
+          onLoadGroupAssets={onLoadGroupAssets}
         />
       </div>
 
@@ -2907,26 +3113,31 @@ function ImageryView({
 
 function ImageryGroupsPanel({
   groups,
+  groupAssets,
   source,
   selectedAssetId,
   expandedGroupKeys,
   onToggleGroup,
   onSelectAsset,
+  onLoadGroupAssets,
 }: {
-  groups: ImageryGroup[]
+  groups: ImageryGroupSummary[]
+  groupAssets: Record<string, ImageryGroupAssetPage>
   source: ImagerySource
   selectedAssetId: string | null
   expandedGroupKeys: string[]
-  onToggleGroup: (groupKey: string) => void
+  onToggleGroup: (group: ImageryGroupSummary) => void
   onSelectAsset: (assetId: string) => void
+  onLoadGroupAssets: (group: ImageryGroupSummary, offset?: number) => void
 }) {
   const expanded = new Set(expandedGroupKeys)
+  const totalAssets = groups.reduce((sum, group) => sum + group.asset_count, 0)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-t">
       <PanelHeader
         title="image groups"
-        right={`${groups.length} groups / ${sumGroupAssets(groups)} assets`}
+        right={`${formatInteger(groups.length)} groups / ${formatInteger(totalAssets)} assets`}
       />
       <div
         data-testid="imagery-groups"
@@ -2947,7 +3158,7 @@ function ImageryGroupsPanel({
                   type="button"
                   className="grid w-full grid-cols-[1rem_1fr_auto] items-center gap-2 bg-background/35 px-3 py-2 text-left text-xs hover:bg-muted/30"
                   aria-expanded={isExpanded}
-                  onClick={() => onToggleGroup(group.key)}
+                  onClick={() => onToggleGroup(group)}
                 >
                   {isExpanded ? (
                     <ChevronDown
@@ -2965,67 +3176,124 @@ function ImageryGroupsPanel({
                       {group.label}
                     </span>
                     <span className="block truncate text-[11px] text-muted-foreground">
-                      {group.detail}
+                      {imageryGroupSummaryDetail(group)}
                     </span>
                   </span>
                   <span className="text-[11px] text-muted-foreground">
-                    {group.assets.length}
+                    {formatInteger(group.asset_count)}
                   </span>
                 </button>
 
                 {isExpanded ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[820px] border-collapse text-left text-xs">
-                      <thead className="bg-muted/25 text-[11px] text-muted-foreground uppercase">
-                        <tr className="border-y">
-                          <Th>asset</Th>
-                          <Th>captured</Th>
-                          <Th>lat</Th>
-                          <Th>lon</Th>
-                          <Th>camera</Th>
-                          <Th>size</Th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {group.assets.map((asset, index) => {
-                          const id = assetId(asset)
-                          const selected = selectedAssetId === id
-                          return (
-                            <tr
-                              key={`${id}-${index}`}
-                              className={`cursor-pointer border-b last:border-b-0 hover:bg-muted/25 ${
-                                selected ? "bg-primary/10" : ""
-                              }`}
-                              tabIndex={0}
-                              onClick={() => onSelectAsset(id)}
-                              onKeyDown={(event) => {
-                                if (
-                                  event.key === "Enter" ||
-                                  event.key === " "
-                                ) {
-                                  onSelectAsset(id)
-                                }
-                              }}
-                            >
-                              <Td className="font-medium">
-                                {assetFilename(asset)}
-                              </Td>
-                              <Td>{formatDateTime(asset.captured_at)}</Td>
-                              <Td>{formatCoordinate(asset.latitude)}</Td>
-                              <Td>{formatCoordinate(asset.longitude)}</Td>
-                              <Td>{cameraLabel(asset)}</Td>
-                              <Td>{formatFileBytes(assetFileSize(asset))}</Td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                  <ImageryGroupAssetTable
+                    group={group}
+                    page={groupAssets[group.key]}
+                    selectedAssetId={selectedAssetId}
+                    onSelectAsset={onSelectAsset}
+                    onLoadMore={() =>
+                      onLoadGroupAssets(
+                        group,
+                        groupAssets[group.key]?.nextOffset ?? 0
+                      )
+                    }
+                  />
                 ) : null}
               </section>
             )
           })
         )}
+      </div>
+    </div>
+  )
+}
+
+function ImageryGroupAssetTable({
+  group,
+  page,
+  selectedAssetId,
+  onSelectAsset,
+  onLoadMore,
+}: {
+  group: ImageryGroupSummary
+  page?: ImageryGroupAssetPage
+  selectedAssetId: string | null
+  onSelectAsset: (assetId: string) => void
+  onLoadMore: () => void
+}) {
+  if (!page || (page.loading && page.assets.length === 0)) {
+    return (
+      <div className="border-t px-3 py-4 text-xs text-muted-foreground">
+        loading {group.label} assets
+      </div>
+    )
+  }
+
+  if (page.error) {
+    return (
+      <div className="border-t px-3 py-4 text-xs text-destructive">
+        {page.error}
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[820px] border-collapse text-left text-xs">
+        <thead className="bg-muted/25 text-[11px] text-muted-foreground uppercase">
+          <tr className="border-y">
+            <Th>asset</Th>
+            <Th>captured</Th>
+            <Th>lat</Th>
+            <Th>lon</Th>
+            <Th>camera</Th>
+            <Th>size</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {page.assets.map((asset, index) => {
+            const id = assetId(asset)
+            const selected = selectedAssetId === id
+            return (
+              <tr
+                key={`${id}-${index}`}
+                className={`cursor-pointer border-b last:border-b-0 hover:bg-muted/25 ${
+                  selected ? "bg-primary/10" : ""
+                }`}
+                tabIndex={0}
+                onClick={() => onSelectAsset(id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    onSelectAsset(id)
+                  }
+                }}
+              >
+                <Td className="font-medium">{assetFilename(asset)}</Td>
+                <Td>{formatDateTime(asset.captured_at)}</Td>
+                <Td>{formatCoordinate(asset.latitude)}</Td>
+                <Td>{formatCoordinate(asset.longitude)}</Td>
+                <Td>{cameraLabel(asset)}</Td>
+                <Td>{formatFileBytes(assetFileSize(asset))}</Td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      <div className="flex items-center justify-between border-t px-3 py-2 text-[11px] text-muted-foreground">
+        <span>
+          showing {formatInteger(page.assets.length)} /{" "}
+          {formatInteger(page.matchedAssets)} assets
+        </span>
+        {page.nextOffset !== null ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 rounded"
+            disabled={page.loading}
+            onClick={onLoadMore}
+          >
+            {page.loading ? "loading" : "load more"}
+          </Button>
+        ) : null}
       </div>
     </div>
   )
@@ -3547,14 +3815,6 @@ type GeoImageAsset = StudioImageAsset & {
   longitude: number
 }
 
-type ImageryGroup = {
-  key: string
-  label: string
-  detail: string
-  source: string
-  assets: StudioImageAsset[]
-}
-
 type ImageryFeatureCollection = {
   type: "FeatureCollection"
   features: Array<{
@@ -3601,40 +3861,6 @@ function imageAssetWithLocation(
   asset: StudioImageAsset
 ): asset is GeoImageAsset {
   return isFiniteNumber(asset.latitude) && isFiniteNumber(asset.longitude)
-}
-
-function groupImageryAssets(assets: StudioImageAsset[]): ImageryGroup[] {
-  const groups = new Map<
-    string,
-    {
-      identity: ReturnType<typeof imageAssetGroupIdentity>
-      assets: StudioImageAsset[]
-    }
-  >()
-
-  for (const asset of assets) {
-    const identity = imageAssetGroupIdentity(asset)
-    const group = groups.get(identity.key)
-    if (group) {
-      group.assets.push(asset)
-    } else {
-      groups.set(identity.key, { identity, assets: [asset] })
-    }
-  }
-
-  return [...groups.values()]
-    .map(({ identity, assets: groupAssets }) => ({
-      key: identity.key,
-      label: identity.label,
-      source: identity.source,
-      detail: imageryGroupDetail(groupAssets, identity.source),
-      assets: groupAssets.sort(compareImageAssets),
-    }))
-    .sort((left, right) => {
-      const countDelta = right.assets.length - left.assets.length
-      if (countDelta !== 0) return countDelta
-      return left.label.localeCompare(right.label)
-    })
 }
 
 function imageAssetGroupIdentity(asset: StudioImageAsset) {
@@ -3713,52 +3939,25 @@ function nestedGroupCandidate(
   return groupCandidate(prefix, id, name)
 }
 
-function imageryGroupDetail(assets: StudioImageAsset[], source: string) {
+function imageryGroupSelectionValue(group: ImageryGroupSummary) {
+  return group.group_name ?? group.label
+}
+
+function imageryGroupSummaryDetail(group: ImageryGroupSummary) {
+  const dateRange =
+    group.captured_start && group.captured_end
+      ? `${captureDateKey(group.captured_start) ?? group.captured_start}..${
+          captureDateKey(group.captured_end) ?? group.captured_end
+        }`
+      : group.captured_start || group.captured_end || null
   return compactListText([
-    source,
-    `${assets.length} assets`,
-    `${assets.filter(imageAssetWithLocation).length} geo`,
-    imageryGroupDateRange(assets),
-    imageryGroupCameraSummary(assets),
-    formatFileBytes(sumAssetBytes(assets)),
+    group.source,
+    `${formatInteger(group.asset_count)} assets`,
+    `${formatInteger(group.geocoded_count)} geo`,
+    dateRange,
+    group.camera_summary,
+    formatFileBytes(group.size_bytes),
   ])
-}
-
-function imageryGroupDateRange(assets: StudioImageAsset[]) {
-  const days = uniqueText(
-    assets.map((asset) => captureDateKey(asset.captured_at))
-  )
-  if (days.length === 0) return null
-  if (days.length === 1) return days[0]
-  return `${days[0]}..${days[days.length - 1]}`
-}
-
-function imageryGroupCameraSummary(assets: StudioImageAsset[]) {
-  const cameras = uniqueText(
-    assets.map(cameraLabel).filter((value) => value !== "-")
-  )
-  if (cameras.length === 0) return null
-  if (cameras.length === 1) return cameras[0]
-  return `${cameras.length} cameras`
-}
-
-function sumGroupAssets(groups: ImageryGroup[]) {
-  return groups.reduce((sum, group) => sum + group.assets.length, 0)
-}
-
-function sumAssetBytes(assets: StudioImageAsset[]) {
-  const total = assets.reduce(
-    (sum, asset) => sum + (assetFileSize(asset) ?? 0),
-    0
-  )
-  return total > 0 ? total : null
-}
-
-function compareImageAssets(left: StudioImageAsset, right: StudioImageAsset) {
-  const capturedDelta =
-    timestampForSort(left.captured_at) - timestampForSort(right.captured_at)
-  if (capturedDelta !== 0) return capturedDelta
-  return assetFilename(left).localeCompare(assetFilename(right))
 }
 
 function timestampForSort(value?: string | null) {
@@ -4110,6 +4309,23 @@ function adminEventsUrl() {
   return `${scheme}://${window.location.host}/api/admin/events`
 }
 
+function imageryAssetPageFromPayload(
+  payload: ImageryResponse
+): ImageryAssetPage {
+  const assets = payload.image_assets ?? []
+  return {
+    assets,
+    totalAssets: payload.total_assets ?? assets.length,
+    matchedAssets: payload.matched_assets ?? assets.length,
+    returnedAssets: payload.returned_assets ?? assets.length,
+    offset: payload.offset ?? 0,
+    limit: payload.limit ?? assets.length,
+    nextOffset: payload.next_offset ?? null,
+    refreshedAt: payload.refreshed_at ?? null,
+    cacheAgeSeconds: payload.cache_age_seconds ?? null,
+  }
+}
+
 async function apiErrorMessage(response: Response, label: string) {
   const status = `${response.status} ${response.statusText}`.trim()
   try {
@@ -4363,10 +4579,6 @@ const defaultPolygonText = [
   "-76.900000,18.200000",
   "-77.000000,18.200000",
 ].join("\n")
-
-function frontendAssetGroupName(asset: StudioImageAsset) {
-  return asset.group_name ?? asset.image_group_name ?? null
-}
 
 function groupArtifactsByJob(artifacts: UploadedArtifact[]) {
   const grouped = new Map<string, UploadedArtifact[]>()
@@ -4872,9 +5084,11 @@ function timelineRowLocalProgress(
 function timelineConnectorProgress(row: TimelineRow, overallProgress: number) {
   if (overallProgress >= row.end) return 1
   if (overallProgress <= row.start) return 0
-  return clampPercent(
-    ((overallProgress - row.start) / (row.end - row.start)) * 100
-  ) / 100
+  return (
+    clampPercent(
+      ((overallProgress - row.start) / (row.end - row.start)) * 100
+    ) / 100
+  )
 }
 
 function timelineRowLabel(status: string) {
