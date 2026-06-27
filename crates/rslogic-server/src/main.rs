@@ -1085,7 +1085,7 @@ fn job_templates() -> Vec<JobTemplate> {
             template_id: "density_preview_color_aerial_5cm".to_string(),
             name: "density preview color aerial orthomosaic 5cm".to_string(),
             description:
-                "Recovered from the last yassuh-1 job as a portable template: align images, set a density-based region, run preview reconstruction, correct colors, and export a 5 cm aerial orthomosaic."
+                "Merged from the yassuh-1 source and resume jobs: use aggressive GPS-aided alignment, set a density-based region, run preview reconstruction, correct colors, and export a 5 cm aerial orthomosaic."
                     .to_string(),
             stages: vec![
                 RealityScanStage::SetIntrinsics,
@@ -1105,7 +1105,36 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: None,
-            alignment_settings: None,
+            alignment_settings: Some(RealityScanAlignmentSettings {
+                feature_detection_quality: Some("High".to_string()),
+                max_features_per_mpx: Some(20_000),
+                max_features_per_image: Some(80_000),
+                images_overlap: Some("Low".to_string()),
+                image_downscale_factor: Some(1),
+                max_feature_reprojection_error: Some(3.0),
+                detector_sensitivity: Some("Ultra".to_string()),
+                preselector_features: Some(30_000),
+                force_component_rematch: Some(true),
+                merge_georeferenced_components: Some(true),
+                enable_camera_prior: Some(true),
+                camera_prior_accuracy_x: Some(1.0),
+                camera_prior_accuracy_y: Some(1.0),
+                camera_prior_accuracy_z: Some(3.0),
+                camera_prior_weight: Some(0.25),
+                camera_prior_accuracy_yaw: Some(45.0),
+                camera_prior_accuracy_pitch: Some(45.0),
+                camera_prior_accuracy_roll: Some(45.0),
+                camera_prior_weight_orientation: Some(0.05),
+                input_relative_pose: Some(0),
+                input_absolute_pose: Some(1),
+                input_prior_accuracy_source: Some(1),
+                input_position_accuracy_x: Some(1.0),
+                input_position_accuracy_y: Some(1.0),
+                input_position_accuracy_z: Some(3.0),
+                input_yaw_accuracy: Some(45.0),
+                input_pitch_accuracy: Some(45.0),
+                input_roll_accuracy: Some(45.0),
+            }),
             print_progress_interval_seconds: Some(60),
         },
         JobTemplate {
@@ -2395,6 +2424,31 @@ mod tests {
             template.ortho_render_method,
             Some(OrthoRenderMethod::ImageMosaicingAerial)
         );
+        let alignment_settings = template
+            .alignment_settings
+            .as_ref()
+            .expect("source job alignment settings are merged");
+        assert_eq!(
+            alignment_settings.feature_detection_quality.as_deref(),
+            Some("High")
+        );
+        assert_eq!(alignment_settings.max_features_per_mpx, Some(20_000));
+        assert_eq!(alignment_settings.max_features_per_image, Some(80_000));
+        assert_eq!(alignment_settings.images_overlap.as_deref(), Some("Low"));
+        assert_eq!(
+            alignment_settings.detector_sensitivity.as_deref(),
+            Some("Ultra")
+        );
+        assert_eq!(alignment_settings.force_component_rematch, Some(true));
+        assert_eq!(
+            alignment_settings.merge_georeferenced_components,
+            Some(true)
+        );
+        assert_eq!(alignment_settings.enable_camera_prior, Some(true));
+        assert_eq!(alignment_settings.camera_prior_accuracy_x, Some(1.0));
+        assert_eq!(alignment_settings.camera_prior_accuracy_y, Some(1.0));
+        assert_eq!(alignment_settings.camera_prior_accuracy_z, Some(3.0));
+        assert_eq!(alignment_settings.camera_prior_weight, Some(0.25));
         assert_eq!(
             template.stages,
             vec![
