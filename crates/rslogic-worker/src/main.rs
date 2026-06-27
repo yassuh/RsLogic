@@ -564,6 +564,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
     let phase_count = phases.len().max(1) as f32;
     for (index, phase) in phases.iter().enumerate() {
         let file_stem = format!("{index:02}-{}", phase.name);
+        prepare_realityscan_phase_artifacts(&job.pipeline, phase, job_dir).await?;
         let script_path = job_dir
             .join("work")
             .join(format!("run-realityscan-{file_stem}.sh"));
@@ -688,6 +689,39 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         )
         .await?;
     }
+    Ok(())
+}
+
+async fn prepare_realityscan_phase_artifacts(
+    pipeline: &RealityScanPipeline,
+    phase: &RealityScanPhase,
+    job_dir: &Path,
+) -> anyhow::Result<()> {
+    if !uses_generated_ortho_projection_params(pipeline)
+        || !phase
+            .commands
+            .iter()
+            .any(|command| command.contains("calculate-ortho.rsortho"))
+    {
+        return Ok(());
+    }
+
+    let region_filename = ortho_region_box_filename(pipeline).with_context(|| {
+        "generated ortho projection parameters require an exported reconstruction region"
+    })?;
+    let region_path = job_dir.join("outputs").join(region_filename);
+    let region_xml = fs::read_to_string(&region_path).await.with_context(|| {
+        format!(
+            "reading exported reconstruction region {}",
+            region_path.display()
+        )
+    })?;
+    let params = generated_ortho_projection_params_xml(pipeline, &region_xml)?;
+    fs::write(
+        job_dir.join("outputs").join("calculate-ortho.rsortho"),
+        params,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1492,11 +1526,21 @@ fn ortho_export_config_xml(pipeline: &RealityScanPipeline) -> String {
     config
 }
 
-fn has_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
+fn has_raw_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
     pipeline
         .ortho_projection_params_xml
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn uses_generated_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
+    !has_raw_ortho_projection_params(pipeline)
+        && pipeline.ortho_pixel_size_meters.is_some()
+        && pipeline.ortho_render_method.is_some()
+}
+
+fn has_ortho_projection_params(pipeline: &RealityScanPipeline) -> bool {
+    has_raw_ortho_projection_params(pipeline) || uses_generated_ortho_projection_params(pipeline)
 }
 
 fn uses_auto_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
@@ -1510,10 +1554,18 @@ fn uses_density_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
 }
 
 fn ortho_region_box_path(pipeline: &RealityScanPipeline) -> Option<&'static str> {
+    Some(match ortho_region_box_filename(pipeline)? {
+        "auto-ortho-region.rsbox" => "Z:\\job\\outputs\\auto-ortho-region.rsbox",
+        "density-ortho-region.rsbox" => "Z:\\job\\outputs\\density-ortho-region.rsbox",
+        _ => return None,
+    })
+}
+
+fn ortho_region_box_filename(pipeline: &RealityScanPipeline) -> Option<&'static str> {
     if uses_auto_ortho_region_box(pipeline) {
-        Some("Z:\\job\\outputs\\auto-ortho-region.rsbox")
+        Some("auto-ortho-region.rsbox")
     } else if uses_density_ortho_region_box(pipeline) {
-        Some("Z:\\job\\outputs\\density-ortho-region.rsbox")
+        Some("density-ortho-region.rsbox")
     } else {
         None
     }
@@ -1565,6 +1617,43 @@ fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result
         xml.push('\n');
     }
     Ok(Some(xml))
+}
+
+fn generated_ortho_projection_params_xml(
+    pipeline: &RealityScanPipeline,
+    region_xml: &str,
+) -> anyhow::Result<String> {
+    let pixel_size = pipeline
+        .ortho_pixel_size_meters
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .context("ortho_pixel_size_meters must be greater than zero")?;
+    let method = pipeline
+        .ortho_render_method
+        .as_ref()
+        .context("generated ortho projection parameters require ortho_render_method")?;
+    let mut region_xml = region_xml.trim().to_string();
+    if !region_xml.contains("<ReconstructionRegion") {
+        anyhow::bail!("exported reconstruction region is missing ReconstructionRegion XML");
+    }
+    let (width_meters, height_meters) = parse_reconstruction_region_footprint(&region_xml)
+        .with_context(|| "exported reconstruction region is missing positive width/height/depth")?;
+    let width = (width_meters / pixel_size).ceil().max(1.0) as u64;
+    let height = (height_meters / pixel_size).ceil().max(1.0) as u64;
+    region_xml = remove_xml_attribute_in_tag(&region_xml, "Residual", "ownerId")?;
+    if !region_xml.ends_with('\n') {
+        region_xml.push('\n');
+    }
+
+    Ok(format!(
+        r#"<OrthoProjection width="{width}" height="{height}" name="Ortho projection 1" modelName="Model 1"
+   colorType="{}" boxSideConerIndex="21" bEmpty="0" backFaceColorType="1" backFaceColor="2130706687"
+   projectionType="3" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+{}"#,
+        realityscan_ortho_color_type(method),
+        region_xml
+    ))
 }
 
 fn realityscan_ortho_color_type(method: &OrthoRenderMethod) -> &'static str {
@@ -3077,6 +3166,109 @@ mod tests {
         assert!(!launcher.contains("modelGuid="));
         assert!(!launcher.contains("ownerId="));
         assert!(launcher.contains("cat > /job/outputs/calculate-ortho.rsortho"));
+    }
+
+    #[test]
+    fn generated_ortho_params_use_gps_region_aerial_mosaicing_and_5cm_pixels() {
+        let region_xml = r#"<ReconstructionRegion globalCoordinateSystem="+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"
+   globalCoordinateSystemName="epsg:32618 - WGS 84 / UTM zone 18N" isGeoreferenced="1"
+   isLatLon="0" widthHeightDepth="1060.8247146434 1478.68901436919 132.175109863992">
+  <globalCoordinateSystemWkt>PROJCS["WGS_1984_UTM_Zone_18N"]</globalCoordinateSystemWkt>
+  <Header magic="5395016" version="2"/>
+  <CentreEuclid centre="364081.34750773 1982464.67667797 39.2872236669064"/>
+  <Residual R="1 0 0 0 1 0 0 0 1" t="0 0 0" s="1" ownerId="{AB54BBCB-EE7D-4547-B48A-AE7DA0A598D5}"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "generated-aerial".to_string(),
+            stages: vec![RealityScanStage::CalculateOrthoProjection],
+            project_filename: "aerial.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            print_progress_interval_seconds: None,
+        };
+
+        let params = generated_ortho_projection_params_xml(&pipeline, region_xml).unwrap();
+
+        assert!(params.contains(r#"width="21217""#));
+        assert!(params.contains(r#"height="29574""#));
+        assert!(params.contains(r#"colorType="aerial mosaicing""#));
+        assert!(params.contains(r#"projectionType="3""#));
+        assert!(params.contains(r#"bEmpty="0""#));
+        assert!(params.contains("epsg:32618 - WGS 84 / UTM zone 18N"));
+        assert!(!params.contains("ownerId="));
+        assert!(!params.contains("texturing"));
+    }
+
+    #[test]
+    fn generated_aerial_ortho_pipeline_exports_region_and_uses_high_model() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "generated-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculateHighModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "density-high-color-aerial-5cm.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("density-high-color-aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            print_progress_interval_seconds: Some(60),
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 3);
+        assert!(phases[0]
+            .commands
+            .iter()
+            .any(|command| command.contains("-setProjectCoordinateSystem \"epsg:32618\"")));
+        assert!(phases[0]
+            .commands
+            .iter()
+            .any(|command| command.contains("-setOutputCoordinateSystem \"epsg:32618\"")));
+        assert!(phases[1].commands.contains(&format!(
+            "-exportReconstructionRegion {}",
+            rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
+        )));
+        assert!(phases[1]
+            .commands
+            .contains(&"-calculateHighModel".to_string()));
+        assert!(!phases.iter().any(|phase| phase
+            .commands
+            .contains(&"-calculatePreviewModel".to_string())));
+        assert!(!phases
+            .iter()
+            .any(|phase| phase.commands.contains(&"-calculateTexture".to_string())));
+        assert!(phases[2].commands.iter().any(|command| command.contains(
+            "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\density-ortho-region.rsbox\""
+        )));
+        assert!(phases[2].commands.iter().any(|command| command.contains(
+            "-exportOrthoProjection \"Z:\\job\\outputs\\density-high-color-aerial-5cm.tif\""
+        )));
     }
 
     #[test]

@@ -1093,27 +1093,27 @@ fn job_templates() -> Vec<JobTemplate> {
         },
         JobTemplate {
             template_id: "density_preview_color_aerial_5cm".to_string(),
-            name: "density preview color aerial orthomosaic 5cm".to_string(),
+            name: "density high color aerial orthomosaic 5cm".to_string(),
             description:
-                "Merged from the yassuh-1 source and resume jobs: use aggressive GPS-aided alignment, set a density-based region, run preview reconstruction, correct colors, and export a 5 cm aerial orthomosaic."
+                "Use aggressive GPS-aided alignment, set a density-based georeferenced region, run high-detail reconstruction, correct colors, and export a 5 cm aerial-mosaicing orthomosaic."
                     .to_string(),
             stages: vec![
                 RealityScanStage::SetIntrinsics,
                 RealityScanStage::Align,
                 RealityScanStage::SelectMaximalComponent,
                 RealityScanStage::SetReconstructionRegionByDensity,
-                RealityScanStage::CalculatePreviewModel,
+                RealityScanStage::CalculateHighModel,
                 RealityScanStage::CorrectColors,
                 RealityScanStage::CalculateOrthoProjection,
                 RealityScanStage::ExportOrthoProjection,
                 RealityScanStage::SaveProject,
             ],
-            project_filename: "density-preview-color-aerial-5cm.rsproj".to_string(),
+            project_filename: "density-high-color-aerial-5cm.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
             project_coordinate_system: Some("epsg:32618".to_string()),
             output_coordinate_system: Some("epsg:32618".to_string()),
-            orthomosaic_filename: Some("density-preview-color-aerial-5cm.tif".to_string()),
+            orthomosaic_filename: Some("density-high-color-aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: None,
@@ -2470,6 +2470,14 @@ mod tests {
             template.ortho_render_method,
             Some(OrthoRenderMethod::ImageMosaicingAerial)
         );
+        assert_eq!(
+            template.project_filename,
+            "density-high-color-aerial-5cm.rsproj"
+        );
+        assert_eq!(
+            template.orthomosaic_filename.as_deref(),
+            Some("density-high-color-aerial-5cm.tif")
+        );
         let alignment_settings = template
             .alignment_settings
             .as_ref()
@@ -2502,7 +2510,7 @@ mod tests {
                 RealityScanStage::Align,
                 RealityScanStage::SelectMaximalComponent,
                 RealityScanStage::SetReconstructionRegionByDensity,
-                RealityScanStage::CalculatePreviewModel,
+                RealityScanStage::CalculateHighModel,
                 RealityScanStage::CorrectColors,
                 RealityScanStage::CalculateOrthoProjection,
                 RealityScanStage::ExportOrthoProjection,
