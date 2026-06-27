@@ -1082,6 +1082,33 @@ fn job_templates() -> Vec<JobTemplate> {
             print_progress_interval_seconds: None,
         },
         JobTemplate {
+            template_id: "density_preview_color_aerial_5cm".to_string(),
+            name: "density preview color aerial orthomosaic 5cm".to_string(),
+            description:
+                "Recovered from the last yassuh-1 job as a portable template: align images, set a density-based region, run preview reconstruction, correct colors, and export a 5 cm aerial orthomosaic."
+                    .to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculatePreviewModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "density-preview-color-aerial-5cm.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            orthomosaic_filename: Some("density-preview-color-aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            print_progress_interval_seconds: Some(60),
+        },
+        JobTemplate {
             template_id: "align_only".to_string(),
             name: "align only".to_string(),
             description: "Align images, select largest component, and save the project.".to_string(),
@@ -2352,6 +2379,37 @@ mod tests {
         MachineTelemetry, WorkerProcessState,
     };
     use tower::ServiceExt;
+
+    #[test]
+    fn recovered_density_template_is_portable() {
+        let template = job_templates()
+            .into_iter()
+            .find(|template| template.template_id == "density_preview_color_aerial_5cm")
+            .expect("density preview template exists");
+
+        assert!(template.resume_source_job_id.is_none());
+        assert!(template.resume_project_filename.is_none());
+        assert!(template.ortho_projection_params_xml.is_none());
+        assert_eq!(template.ortho_pixel_size_meters, Some(0.05));
+        assert_eq!(
+            template.ortho_render_method,
+            Some(OrthoRenderMethod::ImageMosaicingAerial)
+        );
+        assert_eq!(
+            template.stages,
+            vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculatePreviewModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn enrollment_approval_and_signed_session_work() {
