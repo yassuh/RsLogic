@@ -1379,16 +1379,15 @@ fn print_progress_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
 fn is_alignment_stage(stage: &RealityScanStage) -> bool {
     matches!(
         stage,
-        RealityScanStage::SetIntrinsics
-            | RealityScanStage::Align
-            | RealityScanStage::SelectMaximalComponent
+        RealityScanStage::SetIntrinsics | RealityScanStage::Align
     )
 }
 
 fn is_model_stage(stage: &RealityScanStage) -> bool {
     matches!(
         stage,
-        RealityScanStage::SetReconstructionRegionAuto
+        RealityScanStage::SelectMaximalComponent
+            | RealityScanStage::SetReconstructionRegionAuto
             | RealityScanStage::SetReconstructionRegionByDensity
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
@@ -1408,13 +1407,18 @@ fn is_output_stage(stage: &RealityScanStage) -> bool {
 }
 
 fn is_split_trigger_stage(stage: &RealityScanStage) -> bool {
-    is_model_stage(stage)
-        || matches!(
-            stage,
-            RealityScanStage::CalculateTexture
-                | RealityScanStage::CalculateOrthoProjection
-                | RealityScanStage::ExportOrthoProjection
-        )
+    matches!(
+        stage,
+        RealityScanStage::SetReconstructionRegionAuto
+            | RealityScanStage::SetReconstructionRegionByDensity
+            | RealityScanStage::CalculatePreviewModel
+            | RealityScanStage::CalculateNormalModel
+            | RealityScanStage::CalculateHighModel
+            | RealityScanStage::CorrectColors
+            | RealityScanStage::CalculateTexture
+            | RealityScanStage::CalculateOrthoProjection
+            | RealityScanStage::ExportOrthoProjection
+    )
 }
 
 fn save_project_command(filename: &str) -> String {
@@ -3368,6 +3372,9 @@ mod tests {
         );
         assert!(phases[1]
             .commands
+            .contains(&"-selectMaximalComponent".to_string()));
+        assert!(phases[1]
+            .commands
             .contains(&"-calculateNormalModel".to_string()));
         assert!(phases[1]
             .commands
@@ -3499,6 +3506,75 @@ mod tests {
         assert!(phases[1].commands.contains(
             &"-save \"Z:\\job\\outputs\\density-normal-color-aerial.rsproj\"".to_string()
         ));
+    }
+
+    #[test]
+    fn realityscan_resume_project_can_select_component_before_high_model() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let ortho_params = r#"<OrthoProjection width="1000" height="1000" name="Ortho projection 1" modelName="Model 1"
+   colorType="aerial mosaicing" projectionType="3" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+<ReconstructionRegion globalCoordinateSystem="+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"
+   globalCoordinateSystemName="epsg:32618 - WGS 84 / UTM zone 18N" isGeoreferenced="1" isLatLon="0">
+  <widthHeightDepth>3080.134315077565 4035.639579713112 800</widthHeightDepth>
+  <Header magic="5395016" version="2"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "resume-select-high-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::CalculateHighModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "selected-high-aerial.rsproj".to_string(),
+            resume_source_job_id: Some("40d62c10-a753-4673-ab13-b3754ce91e7e".to_string()),
+            resume_project_filename: Some("aligned.rsproj".to_string()),
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("selected-high-aerial.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: Some(ortho_params.to_string()),
+            alignment_settings: None,
+            print_progress_interval_seconds: Some(60),
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "model-save");
+        assert_eq!(
+            phases[0].commands[0],
+            "-load \"Z:\\job\\outputs\\aligned.rsproj\" deleteAutosave"
+        );
+        assert!(phases[0]
+            .commands
+            .contains(&"-selectMaximalComponent".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-calculateHighModel".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
+        assert_eq!(phases[1].name, "outputs");
+        assert_eq!(
+            phases[1].commands[0],
+            "-load \"Z:\\job\\outputs\\modeled.rsproj\" deleteAutosave"
+        );
+        assert!(phases[1].commands.iter().any(|command| command
+            .contains("-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\"")));
+        assert!(phases[1].commands.iter().any(|command| {
+            command
+                .contains("-exportOrthoProjection \"Z:\\job\\outputs\\selected-high-aerial.tif\"")
+        }));
     }
 
     #[tokio::test]
