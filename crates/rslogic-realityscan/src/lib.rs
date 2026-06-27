@@ -115,9 +115,11 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             .ok();
 
         let mut cmd = Command::new(config.runtime.binary());
-        cmd.arg("run")
-            .arg("--rm")
-            .arg("--name")
+        cmd.arg("run").arg("--rm");
+        for arg in runtime_run_limit_args(&config.runtime) {
+            cmd.arg(arg);
+        }
+        cmd.arg("--name")
             .arg(&container_name)
             .arg("-v")
             .arg(format!("{}:/job", config.job_dir.display()))
@@ -497,6 +499,13 @@ fn top_output_has_defunct_realityscan(output: &str) -> bool {
     })
 }
 
+fn runtime_run_limit_args(runtime: &ContainerRuntime) -> &'static [&'static str] {
+    match runtime {
+        ContainerRuntime::Docker => &[],
+        ContainerRuntime::Podman => &["--pids-limit=-1"],
+    }
+}
+
 fn container_name(path: &PathBuf, phase: Option<&str>) -> String {
     match phase {
         Some(phase) => format!(
@@ -569,6 +578,15 @@ PID STAT COMMAND COMMAND
             container_name(&path, Some("00 align/save")),
             "rslogic-job-abc-123-00-align-save"
         );
+    }
+
+    #[test]
+    fn podman_runs_without_pid_limit() {
+        assert_eq!(
+            runtime_run_limit_args(&ContainerRuntime::Podman),
+            &["--pids-limit=-1"]
+        );
+        assert!(runtime_run_limit_args(&ContainerRuntime::Docker).is_empty());
     }
 
     #[test]
