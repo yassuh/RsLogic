@@ -356,6 +356,10 @@ pub struct RealityScanPipeline {
     #[serde(default)]
     pub resume_project_filename: Option<String>,
     #[serde(default)]
+    pub project_coordinate_system: Option<String>,
+    #[serde(default)]
+    pub output_coordinate_system: Option<String>,
+    #[serde(default)]
     pub orthomosaic_filename: Option<String>,
     #[serde(default)]
     pub ortho_pixel_size_meters: Option<f64>,
@@ -386,6 +390,8 @@ impl Default for RealityScanPipeline {
             project_filename: "preview-ortho.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,

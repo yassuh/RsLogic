@@ -237,6 +237,10 @@ struct JobTemplate {
     resume_source_job_id: Option<String>,
     #[serde(default)]
     resume_project_filename: Option<String>,
+    #[serde(default)]
+    project_coordinate_system: Option<String>,
+    #[serde(default)]
+    output_coordinate_system: Option<String>,
     orthomosaic_filename: Option<String>,
     #[serde(default)]
     ortho_pixel_size_meters: Option<f64>,
@@ -992,6 +996,8 @@ async fn build_job_from_imagery(
             project_filename: template.project_filename,
             resume_source_job_id: template.resume_source_job_id,
             resume_project_filename: template.resume_project_filename,
+            project_coordinate_system: template.project_coordinate_system,
+            output_coordinate_system: template.output_coordinate_system,
             orthomosaic_filename: template.orthomosaic_filename,
             ortho_pixel_size_meters: template.ortho_pixel_size_meters,
             ortho_render_method: template.ortho_render_method,
@@ -1047,6 +1053,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "preview-ortho.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -1074,6 +1082,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "normal-orthomosaic.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -1101,6 +1111,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "density-preview-color-aerial-5cm.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
             orthomosaic_filename: Some("density-preview-color-aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
@@ -1150,6 +1162,8 @@ fn job_templates() -> Vec<JobTemplate> {
             project_filename: "aligned.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -1205,6 +1219,14 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
             "custom template orthomosaic_filename cannot be empty",
         ));
     }
+    validate_coordinate_system_setting(
+        "custom template project_coordinate_system",
+        template.project_coordinate_system.as_deref(),
+    )?;
+    validate_coordinate_system_setting(
+        "custom template output_coordinate_system",
+        template.output_coordinate_system.as_deref(),
+    )?;
     if template
         .ortho_pixel_size_meters
         .is_some_and(|value| !value.is_finite() || value <= 0.0)
@@ -1212,6 +1234,22 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
         return Err(ApiError::bad_request(
             "custom template ortho_pixel_size_meters must be greater than zero",
         ));
+    }
+    Ok(())
+}
+
+fn validate_coordinate_system_setting(label: &str, value: Option<&str>) -> Result<(), ApiError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::bad_request(format!("{label} cannot be empty")));
+    }
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(ApiError::bad_request(format!(
+            "{label} cannot contain newlines"
+        )));
     }
     Ok(())
 }
@@ -2418,6 +2456,14 @@ mod tests {
 
         assert!(template.resume_source_job_id.is_none());
         assert!(template.resume_project_filename.is_none());
+        assert_eq!(
+            template.project_coordinate_system.as_deref(),
+            Some("epsg:32618")
+        );
+        assert_eq!(
+            template.output_coordinate_system.as_deref(),
+            Some("epsg:32618")
+        );
         assert!(template.ortho_projection_params_xml.is_none());
         assert_eq!(template.ortho_pixel_size_meters, Some(0.05));
         assert_eq!(

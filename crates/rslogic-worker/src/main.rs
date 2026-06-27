@@ -1206,7 +1206,7 @@ fn realityscan_phases(
 
     let mut phases = Vec::new();
     let mut latest_project = if has_alignment_stage {
-        let mut align_commands = new_scene_commands(pipeline);
+        let mut align_commands = new_scene_commands(pipeline)?;
         for stage in stages.iter().filter(|stage| is_alignment_stage(stage)) {
             align_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
         }
@@ -1278,7 +1278,7 @@ fn combined_realityscan_commands(
         }
         vec![load_project_command(project_filename)]
     } else {
-        new_scene_commands(pipeline)
+        new_scene_commands(pipeline)?
     };
     commands.extend(print_progress_commands(pipeline));
     for stage in stages {
@@ -1288,11 +1288,51 @@ fn combined_realityscan_commands(
     Ok(commands)
 }
 
-fn new_scene_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
+fn new_scene_commands(pipeline: &RealityScanPipeline) -> anyhow::Result<Vec<String>> {
     let mut commands = vec!["-newScene".to_string()];
+    commands.extend(realityscan_coordinate_system_commands(pipeline)?);
     commands.extend(realityscan_alignment_setting_commands(pipeline));
     commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
-    commands
+    Ok(commands)
+}
+
+fn realityscan_coordinate_system_commands(
+    pipeline: &RealityScanPipeline,
+) -> anyhow::Result<Vec<String>> {
+    let mut commands = Vec::new();
+    if let Some(value) = coordinate_system_value(
+        "project_coordinate_system",
+        pipeline.project_coordinate_system.as_deref(),
+    )? {
+        commands.push(format!(
+            "-setProjectCoordinateSystem {}",
+            rscmd_quote(&value)
+        ));
+    }
+    if let Some(value) = coordinate_system_value(
+        "output_coordinate_system",
+        pipeline.output_coordinate_system.as_deref(),
+    )? {
+        commands.push(format!(
+            "-setOutputCoordinateSystem {}",
+            rscmd_quote(&value)
+        ));
+    }
+    Ok(commands)
+}
+
+fn coordinate_system_value(label: &str, value: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{label} cannot be empty");
+    }
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        anyhow::bail!("{label} cannot contain newlines");
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn print_progress_commands(pipeline: &RealityScanPipeline) -> Vec<String> {
@@ -1409,6 +1449,10 @@ fn realityscan_rscmd_script(
         pipeline.stages.clone()
     };
     let mut script = String::from("-newScene\n");
+    for command in realityscan_coordinate_system_commands(pipeline)? {
+        script.push_str(&command);
+        script.push('\n');
+    }
     for command in realityscan_alignment_setting_commands(pipeline) {
         script.push_str(&command);
         script.push('\n');
@@ -2737,6 +2781,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -2764,6 +2810,40 @@ mod tests {
     }
 
     #[test]
+    fn realityscan_script_sets_coordinate_systems_before_import() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "utm".to_string(),
+            stages: vec![RealityScanStage::Align],
+            project_filename: "aligned.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: None,
+            ortho_pixel_size_meters: None,
+            ortho_render_method: None,
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            print_progress_interval_seconds: None,
+        };
+
+        let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
+
+        let project_index = script.find("-setProjectCoordinateSystem").unwrap();
+        let output_index = script.find("-setOutputCoordinateSystem").unwrap();
+        let add_folder_index = script.find("-addFolder \"Z:\\job\\inputs\"").unwrap();
+        assert!(project_index < add_folder_index);
+        assert!(output_index < add_folder_index);
+        assert!(script.contains("-setProjectCoordinateSystem \"epsg:32618\""));
+        assert!(script.contains("-setOutputCoordinateSystem \"epsg:32618\""));
+    }
+
+    #[test]
     fn realityscan_script_applies_aggressive_alignment_priors() {
         let manifest = JobInputManifest {
             job_id: "job-1".to_string(),
@@ -2776,6 +2856,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -2885,6 +2967,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -2915,6 +2999,8 @@ mod tests {
             project_filename: "ortho.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("seaforth-5cm-orthomosaic.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
@@ -2967,6 +3053,8 @@ mod tests {
             project_filename: "aerial.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
@@ -3019,6 +3107,8 @@ mod tests {
             project_filename: "aerial.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("aerial-5cm.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
@@ -3060,6 +3150,8 @@ mod tests {
             project_filename: "final.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("ortho.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: None,
@@ -3118,6 +3210,8 @@ mod tests {
             project_filename: "aligned.rsproj".to_string(),
             resume_source_job_id: None,
             resume_project_filename: None,
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: None,
             ortho_pixel_size_meters: None,
             ortho_render_method: None,
@@ -3164,6 +3258,8 @@ mod tests {
             project_filename: "density-normal-color-aerial.rsproj".to_string(),
             resume_source_job_id: Some("08fb2ede-481d-4b89-821f-52a726185643".to_string()),
             resume_project_filename: Some("aligned.rsproj".to_string()),
+            project_coordinate_system: None,
+            output_coordinate_system: None,
             orthomosaic_filename: Some("density-normal-color-aerial.tif".to_string()),
             ortho_pixel_size_meters: Some(0.05),
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
