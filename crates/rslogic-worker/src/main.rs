@@ -709,6 +709,11 @@ async fn prepare_realityscan_phase_artifacts(
     let region_filename = ortho_region_box_filename(pipeline).with_context(|| {
         "generated ortho projection parameters require an exported reconstruction region"
     })?;
+    if phase.commands.iter().any(|command| {
+        command.contains("-exportReconstructionRegion") && command.contains(region_filename)
+    }) {
+        return Ok(());
+    }
     let region_path = job_dir.join("outputs").join(region_filename);
     let region_xml = fs::read_to_string(&region_path).await.with_context(|| {
         format!(
@@ -1486,7 +1491,12 @@ mkdir -p /job/outputs /job/logs/realityscan-crash-reports /tmp/runtime-rslogic
 chmod 700 /tmp/runtime-rslogic
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/job/logs/xvfb.log 2>&1 &
 xvfb_pid=$!
+rslogic_rsortho_watcher_pid=""
 cleanup() {
+  if [ -n "${rslogic_rsortho_watcher_pid}" ]; then
+    kill "${rslogic_rsortho_watcher_pid}" 2>/dev/null || true
+    wait "${rslogic_rsortho_watcher_pid}" 2>/dev/null || true
+  fi
   kill "${xvfb_pid}" 2>/dev/null || true
   wait "${xvfb_pid}" 2>/dev/null || true
 }
@@ -1497,16 +1507,73 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
 "#
     .to_string();
     script.push_str(&ortho_export_config);
+    script.push_str("XML\n");
     if let Some(params) = ortho_projection_params {
-        script.push_str("XML\ncat > /job/outputs/calculate-ortho.rsortho <<'XML'\n");
+        script.push_str("cat > /job/outputs/calculate-ortho.rsortho <<'XML'\n");
         script.push_str(&params);
+        script.push_str("XML\n");
+    } else if let Some(watcher) = generated_ortho_projection_params_watcher_script(pipeline) {
+        script.push_str(&watcher);
     }
     script.push_str(&format!(
-        "XML\n/opt/realityscan/bin/realityscan-cli -headless -silent {} -stdConsole -execRSCMD {}\n",
+        "/opt/realityscan/bin/realityscan-cli -headless -silent {} -stdConsole -execRSCMD {}\n",
         shell_quote("Z:\\job\\logs\\realityscan-crash-reports"),
         shell_quote(windows_commands_path)
     ));
     Ok(script)
+}
+
+fn generated_ortho_projection_params_watcher_script(
+    pipeline: &RealityScanPipeline,
+) -> Option<String> {
+    if !uses_generated_ortho_projection_params(pipeline) {
+        return None;
+    }
+    let region_filename = ortho_region_box_filename(pipeline)?;
+    let pixel_size = pipeline.ortho_pixel_size_meters?;
+    let method = pipeline.ortho_render_method.as_ref()?;
+    Some(format!(
+        r#"generate_ortho_projection_params_from_region() {{
+  region_path='/job/outputs/{region_filename}'
+  output_path='/job/outputs/calculate-ortho.rsortho'
+  for _ in $(seq 1 7200); do
+    if [ -s "${{region_path}}" ] && grep -q '<ReconstructionRegion' "${{region_path}}"; then
+      break
+    fi
+    sleep 1
+  done
+  if ! [ -s "${{region_path}}" ]; then
+    echo "timed out waiting for exported reconstruction region ${{region_path}}" >&2
+    return 1
+  fi
+  region_xml=$(cat "${{region_path}}")
+  values=$(printf '%s' "${{region_xml}}" | sed -n 's/.*widthHeightDepth="\([^"]*\)".*/\1/p' | head -n 1)
+  if [ -z "${{values}}" ]; then
+    values=$(printf '%s' "${{region_xml}}" | tr '\n' ' ' | sed -n 's/.*<widthHeightDepth>\([^<]*\)<\/widthHeightDepth>.*/\1/p' | head -n 1)
+  fi
+  width_m=$(printf '%s\n' "${{values}}" | awk '{{print $1}}')
+  height_m=$(printf '%s\n' "${{values}}" | awk '{{print $2}}')
+  width_px=$(awk -v meters="${{width_m}}" -v pixel="{pixel_size}" 'BEGIN {{ if (meters <= 0 || pixel <= 0) exit 1; v = meters / pixel; px = int(v); if (v > px) px += 1; if (px < 1) px = 1; print px }}')
+  height_px=$(awk -v meters="${{height_m}}" -v pixel="{pixel_size}" 'BEGIN {{ if (meters <= 0 || pixel <= 0) exit 1; v = meters / pixel; px = int(v); if (v > px) px += 1; if (px < 1) px = 1; print px }}')
+  tmp="${{output_path}}.tmp"
+  {{
+    cat <<XML
+<OrthoProjection width="${{width_px}}" height="${{height_px}}" name="Ortho projection 1" modelName="Model 1"
+   colorType="{color_type}" boxSideConerIndex="21" bEmpty="0" backFaceColorType="1" backFaceColor="2130706687"
+   projectionType="3" bShowOrthoProjection="1">
+  <Header magic="5787472" version="2"/>
+</OrthoProjection>
+XML
+    sed 's/[[:space:]]ownerId="[^"]*"//g' "${{region_path}}"
+  }} > "${{tmp}}"
+  mv "${{tmp}}" "${{output_path}}"
+}}
+generate_ortho_projection_params_from_region &
+rslogic_rsortho_watcher_pid=$!
+"#,
+        pixel_size = format_decimal(pixel_size),
+        color_type = realityscan_ortho_color_type(method),
+    ))
 }
 
 #[cfg(test)]
@@ -3516,6 +3583,12 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.contains("-exportOrthoProjection")));
+
+        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\00-single.rscmd").unwrap();
+        assert!(launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
+        assert!(launcher.contains("colorType=\"aerial mosaicing\""));
+        assert!(launcher.contains("rslogic_rsortho_watcher_pid=$!"));
     }
 
     #[test]
