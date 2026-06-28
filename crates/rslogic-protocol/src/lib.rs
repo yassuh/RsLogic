@@ -370,6 +370,10 @@ pub struct RealityScanPipeline {
     #[serde(default)]
     pub alignment_settings: Option<RealityScanAlignmentSettings>,
     #[serde(default)]
+    pub runtime_settings: Option<RealityScanRuntimeSettings>,
+    #[serde(default)]
+    pub single_session: bool,
+    #[serde(default)]
     pub print_progress_interval_seconds: Option<u32>,
 }
 
@@ -397,9 +401,23 @@ impl Default for RealityScanPipeline {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RealityScanRuntimeSettings {
+    #[serde(default)]
+    pub auto_save_mode: Option<bool>,
+    #[serde(default)]
+    pub auto_save_cli_handling: Option<String>,
+    #[serde(default)]
+    pub auto_clear_cache: Option<u32>,
+    #[serde(default)]
+    pub max_vertex_count_in_part: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

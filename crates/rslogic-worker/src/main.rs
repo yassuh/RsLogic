@@ -1231,7 +1231,7 @@ fn realityscan_phases(
     }
     let should_split = stages.iter().any(is_split_trigger_stage)
         && (has_alignment_stage || resume_project.is_some());
-    if !should_split {
+    if pipeline.single_session || !should_split {
         return Ok(vec![RealityScanPhase {
             name: "single".to_string(),
             commands: combined_realityscan_commands(pipeline, manifest, &stages)?,
@@ -1262,6 +1262,7 @@ fn realityscan_phases(
     let has_output_stage = stages.iter().any(is_output_stage);
     if !model_stage_commands.is_empty() {
         let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(realityscan_runtime_setting_commands(pipeline)?);
         commands.extend(print_progress_commands(pipeline));
         commands.extend(model_stage_commands);
         if has_output_stage {
@@ -1281,6 +1282,7 @@ fn realityscan_phases(
     }
     if !output_stage_commands.is_empty() {
         let mut commands = vec![load_project_command(latest_project)];
+        commands.extend(realityscan_runtime_setting_commands(pipeline)?);
         commands.extend(print_progress_commands(pipeline));
         commands.extend(output_stage_commands);
         commands.push("-quit".to_string());
@@ -1310,7 +1312,9 @@ fn combined_realityscan_commands(
         if stages.iter().any(is_alignment_stage) {
             anyhow::bail!("resume_project_filename cannot be used with alignment stages");
         }
-        vec![load_project_command(project_filename)]
+        let mut commands = vec![load_project_command(project_filename)];
+        commands.extend(realityscan_runtime_setting_commands(pipeline)?);
+        commands
     } else {
         new_scene_commands(pipeline)?
     };
@@ -1325,9 +1329,42 @@ fn combined_realityscan_commands(
 fn new_scene_commands(pipeline: &RealityScanPipeline) -> anyhow::Result<Vec<String>> {
     let mut commands = vec!["-newScene".to_string()];
     commands.extend(realityscan_coordinate_system_commands(pipeline)?);
+    commands.extend(realityscan_runtime_setting_commands(pipeline)?);
     commands.extend(realityscan_alignment_setting_commands(pipeline));
     commands.push("-addFolder \"Z:\\job\\inputs\"".to_string());
     Ok(commands)
+}
+
+fn realityscan_runtime_setting_commands(
+    pipeline: &RealityScanPipeline,
+) -> anyhow::Result<Vec<String>> {
+    let Some(settings) = &pipeline.runtime_settings else {
+        return Ok(Vec::new());
+    };
+
+    let mut pairs = Vec::<(&'static str, String)>::new();
+    push_bool_setting(&mut pairs, "appAutoSaveMode", settings.auto_save_mode);
+    if let Some(value) = settings
+        .auto_save_cli_handling
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if value.contains('\n') || value.contains('\r') {
+            anyhow::bail!("auto_save_cli_handling cannot contain newlines");
+        }
+        pairs.push(("appAutoSaveCliHandling", value.trim().to_string()));
+    }
+    push_u32_setting(&mut pairs, "appAutoClearCache", settings.auto_clear_cache);
+    push_u32_setting(
+        &mut pairs,
+        "mvsMaxVertexCountInPart",
+        settings.max_vertex_count_in_part,
+    );
+
+    Ok(pairs
+        .into_iter()
+        .map(|(key, value)| format!("-set {}", rscmd_quote(&format!("{key}={value}"))))
+        .collect())
 }
 
 fn realityscan_coordinate_system_commands(
@@ -2652,7 +2689,8 @@ async fn emit_artifact_uploaded(artifact: UploadedArtifact) -> anyhow::Result<()
 mod tests {
     use super::*;
     use rslogic_protocol::{
-        CameraIntrinsics, CloudfrontInput, RealityScanAlignmentSettings, UploadHeader,
+        CameraIntrinsics, CloudfrontInput, RealityScanAlignmentSettings,
+        RealityScanRuntimeSettings, UploadHeader,
     };
     use std::{
         io::{Read, Write},
@@ -2881,6 +2919,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -2922,6 +2962,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -2985,6 +3027,8 @@ mod tests {
                 input_pitch_accuracy: Some(45.0),
                 input_roll_accuracy: Some(45.0),
             }),
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3067,6 +3111,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3099,6 +3145,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3153,6 +3201,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3195,6 +3245,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3240,6 +3292,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: Some(60),
         };
 
@@ -3310,6 +3364,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3353,6 +3409,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3392,6 +3450,75 @@ mod tests {
     }
 
     #[test]
+    fn realityscan_single_session_runtime_settings_avoid_split_boundary() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "density".to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculateHighModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "density.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("density.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                auto_save_mode: Some(true),
+                auto_save_cli_handling: Some("recover".to_string()),
+                auto_clear_cache: Some(999_999),
+                max_vertex_count_in_part: Some(500_000),
+            }),
+            single_session: true,
+            print_progress_interval_seconds: Some(60),
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].name, "single");
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"appAutoSaveMode=true\"".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"appAutoSaveCliHandling=recover\"".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"appAutoClearCache=999999\"".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"mvsMaxVertexCountInPart=500000\"".to_string()));
+        assert!(!phases[0]
+            .commands
+            .iter()
+            .any(|command| command.starts_with("-load ")));
+        assert!(phases[0]
+            .commands
+            .contains(&"-calculateHighModel".to_string()));
+        assert!(phases[0]
+            .commands
+            .iter()
+            .any(|command| command.contains("-exportOrthoProjection")));
+    }
+
+    #[test]
     fn realityscan_align_only_template_stays_single_phase() {
         let manifest = JobInputManifest {
             job_id: "job-1".to_string(),
@@ -3416,6 +3543,8 @@ mod tests {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         };
 
@@ -3464,6 +3593,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: Some(60),
         };
 
@@ -3544,6 +3675,8 @@ mod tests {
             ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
             ortho_projection_params_xml: Some(ortho_params.to_string()),
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: Some(60),
         };
 

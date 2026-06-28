@@ -29,9 +29,9 @@ use rslogic_protocol::{
     new_id, now, verify_challenge_signature, CameraIntrinsics, Challenge, ClientEvent,
     CloudfrontInput, DesiredState, EnrollmentApproval, EnrollmentRejection, EnrollmentRequest,
     EnrollmentRequestRecord, JobEvent, JobInputManifest, OrthoRenderMethod, OutputUploadTarget,
-    PipelineJob, RealityScanAlignmentSettings, RealityScanPipeline, RealityScanStage,
-    ServerCommand, SessionRequest, SessionToken, UploadedArtifact, PROTOCOL_VERSION,
-    YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
+    PipelineJob, RealityScanAlignmentSettings, RealityScanPipeline, RealityScanRuntimeSettings,
+    RealityScanStage, ServerCommand, SessionRequest, SessionToken, UploadedArtifact,
+    PROTOCOL_VERSION, YASSUH_IMAGERY_CLOUDFRONT_DOMAIN,
 };
 use serde::{Deserialize, Serialize};
 use store::{
@@ -250,6 +250,10 @@ struct JobTemplate {
     ortho_projection_params_xml: Option<String>,
     #[serde(default)]
     alignment_settings: Option<RealityScanAlignmentSettings>,
+    #[serde(default)]
+    runtime_settings: Option<RealityScanRuntimeSettings>,
+    #[serde(default)]
+    single_session: bool,
     #[serde(default)]
     print_progress_interval_seconds: Option<u32>,
 }
@@ -1003,6 +1007,8 @@ async fn build_job_from_imagery(
             ortho_render_method: template.ortho_render_method,
             ortho_projection_params_xml: template.ortho_projection_params_xml,
             alignment_settings: template.alignment_settings,
+            runtime_settings: template.runtime_settings,
+            single_session: template.single_session,
             print_progress_interval_seconds: template.print_progress_interval_seconds,
         },
     };
@@ -1060,6 +1066,8 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         },
         JobTemplate {
@@ -1089,6 +1097,8 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         },
         JobTemplate {
@@ -1147,6 +1157,13 @@ fn job_templates() -> Vec<JobTemplate> {
                 input_pitch_accuracy: Some(45.0),
                 input_roll_accuracy: Some(45.0),
             }),
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                auto_save_mode: Some(true),
+                auto_save_cli_handling: Some("recover".to_string()),
+                auto_clear_cache: Some(999_999),
+                max_vertex_count_in_part: Some(500_000),
+            }),
+            single_session: true,
             print_progress_interval_seconds: Some(60),
         },
         JobTemplate {
@@ -1169,6 +1186,8 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_render_method: None,
             ortho_projection_params_xml: None,
             alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
             print_progress_interval_seconds: None,
         },
     ]
@@ -1233,6 +1252,18 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
     {
         return Err(ApiError::bad_request(
             "custom template ortho_pixel_size_meters must be greater than zero",
+        ));
+    }
+    if template
+        .runtime_settings
+        .as_ref()
+        .and_then(|settings| settings.auto_save_cli_handling.as_deref())
+        .is_some_and(|value| {
+            value.trim().is_empty() || value.contains('\n') || value.contains('\r')
+        })
+    {
+        return Err(ApiError::bad_request(
+            "custom template auto_save_cli_handling cannot be empty or contain newlines",
         ));
     }
     Ok(())
