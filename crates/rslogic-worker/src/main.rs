@@ -31,7 +31,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time,
 };
-use tracing::info;
+use tracing::{debug, info};
 use tracing_subscriber::{fmt, EnvFilter};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
@@ -303,7 +303,7 @@ async fn download_inputs(
         if input.sha256.is_some() && restore_input_from_cache(&cache_root, input, &target).await? {
             continue;
         }
-        info!(
+        debug!(
             job_id = manifest.job_id,
             asset_id = input.asset_id,
             filename = input.filename,

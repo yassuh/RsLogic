@@ -699,12 +699,11 @@ where
             }
         }
         outbound
-            .send(ClientEvent::LogChunk {
+            .try_send(ClientEvent::LogChunk {
                 job_id: Some(job_id.clone()),
                 stream: stream.to_string(),
                 lines: vec![line],
             })
-            .await
             .ok();
     }
     Ok(())
