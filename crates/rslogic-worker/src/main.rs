@@ -2420,12 +2420,55 @@ async fn collect_outputs(
     let outputs_dir = job_dir.join("outputs");
     package_output_directories(&outputs_dir).await?;
     let artifacts = if job.output_targets.is_empty() {
+        validate_required_pipeline_outputs(&job.pipeline, &outputs_dir).await?;
         discover_direct_output_artifacts(&outputs_dir).await?
     } else {
         collect_targeted_output_artifacts(&outputs_dir, &job.output_targets).await?
     };
     write_worker_state(job_dir, &job.job_id, artifacts.clone(), false).await?;
     Ok(artifacts)
+}
+
+async fn validate_required_pipeline_outputs(
+    pipeline: &RealityScanPipeline,
+    outputs_dir: &Path,
+) -> anyhow::Result<()> {
+    for filename in required_pipeline_output_filenames(pipeline) {
+        validate_output_filename(&filename)?;
+        let path = outputs_dir.join(&filename);
+        if !path.is_file() {
+            return Err(anyhow!(
+                "expected pipeline output {} was not found at {}",
+                filename,
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn required_pipeline_output_filenames(pipeline: &RealityScanPipeline) -> Vec<String> {
+    let stages = effective_stages(pipeline);
+    let mut filenames = Vec::new();
+    if stages.contains(&RealityScanStage::ExportOrthoProjection) {
+        push_required_pipeline_output(
+            &mut filenames,
+            pipeline
+                .orthomosaic_filename
+                .as_deref()
+                .unwrap_or("orthomosaic.tif"),
+        );
+    }
+    if stages.contains(&RealityScanStage::SaveProject) && !pipeline.project_filename.is_empty() {
+        push_required_pipeline_output(&mut filenames, &pipeline.project_filename);
+    }
+    filenames
+}
+
+fn push_required_pipeline_output(filenames: &mut Vec<String>, filename: &str) {
+    if !filenames.iter().any(|existing| existing == filename) {
+        filenames.push(filename.to_string());
+    }
 }
 
 async fn read_worker_state(job_dir: &Path) -> anyhow::Result<Option<WorkerJobState>> {
@@ -3945,6 +3988,44 @@ mod tests {
         let mut data = String::new();
         entry.read_to_string(&mut data).unwrap();
         assert_eq!(data, "model-data");
+    }
+
+    #[tokio::test]
+    async fn collect_outputs_requires_declared_pipeline_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let job_dir = temp.path().join("job-1");
+        let outputs_dir = job_dir.join("outputs");
+        fs::create_dir_all(&outputs_dir).await.unwrap();
+        fs::create_dir_all(job_dir.join("logs")).await.unwrap();
+        fs::write(outputs_dir.join("export-ortho-config.xml"), b"config")
+            .await
+            .unwrap();
+
+        let job = PipelineJob {
+            job_id: "job-1".to_string(),
+            job_name: None,
+            manifest: JobInputManifest {
+                job_id: "job-1".to_string(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+                inputs: Vec::<CloudfrontInput>::new(),
+            },
+            output_targets: Vec::new(),
+            realityscan_image: "unused".to_string(),
+            pipeline: RealityScanPipeline {
+                template_id: "density".to_string(),
+                stages: vec![
+                    RealityScanStage::ExportOrthoProjection,
+                    RealityScanStage::SaveProject,
+                ],
+                project_filename: "density.rsproj".to_string(),
+                orthomosaic_filename: Some("density.tif".to_string()),
+                ..RealityScanPipeline::default()
+            },
+        };
+
+        let error = collect_outputs(&job, &job_dir).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("expected pipeline output density.tif"));
     }
 
     #[tokio::test]
