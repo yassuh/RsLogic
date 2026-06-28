@@ -376,6 +376,10 @@ fn matched_fatal_output_pattern(line: &str, patterns: &[String]) -> Option<Strin
 }
 
 pub fn parse_realityscan_status(raw: &str) -> Option<RealityScanStatusSample> {
+    if let Some(sample) = parse_realityscan_print_progress_status(raw) {
+        return Some(sample);
+    }
+
     let mut progress_id = None;
     let mut progress_percent = None;
     let mut runtime_seconds = None;
@@ -409,6 +413,31 @@ pub fn parse_realityscan_status(raw: &str) -> Option<RealityScanStatusSample> {
     Some(RealityScanStatusSample {
         progress_id: progress_id?,
         progress_percent: progress_percent?,
+        runtime_seconds,
+        eta_seconds,
+        raw_status: raw.trim().to_string(),
+    })
+}
+
+fn parse_realityscan_print_progress_status(raw: &str) -> Option<RealityScanStatusSample> {
+    let mut tokens = raw.split_whitespace();
+    let progress_id = tokens.next()?;
+    let progress_value = tokens.next()?.parse::<f32>().ok()?;
+    let runtime_seconds = tokens.next()?.parse::<f64>().ok();
+    let eta_seconds = tokens.next()?.parse::<f64>().ok();
+    let marker = tokens.next()?;
+    if marker != "#progress" && marker != "#timeout" {
+        return None;
+    }
+
+    let progress_percent = if progress_value <= 1.0 {
+        progress_value * 100.0
+    } else {
+        progress_value
+    };
+    Some(RealityScanStatusSample {
+        progress_id: progress_id.to_string(),
+        progress_percent,
         runtime_seconds,
         eta_seconds,
         raw_status: raw.trim().to_string(),
@@ -703,5 +732,25 @@ PID STAT COMMAND COMMAND
         assert_eq!(sample.progress_percent, 57.5);
         assert_eq!(sample.runtime_seconds, Some(4.26));
         assert_eq!(sample.eta_seconds, Some(3.40));
+    }
+
+    #[test]
+    fn parses_realityscan_print_progress_output() {
+        let sample = parse_realityscan_status("65537 0.42 5005.49 6800.37 #progress").unwrap();
+
+        assert_eq!(sample.progress_id, "65537");
+        assert_eq!(sample.progress_percent, 42.0);
+        assert_eq!(sample.runtime_seconds, Some(5005.49));
+        assert_eq!(sample.eta_seconds, Some(6800.37));
+    }
+
+    #[test]
+    fn parses_realityscan_print_timeout_output() {
+        let sample = parse_realityscan_status("65537 0.42 4929.23 6767.07 #timeout").unwrap();
+
+        assert_eq!(sample.progress_id, "65537");
+        assert_eq!(sample.progress_percent, 42.0);
+        assert_eq!(sample.runtime_seconds, Some(4929.23));
+        assert_eq!(sample.eta_seconds, Some(6767.07));
     }
 }
