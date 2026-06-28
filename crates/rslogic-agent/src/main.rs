@@ -14,7 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use rslogic_protocol::{
     machine_id_from_material, now, sign_challenge, AgentStatus, ClientEvent, ClientKeypair,
     DesiredState, EnrollmentRequest, EnrollmentRequestRecord, EnrollmentStatus, HardwareSummary,
-    JobEvent, MachineTelemetry, PipelineJob, ServerCommand, SessionRequest, SessionToken,
+    JobEvent, JobState, MachineTelemetry, PipelineJob, ServerCommand, SessionRequest, SessionToken,
     UploadedArtifact, WorkerProcessState, WorkerStatus, DEFAULT_AGENT_STATE_DIR,
     DEFAULT_MANAGEMENT_URL, DEFAULT_WORKER_STATE_DIR,
 };
@@ -519,6 +519,19 @@ fn spawn_worker_job(
             Err(_) => WorkerProcessState::Failed,
         };
         if let Err(error) = &result {
+            outbound
+                .send(ClientEvent::JobEvent {
+                    event: JobEvent {
+                        job_id: job_id.clone(),
+                        state: JobState::Failed,
+                        message: format!("worker job {job_id} failed: {error:#}"),
+                        progress: 0.0,
+                        observed_at: now(),
+                        details: None,
+                    },
+                })
+                .await
+                .ok();
             outbound
                 .send(ClientEvent::ErrorReport {
                     client_id: Some(client_id),
