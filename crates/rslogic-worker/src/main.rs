@@ -20,8 +20,8 @@ use rslogic_protocol::{
     RealityScanPipeline, RealityScanStage, UploadedArtifact, DEFAULT_WORKER_STATE_DIR,
 };
 use rslogic_realityscan::{
-    parse_realityscan_status, ContainerRealityScanRunner, ContainerRuntime, RealityScanRunConfig,
-    RealityScanRunner,
+    parse_realityscan_status, ContainerBindMount, ContainerRealityScanRunner, ContainerRuntime,
+    RealityScanRunConfig, RealityScanRunner,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,6 +49,8 @@ struct Args {
     state_dir: PathBuf,
     #[arg(long, env = "RSLOGIC_CONTAINER_RUNTIME", default_value = "docker")]
     container_runtime: String,
+    #[arg(long, env = "RSLOGIC_REALITYSCAN_CACHE_ROOT")]
+    realityscan_cache_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -562,6 +564,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
     let phases = realityscan_phases(&job.pipeline, &job.manifest)?;
     let runner = ContainerRealityScanRunner;
     let phase_count = phases.len().max(1) as f32;
+    let realityscan_cache_dir = realityscan_job_cache_dir(args, &job.job_id);
     for (index, phase) in phases.iter().enumerate() {
         let file_stem = format!("{index:02}-{}", phase.name);
         prepare_realityscan_phase_artifacts(&job.pipeline, phase, job_dir).await?;
@@ -635,6 +638,11 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                     format!("/job/work/run-realityscan-{file_stem}.sh"),
                 ],
                 gpu: true,
+                extra_mounts: vec![ContainerBindMount {
+                    host_path: realityscan_cache_dir.clone(),
+                    container_path: "/root/.realityscan/realityscan".to_string(),
+                    read_only: false,
+                }],
                 log_prefix: Some(realityscan_log_prefix),
                 max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
@@ -690,6 +698,13 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         .await?;
     }
     Ok(())
+}
+
+fn realityscan_job_cache_dir(args: &Args, job_id: &str) -> PathBuf {
+    args.realityscan_cache_root
+        .clone()
+        .unwrap_or_else(|| args.state_dir.join("cache").join("realityscan"))
+        .join(job_id)
 }
 
 async fn prepare_realityscan_phase_artifacts(

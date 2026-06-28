@@ -42,6 +42,8 @@ pub struct RealityScanRunConfig {
     pub command: Vec<String>,
     pub gpu: bool,
     #[serde(default)]
+    pub extra_mounts: Vec<ContainerBindMount>,
+    #[serde(default)]
     pub log_prefix: Option<String>,
     #[serde(default)]
     pub max_runtime_secs: Option<u64>,
@@ -57,6 +59,14 @@ pub struct RealityScanRunConfig {
     pub stdout_line_tx: Option<mpsc::UnboundedSender<String>>,
     #[serde(skip)]
     pub stderr_line_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerBindMount {
+    pub host_path: PathBuf,
+    pub container_path: String,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +135,12 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             .arg(format!("{}:/job", config.job_dir.display()))
             .arg("-w")
             .arg("/job");
+        for mount in &config.extra_mounts {
+            fs::create_dir_all(&mount.host_path)
+                .await
+                .with_context(|| format!("creating bind mount {}", mount.host_path.display()))?;
+            cmd.arg("-v").arg(container_bind_mount_arg(mount));
+        }
         if config.gpu {
             cmd.arg("--device").arg("nvidia.com/gpu=all");
             if Path::new("/dev/dri").exists() {
@@ -506,6 +522,16 @@ fn runtime_run_limit_args(runtime: &ContainerRuntime) -> &'static [&'static str]
     }
 }
 
+fn container_bind_mount_arg(mount: &ContainerBindMount) -> String {
+    let access = if mount.read_only { ":ro" } else { "" };
+    format!(
+        "{}:{}{}",
+        mount.host_path.display(),
+        mount.container_path,
+        access
+    )
+}
+
 fn container_name(path: &PathBuf, phase: Option<&str>) -> String {
     match phase {
         Some(phase) => format!(
@@ -587,6 +613,20 @@ PID STAT COMMAND COMMAND
             &["--pids-limit=-1"]
         );
         assert!(runtime_run_limit_args(&ContainerRuntime::Docker).is_empty());
+    }
+
+    #[test]
+    fn formats_container_bind_mounts() {
+        let mount = ContainerBindMount {
+            host_path: PathBuf::from("/mnt/shared/cache/job-1"),
+            container_path: "/root/.realityscan/realityscan".to_string(),
+            read_only: false,
+        };
+
+        assert_eq!(
+            container_bind_mount_arg(&mount),
+            "/mnt/shared/cache/job-1:/root/.realityscan/realityscan"
+        );
     }
 
     #[test]
