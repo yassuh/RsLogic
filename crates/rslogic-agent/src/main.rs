@@ -57,6 +57,7 @@ struct Agent {
     http: reqwest::Client,
     private_key: String,
     disk_state: AgentDiskState,
+    active_worker: Arc<Mutex<Option<ActiveWorker>>>,
 }
 
 struct ActiveWorker {
@@ -122,6 +123,7 @@ impl Agent {
             http: reqwest::Client::new(),
             private_key,
             disk_state,
+            active_worker: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -254,7 +256,7 @@ impl Agent {
         let (socket, _) = connect_async(&ws_url).await?;
         let (mut writer, mut reader) = socket.split();
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientEvent>(128);
-        let active_worker = Arc::new(Mutex::new(None));
+        let active_worker = self.active_worker.clone();
         let desired_state = Arc::new(Mutex::new(DesiredState::default()));
         info!(client_id, ws_url, "connected to management websocket");
 
@@ -266,6 +268,44 @@ impl Agent {
         writer
             .send(Message::Text(serde_json::to_string(&hello)?.into()))
             .await?;
+
+        let active_job_id = active_worker
+            .lock()
+            .await
+            .as_ref()
+            .map(|active| active.job_id.clone());
+        let _reconnect_relay_stop = if let Some(active_job_id) = active_job_id {
+            let status = ClientEvent::WorkerStatus {
+                status: WorkerStatus {
+                    worker_version: env!("CARGO_PKG_VERSION").to_string(),
+                    process_state: WorkerProcessState::Running,
+                    active_job_id: Some(active_job_id.clone()),
+                    supports_job_events_jsonl: true,
+                },
+            };
+            writer
+                .send(Message::Text(serde_json::to_string(&status)?.into()))
+                .await?;
+
+            let path = self
+                .args
+                .worker_state_dir
+                .join("jobs")
+                .join(&active_job_id)
+                .join("logs")
+                .join("job-events.jsonl");
+            let (stop_tx, stop_rx) = oneshot::channel();
+            tokio::spawn(relay_worker_job_events_jsonl(
+                active_job_id,
+                path,
+                outbound_tx.clone(),
+                Arc::new(Mutex::new(HashSet::new())),
+                stop_rx,
+            ));
+            Some(stop_tx)
+        } else {
+            None
+        };
 
         let mut heartbeat = time::interval(Duration::from_secs(self.args.heartbeat_seconds));
         let mut cpu_sampler = CpuSampler::new();
