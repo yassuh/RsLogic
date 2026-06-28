@@ -1551,9 +1551,16 @@ fn generated_ortho_projection_params_watcher_script(
         r#"generate_ortho_projection_params_from_region() {{
   region_path='/job/outputs/{region_filename}'
   output_path='/job/outputs/calculate-ortho.rsortho'
-  for _ in $(seq 1 7200); do
+  region_wait_seconds=43200
+  for elapsed in $(seq 1 "${{region_wait_seconds}}"); do
+    if [ -s "${{output_path}}" ]; then
+      return 0
+    fi
     if [ -s "${{region_path}}" ] && grep -q '<ReconstructionRegion' "${{region_path}}"; then
       break
+    fi
+    if [ $((elapsed % 300)) -eq 0 ]; then
+      echo "waiting for exported reconstruction region ${{region_path}} (${{elapsed}}s/${{region_wait_seconds}}s)" >&2
     fi
     sleep 1
   done
@@ -3602,6 +3609,7 @@ mod tests {
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\00-single.rscmd").unwrap();
         assert!(launcher.contains("generate_ortho_projection_params_from_region"));
         assert!(launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
+        assert!(launcher.contains("region_wait_seconds=43200"));
         assert!(launcher.contains("colorType=\"aerial mosaicing\""));
         assert!(launcher.contains("rslogic_rsortho_watcher_pid=$!"));
     }
