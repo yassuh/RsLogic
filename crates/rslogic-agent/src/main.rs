@@ -37,6 +37,12 @@ struct Args {
     state_dir: PathBuf,
     #[arg(long, env = "RSLOGIC_AGENT_HEARTBEAT_SECONDS", default_value_t = 10)]
     heartbeat_seconds: u64,
+    #[arg(
+        long,
+        env = "RSLOGIC_WEBSOCKET_SEND_TIMEOUT_SECONDS",
+        default_value_t = 15
+    )]
+    websocket_send_timeout_seconds: u64,
     #[arg(long, env = "RSLOGIC_WORKER_BIN", default_value = "rslogic-worker")]
     worker_bin: PathBuf,
     #[arg(long, env = "RSLOGIC_WORKER_STATE_DIR", default_value = DEFAULT_WORKER_STATE_DIR)]
@@ -258,6 +264,7 @@ impl Agent {
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientEvent>(128);
         let active_worker = self.active_worker.clone();
         let desired_state = Arc::new(Mutex::new(DesiredState::default()));
+        let send_timeout = Duration::from_secs(self.args.websocket_send_timeout_seconds);
         info!(client_id, ws_url, "connected to management websocket");
 
         let hello = ClientEvent::Hello {
@@ -265,9 +272,7 @@ impl Agent {
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
             hostname: hostname(),
         };
-        writer
-            .send(Message::Text(serde_json::to_string(&hello)?.into()))
-            .await?;
+        send_management_event(&mut writer, &hello, send_timeout).await?;
 
         let active_job_id = active_worker
             .lock()
@@ -283,9 +288,7 @@ impl Agent {
                     supports_job_events_jsonl: true,
                 },
             };
-            writer
-                .send(Message::Text(serde_json::to_string(&status)?.into()))
-                .await?;
+            send_management_event(&mut writer, &status, send_timeout).await?;
 
             let path = self
                 .args
@@ -323,7 +326,7 @@ impl Agent {
                         observed_at: now(),
                         telemetry: telemetry.clone(),
                     };
-                    writer.send(Message::Text(serde_json::to_string(&event)?.into())).await?;
+                    send_management_event(&mut writer, &event, send_timeout).await?;
 
                     let status = ClientEvent::AgentStatus {
                         status: AgentStatus {
@@ -334,7 +337,7 @@ impl Agent {
                             telemetry,
                         },
                     };
-                    writer.send(Message::Text(serde_json::to_string(&status)?.into())).await?;
+                    send_management_event(&mut writer, &status, send_timeout).await?;
                 }
                 message = reader.next() => {
                     match message {
@@ -359,7 +362,7 @@ impl Agent {
                 }
                 outbound = outbound_rx.recv() => {
                     if let Some(event) = outbound {
-                        writer.send(Message::Text(serde_json::to_string(&event)?.into())).await?;
+                        send_management_event(&mut writer, &event, send_timeout).await?;
                     }
                 }
             }
@@ -731,6 +734,24 @@ async fn run_worker_job(
         return Err(anyhow!("worker exited with status {status}"));
     }
     Ok(WorkerRunOutcome::Completed)
+}
+
+async fn send_management_event<S>(
+    writer: &mut S,
+    event: &ClientEvent,
+    timeout: Duration,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    let raw = serde_json::to_string(event)?;
+    time::timeout(timeout, writer.send(Message::Text(raw.into())))
+        .await
+        .with_context(|| {
+            format!("timed out sending management websocket event after {timeout:?}")
+        })??;
+    Ok(())
 }
 
 async fn stream_worker_lines<R>(
