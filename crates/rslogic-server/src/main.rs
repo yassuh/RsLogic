@@ -1568,7 +1568,7 @@ fn asset_matches_group(asset: &studio_api::StudioImageAsset, needle: &str) -> bo
 }
 
 fn asset_matches_search(asset: &studio_api::StudioImageAsset, search: &str) -> bool {
-    [
+    if [
         Some(asset.asset_id.as_str()),
         asset.filename.as_deref(),
         asset.cloudfront_path.as_deref(),
@@ -1581,6 +1581,37 @@ fn asset_matches_search(asset: &studio_api::StudioImageAsset, search: &str) -> b
     .into_iter()
     .flatten()
     .any(|value| value.to_lowercase().contains(search))
+    {
+        return true;
+    }
+
+    asset
+        .s3_tags
+        .as_ref()
+        .is_some_and(|tags| json_value_matches_search(tags, search))
+        || asset
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| json_value_matches_search(metadata, search))
+        || asset.extra_fields.iter().any(|(key, value)| {
+            key.starts_with("tag_")
+                && (key.to_lowercase().contains(search) || json_value_matches_search(value, search))
+        })
+}
+
+fn json_value_matches_search(value: &serde_json::Value, search: &str) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(value) => value.to_string().contains(search),
+        serde_json::Value::Number(value) => value.to_string().contains(search),
+        serde_json::Value::String(value) => value.to_lowercase().contains(search),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| json_value_matches_search(value, search)),
+        serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
+            key.to_lowercase().contains(search) || json_value_matches_search(value, search)
+        }),
+    }
 }
 
 fn parse_bbox(value: &str) -> Result<AdminImageryBounds, ApiError> {
@@ -2681,6 +2712,25 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_id, "inside");
+    }
+
+    #[test]
+    fn imagery_search_matches_s3_tags() {
+        let asset = studio_api::StudioImageAsset {
+            asset_id: "asset-1".to_string(),
+            s3_tags: Some(serde_json::json!({
+                "Aircraft Model": "DJI M4E",
+            })),
+            extra_fields: HashMap::from([(
+                "tag_project_name".to_string(),
+                serde_json::Value::String("seaFORTH".to_string()),
+            )]),
+            ..studio_api::StudioImageAsset::default()
+        };
+
+        assert!(asset_matches_search(&asset, "m4e"));
+        assert!(asset_matches_search(&asset, "project_name"));
+        assert!(asset_matches_search(&asset, "seaforth"));
     }
 
     #[tokio::test]

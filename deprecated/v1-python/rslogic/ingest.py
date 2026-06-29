@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -17,6 +18,10 @@ from .common.db import LabelDbStore
 from .common.s3 import make_client, s3_object_keys, move_object
 from .sidecar_parser import extract_gps_from_exif, parse_exif, parse_sidecar
 from .upload_service import IMAGE_SUFFIXES, SIDECAR_SUFFIXES
+
+
+TAG_COLUMN_PREFIX = "tag_"
+_TAG_COLUMN_SAFE_CHARS = re.compile(r"[^0-9a-zA-Z_]+")
 
 
 def _first_value(mapping: dict[str, Any], *keys: str) -> Any:
@@ -83,6 +88,26 @@ def _extract_camera_payload(exif: dict[str, Any]) -> dict[str, Any]:
         "software": _first_value(exif, "Software", "SoftwareVersion"),
         "captured_at": captured_at,
     }
+
+
+def _s3_tag_column_name(tag_name: str) -> str:
+    cleaned = _TAG_COLUMN_SAFE_CHARS.sub("_", tag_name.strip().lower()).strip("_")
+    if not cleaned:
+        cleaned = "unnamed"
+    return f"{TAG_COLUMN_PREFIX}{cleaned}"
+
+
+def _flatten_s3_tags_for_metadata(tags: dict[str, str]) -> dict[str, str]:
+    flattened: dict[str, str] = {}
+    for tag_name, value in sorted(tags.items()):
+        base_column = _s3_tag_column_name(tag_name)
+        column = base_column
+        suffix = 2
+        while column in flattened:
+            column = f"{base_column}_{suffix}"
+            suffix += 1
+        flattened[column] = value
+    return flattened
 
 
 @dataclass
@@ -160,8 +185,17 @@ class IngestService:
             )
         return images, unmatched, stats
 
+    def _fetch_s3_tags(self, bucket: str, key: str) -> dict[str, str]:
+        response = self.s3.get_object_tagging(Bucket=bucket, Key=key)
+        return {
+            str(tag["Key"]): str(tag.get("Value", ""))
+            for tag in response.get("TagSet", [])
+            if tag.get("Key") is not None
+        }
+
     def _parse_payload(self, image_tmp: Path, sidecar_keys: list[str], image_key: str) -> dict[str, Any]:
         payload: dict[str, Any] = {}
+        s3_tags = self._fetch_s3_tags(self.waiting, image_key)
         payload["exif"] = parse_exif(image_tmp)
         payload["sidecars"] = []
         for sidecar_key in sidecar_keys:
@@ -180,7 +214,11 @@ class IngestService:
             "waiting_bucket": self.waiting,
             "waiting_key": image_key,
             "s3_url": f"s3://{self.waiting}/{image_key}",
+            "s3_tags": s3_tags,
         }
+        payload["s3_tags"] = s3_tags
+        payload["s3_tag_columns"] = _flatten_s3_tags_for_metadata(s3_tags)
+        payload.update(payload["s3_tag_columns"])
         payload["geodata"] = extract_gps_from_exif(payload["exif"].get("exif", {}))
         return payload
 

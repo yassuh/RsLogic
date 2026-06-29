@@ -329,6 +329,10 @@ type StudioImageAsset = {
   drone_model?: string | null
   camera_make?: string | null
   camera_model?: string | null
+  metadata?: Record<string, unknown> | null
+  s3_tags?: Record<string, unknown> | null
+  s3_tag_columns?: Record<string, unknown> | null
+  [key: `tag_${string}`]: unknown
 }
 
 type ImageryResponse = {

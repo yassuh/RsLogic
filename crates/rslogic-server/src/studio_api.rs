@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use reqwest::{Client, StatusCode};
@@ -402,6 +402,12 @@ pub struct StudioImageAsset {
         alias = "uploadBatchName"
     )]
     pub batch_name: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default, alias = "s3Tags", alias = "tags")]
+    pub s3_tags: Option<serde_json::Value>,
+    #[serde(default, flatten)]
+    pub extra_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -603,7 +609,11 @@ mod tests {
                 "principal_point_y_mm": -0.2,
                 "distortion_model": 2,
                 "radial_1": -0.01
-            }
+            },
+            "s3_tags": {
+                "Aircraft Model": "DJI M4E"
+            },
+            "tag_aircraft_model": "DJI M4E"
         });
 
         let asset: StudioImageAsset = serde_json::from_value(raw).unwrap();
@@ -624,6 +634,21 @@ mod tests {
             Some(24.0)
         );
         assert!(asset.captured_at.is_some());
+        assert_eq!(
+            asset
+                .s3_tags
+                .as_ref()
+                .and_then(|tags| tags.get("Aircraft Model"))
+                .and_then(serde_json::Value::as_str),
+            Some("DJI M4E")
+        );
+        assert_eq!(
+            asset
+                .extra_fields
+                .get("tag_aircraft_model")
+                .and_then(serde_json::Value::as_str),
+            Some("DJI M4E")
+        );
     }
 
     #[test]

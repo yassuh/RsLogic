@@ -12,10 +12,14 @@ import rslogic.ingest as ingest_module
 class _FakeS3:
     def __init__(self) -> None:
         self.downloads: list[tuple[str, str, str]] = []
+        self.tags: dict[tuple[str, str], list[dict[str, str]]] = {}
 
     def download_file(self, bucket: str, source: str, target: str) -> None:
         self.downloads.append((bucket, source, target))
         Path(target).write_bytes(b"")
+
+    def get_object_tagging(self, Bucket: str, Key: str) -> dict[str, list[dict[str, str]]]:
+        return {"TagSet": self.tags.get((Bucket, Key), [])}
 
 
 class _FakeDb:
@@ -107,3 +111,38 @@ def test_ingest_run_reports_progress(monkeypatch) -> None:
     assert ("drone-imagery-waiting", "img-two.jpg", "drone-imagery", "img-two.jpg") in _fake_move_object.moves
     assert ("drone-imagery-waiting", "img-one.xmp", "drone-imagery", "img-one.xmp") in _fake_move_object.moves
     assert db.created == ["img-1", "img-2"]
+
+
+def test_parse_payload_includes_s3_tags_as_prefixed_metadata(monkeypatch, tmp_path) -> None:
+    s3 = _FakeS3()
+    s3.tags[("drone-imagery-waiting", "folder/img-one.jpg")] = [
+        {"Key": "Aircraft Model", "Value": "DJI M4E"},
+        {"Key": "project/name", "Value": "seaFORTH"},
+        {"Key": "123", "Value": "numeric-key"},
+    ]
+
+    service = IngestService.__new__(IngestService)
+    service.s3 = s3
+    service.waiting = "drone-imagery-waiting"
+
+    image_path = tmp_path / "img-one.jpg"
+    image_path.write_bytes(b"")
+
+    monkeypatch.setattr(ingest_module, "parse_exif", lambda _path: {"exif": {}})
+    monkeypatch.setattr(ingest_module, "extract_gps_from_exif", lambda _exif: {})
+
+    payload = service._parse_payload(image_path, [], "folder/img-one.jpg")
+
+    assert payload["s3_tags"] == {
+        "Aircraft Model": "DJI M4E",
+        "project/name": "seaFORTH",
+        "123": "numeric-key",
+    }
+    assert payload["source"]["s3_tags"] == payload["s3_tags"]
+    assert payload["s3_tag_columns"] == {
+        "tag_123": "numeric-key",
+        "tag_aircraft_model": "DJI M4E",
+        "tag_project_name": "seaFORTH",
+    }
+    assert payload["tag_aircraft_model"] == "DJI M4E"
+    assert payload["tag_project_name"] == "seaFORTH"

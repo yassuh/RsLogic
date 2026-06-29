@@ -44,6 +44,7 @@ def copy_object(s3_client: BaseClient, source_bucket: str, source_key: str, targ
         Key=target_key,
         CopySource={"Bucket": source_bucket, "Key": source_key},
         MetadataDirective="COPY",
+        TaggingDirective="COPY",
     )
 
 
