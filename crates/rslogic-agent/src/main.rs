@@ -694,6 +694,7 @@ async fn run_worker_job(
         _ = &mut cancel_rx => {
             let _ = child.kill().await;
             let _ = child.wait().await;
+            stop_realityscan_job_containers(&container_runtime, &job.job_id).await;
             outbound
                 .send(ClientEvent::JobEvent {
                     event: JobEvent {
@@ -734,6 +735,74 @@ async fn run_worker_job(
         return Err(anyhow!("worker exited with status {status}"));
     }
     Ok(WorkerRunOutcome::Completed)
+}
+
+async fn stop_realityscan_job_containers(container_runtime: &str, job_id: &str) {
+    let output = match TokioCommand::new(container_runtime)
+        .arg("ps")
+        .arg("-a")
+        .arg("--format")
+        .arg("{{.ID}}\t{{.Names}}")
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            warn!(%error, container_runtime, job_id, "failed to list containers after cancellation");
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        warn!(
+            status = %output.status,
+            container_runtime,
+            job_id,
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "container runtime failed to list containers after cancellation"
+        );
+        return;
+    }
+
+    let name_fragment = format!("rslogic-job-{job_id}-realityscan-");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let Some((container_id, names)) = line.split_once('\t') else {
+            continue;
+        };
+        if !names.contains(&name_fragment) {
+            continue;
+        }
+        match TokioCommand::new(container_runtime)
+            .arg("stop")
+            .arg(container_id)
+            .status()
+            .await
+        {
+            Ok(status) if status.success() => {
+                info!(
+                    container_id,
+                    job_id, "stopped RealityScan container after cancellation"
+                );
+            }
+            Ok(status) => {
+                warn!(
+                    status = %status,
+                    container_id,
+                    job_id,
+                    "container runtime failed to stop RealityScan container after cancellation"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    container_id,
+                    job_id,
+                    "failed to stop RealityScan container after cancellation"
+                );
+            }
+        }
+    }
 }
 
 async fn send_management_event<S>(
