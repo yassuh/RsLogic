@@ -36,7 +36,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
-const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
+const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 7 * 24 * 60 * 60;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
 const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
 const REALITYSCAN_PHASE_STALE_SECS: u64 = 10 * 60;
@@ -51,6 +51,12 @@ struct Args {
     container_runtime: String,
     #[arg(long, env = "RSLOGIC_REALITYSCAN_CACHE_ROOT")]
     realityscan_cache_root: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "RSLOGIC_REALITYSCAN_PHASE_MAX_RUNTIME_SECS",
+        default_value_t = REALITYSCAN_PHASE_MAX_RUNTIME_SECS
+    )]
+    realityscan_phase_max_runtime_secs: u64,
     #[command(subcommand)]
     command: Command,
 }
@@ -644,7 +650,8 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                     read_only: false,
                 }],
                 log_prefix: Some(realityscan_log_prefix),
-                max_runtime_secs: Some(REALITYSCAN_PHASE_MAX_RUNTIME_SECS),
+                max_runtime_secs: (args.realityscan_phase_max_runtime_secs > 0)
+                    .then_some(args.realityscan_phase_max_runtime_secs),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
                 status_poll_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
                 realityscan_instance_name: Some(instance_name),
@@ -3655,6 +3662,11 @@ mod tests {
         assert!(launcher.contains("region_wait_seconds=43200"));
         assert!(launcher.contains("colorType=\"aerial mosaicing\""));
         assert!(launcher.contains("rslogic_rsortho_watcher_pid=$!"));
+    }
+
+    #[test]
+    fn realityscan_phase_runtime_default_allows_multi_day_density_jobs() {
+        assert_eq!(REALITYSCAN_PHASE_MAX_RUNTIME_SECS, 7 * 24 * 60 * 60);
     }
 
     #[test]
