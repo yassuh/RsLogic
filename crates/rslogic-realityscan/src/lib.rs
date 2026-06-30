@@ -256,8 +256,15 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             if container_has_defunct_realityscan(&config.runtime, &container_name).await? {
                 warn!(
                     container_name,
-                    "RealityScan.exe became defunct; removing container"
+                    "RealityScan.exe became defunct; waiting for container process to exit"
                 );
+                sleep(Duration::from_secs(15)).await;
+                if let Some(status) = child
+                    .try_wait()
+                    .with_context(|| format!("polling {}", config.runtime.binary()))?
+                {
+                    break status;
+                }
                 remove_container(&config.runtime, &container_name)
                     .await
                     .ok();
