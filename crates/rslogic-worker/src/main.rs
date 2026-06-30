@@ -571,7 +571,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
     let phases = realityscan_phases(&job.pipeline, &job.manifest)?;
     let runner = ContainerRealityScanRunner;
     let phase_count = phases.len().max(1) as f32;
-    let realityscan_cache_dir = realityscan_job_cache_dir(args, &job.job_id);
+    let realityscan_cache_dir = realityscan_job_cache_dir(args, &job.pipeline, &job.job_id)?;
     for (index, phase) in phases.iter().enumerate() {
         let file_stem = format!("{index:02}-{}", phase.name);
         prepare_realityscan_phase_artifacts(&job.pipeline, phase, job_dir).await?;
@@ -708,11 +708,41 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
     Ok(())
 }
 
-fn realityscan_job_cache_dir(args: &Args, job_id: &str) -> PathBuf {
-    args.realityscan_cache_root
+fn realityscan_job_cache_dir(
+    args: &Args,
+    pipeline: &RealityScanPipeline,
+    job_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let cache_root = args
+        .realityscan_cache_root
         .clone()
-        .unwrap_or_else(|| args.state_dir.join("cache").join("realityscan"))
-        .join(job_id)
+        .unwrap_or_else(|| args.state_dir.join("cache").join("realityscan"));
+    let Some(namespace) = pipeline
+        .runtime_settings
+        .as_ref()
+        .and_then(|settings| settings.cache_namespace.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(cache_root.join(job_id));
+    };
+    validate_realityscan_cache_namespace(namespace)?;
+    Ok(cache_root.join("named").join(namespace))
+}
+
+fn validate_realityscan_cache_namespace(namespace: &str) -> anyhow::Result<()> {
+    if namespace.len() > 128 {
+        anyhow::bail!("realityscan cache_namespace cannot exceed 128 bytes");
+    }
+    if !namespace
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        anyhow::bail!(
+            "realityscan cache_namespace can contain only ASCII letters, digits, '-' and '_'"
+        );
+    }
+    Ok(())
 }
 
 async fn prepare_realityscan_phase_artifacts(
@@ -3678,6 +3708,7 @@ mod tests {
                 auto_clear_cache: Some(999_999),
                 geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(500_000),
+                cache_namespace: None,
             }),
             single_session: true,
             print_progress_interval_seconds: Some(60),
@@ -3944,6 +3975,7 @@ mod tests {
                 auto_clear_cache: Some(999_999),
                 geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(2_000_000),
+                cache_namespace: None,
             }),
             single_session: false,
             print_progress_interval_seconds: Some(60),
@@ -3975,6 +4007,46 @@ mod tests {
         assert!(phases[1]
             .commands
             .contains(&"-save \"Z:\\job\\outputs\\continued-high-aerial.rsproj\"".to_string()));
+    }
+
+    #[test]
+    fn realityscan_cache_namespace_uses_named_cache_dir() {
+        let args = Args {
+            state_dir: PathBuf::from("/state"),
+            container_runtime: "docker".to_string(),
+            realityscan_cache_root: Some(PathBuf::from("/cache")),
+            realityscan_phase_max_runtime_secs: REALITYSCAN_PHASE_MAX_RUNTIME_SECS,
+            command: Command::DownloadOnly {
+                manifest: PathBuf::from("manifest.json"),
+            },
+        };
+        let pipeline = RealityScanPipeline {
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                cache_namespace: Some("yallahs_high_mvs5m".to_string()),
+                ..RealityScanRuntimeSettings::default()
+            }),
+            ..RealityScanPipeline::default()
+        };
+
+        assert_eq!(
+            realityscan_job_cache_dir(&args, &pipeline, "job-1").unwrap(),
+            PathBuf::from("/cache/named/yallahs_high_mvs5m")
+        );
+
+        let default_pipeline = RealityScanPipeline::default();
+        assert_eq!(
+            realityscan_job_cache_dir(&args, &default_pipeline, "job-1").unwrap(),
+            PathBuf::from("/cache/job-1")
+        );
+
+        let invalid_pipeline = RealityScanPipeline {
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                cache_namespace: Some("../bad".to_string()),
+                ..RealityScanRuntimeSettings::default()
+            }),
+            ..RealityScanPipeline::default()
+        };
+        assert!(realityscan_job_cache_dir(&args, &invalid_pipeline, "job-1").is_err());
     }
 
     #[tokio::test]

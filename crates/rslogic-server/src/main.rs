@@ -1171,6 +1171,7 @@ fn job_templates() -> Vec<JobTemplate> {
                 auto_clear_cache: Some(999_999),
                 geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(5_000_000),
+                cache_namespace: None,
             }),
             single_session: false,
             print_progress_interval_seconds: Some(60),

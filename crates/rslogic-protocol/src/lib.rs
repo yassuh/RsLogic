@@ -420,6 +420,8 @@ pub struct RealityScanRuntimeSettings {
     pub geometry_gpu_accel: Option<bool>,
     #[serde(default)]
     pub max_vertex_count_in_part: Option<u32>,
+    #[serde(default)]
+    pub cache_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
