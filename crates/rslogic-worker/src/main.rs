@@ -583,7 +583,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
         let instance_name = realityscan_instance_name(&job.job_id, index, &phase.name);
         fs::write(
             &script_path,
-            realityscan_cli_script(&job.pipeline, &windows_commands_path)?,
+            realityscan_cli_script(&job.pipeline, &windows_commands_path, &phase.commands)?,
         )
         .await?;
         let mut phase_commands = Vec::with_capacity(phase.commands.len() + 1);
@@ -1579,6 +1579,7 @@ fn load_project_command_with_mode(filename: &str, mode: &str) -> String {
 fn realityscan_cli_script(
     pipeline: &RealityScanPipeline,
     windows_commands_path: &str,
+    phase_commands: &[String],
 ) -> anyhow::Result<String> {
     if pipeline
         .ortho_pixel_size_meters
@@ -1614,8 +1615,10 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
         script.push_str("cat > /job/outputs/calculate-ortho.rsortho <<'XML'\n");
         script.push_str(&params);
         script.push_str("XML\n");
-    } else if let Some(watcher) = generated_ortho_projection_params_watcher_script(pipeline) {
-        script.push_str(&watcher);
+    } else if phase_needs_generated_ortho_projection_params(phase_commands) {
+        if let Some(watcher) = generated_ortho_projection_params_watcher_script(pipeline) {
+            script.push_str(&watcher);
+        }
     }
     script.push_str(&format!(
         "/opt/realityscan/bin/realityscan-cli -headless -silent {} -stdConsole -execRSCMD {}\n",
@@ -1623,6 +1626,13 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
         shell_quote(windows_commands_path)
     ));
     Ok(script)
+}
+
+fn phase_needs_generated_ortho_projection_params(phase_commands: &[String]) -> bool {
+    phase_commands.iter().any(|command| {
+        command.contains("-calculateOrthoProjection")
+            && command.contains("Z:\\job\\outputs\\calculate-ortho.rsortho")
+    })
 }
 
 fn generated_ortho_projection_params_watcher_script(
@@ -3373,7 +3383,8 @@ mod tests {
             print_progress_interval_seconds: None,
         };
 
-        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
+        let launcher =
+            realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd", &[]).unwrap();
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
 
         assert!(launcher.contains(r#"<entry key="exportOrthoAsBigTiff" value="true"/>"#));
@@ -3429,7 +3440,8 @@ mod tests {
             print_progress_interval_seconds: None,
         };
 
-        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd").unwrap();
+        let launcher =
+            realityscan_cli_script(&pipeline, "Z:\\job\\work\\commands.rscmd", &[]).unwrap();
         let script = realityscan_rscmd_script(&pipeline, &manifest).unwrap();
 
         assert!(!script.contains("-calculateTexture"));
@@ -3550,6 +3562,30 @@ mod tests {
         assert!(phases[2].commands.iter().any(|command| command.contains(
             "-exportOrthoProjection \"Z:\\job\\outputs\\density-high-color-aerial-5cm.tif\""
         )));
+
+        let align_launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\00-align-save.rscmd",
+            &phases[0].commands,
+        )
+        .unwrap();
+        let model_launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\01-model-save.rscmd",
+            &phases[1].commands,
+        )
+        .unwrap();
+        let output_launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\02-outputs.rscmd",
+            &phases[2].commands,
+        )
+        .unwrap();
+
+        assert!(!align_launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(!model_launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(output_launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(output_launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
     }
 
     #[test]
@@ -3745,7 +3781,12 @@ mod tests {
             .iter()
             .any(|command| command.contains("-exportOrthoProjection")));
 
-        let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\00-single.rscmd").unwrap();
+        let launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\00-single.rscmd",
+            &phases[0].commands,
+        )
+        .unwrap();
         assert!(launcher.contains("generate_ortho_projection_params_from_region"));
         assert!(launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
         assert!(
