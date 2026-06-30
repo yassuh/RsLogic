@@ -1401,6 +1401,11 @@ fn realityscan_runtime_setting_commands(
         pairs.push(("appAutoSaveCliHandling", value.trim().to_string()));
     }
     push_u32_setting(&mut pairs, "appAutoClearCache", settings.auto_clear_cache);
+    push_bool_setting(
+        &mut pairs,
+        "MvsGeometryGpuAccel",
+        settings.geometry_gpu_accel,
+    );
     push_u32_setting(
         &mut pairs,
         "mvsMaxVertexCountInPart",
@@ -3671,6 +3676,7 @@ mod tests {
                 auto_save_mode: Some(true),
                 auto_save_cli_handling: Some("recover".to_string()),
                 auto_clear_cache: Some(999_999),
+                geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(500_000),
             }),
             single_session: true,
@@ -3690,6 +3696,9 @@ mod tests {
         assert!(phases[0]
             .commands
             .contains(&"-set \"appAutoClearCache=999999\"".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"MvsGeometryGpuAccel=true\"".to_string()));
         assert!(phases[0]
             .commands
             .contains(&"-set \"mvsMaxVertexCountInPart=500000\"".to_string()));
@@ -3933,6 +3942,7 @@ mod tests {
                 auto_save_mode: Some(true),
                 auto_save_cli_handling: Some("recover".to_string()),
                 auto_clear_cache: Some(999_999),
+                geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(2_000_000),
             }),
             single_session: false,

@@ -417,6 +417,8 @@ pub struct RealityScanRuntimeSettings {
     #[serde(default)]
     pub auto_clear_cache: Option<u32>,
     #[serde(default)]
+    pub geometry_gpu_accel: Option<bool>,
+    #[serde(default)]
     pub max_vertex_count_in_part: Option<u32>,
 }
 

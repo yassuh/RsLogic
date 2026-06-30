@@ -274,8 +274,16 @@ struct BuildJobRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 enum JobImageSelection {
-    GroupName { group_name: String },
-    Polygon { coordinates: Vec<[f64; 2]> },
+    GroupName {
+        group_name: String,
+    },
+    Polygon {
+        coordinates: Vec<[f64; 2]>,
+    },
+    GroupPolygon {
+        group_name: String,
+        coordinates: Vec<[f64; 2]>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -1161,6 +1169,7 @@ fn job_templates() -> Vec<JobTemplate> {
                 auto_save_mode: Some(true),
                 auto_save_cli_handling: Some("recover".to_string()),
                 auto_clear_cache: Some(999_999),
+                geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(5_000_000),
             }),
             single_session: false,
@@ -1353,6 +1362,30 @@ fn select_job_assets(
             Ok(assets
                 .iter()
                 .filter(|asset| {
+                    let (Some(latitude), Some(longitude)) = (asset.latitude, asset.longitude)
+                    else {
+                        return false;
+                    };
+                    point_in_polygon(longitude, latitude, coordinates)
+                })
+                .cloned()
+                .collect())
+        }
+        JobImageSelection::GroupPolygon {
+            group_name,
+            coordinates,
+        } => {
+            let needle = group_name.trim();
+            if needle.is_empty() {
+                return Err(ApiError::bad_request("group_name cannot be empty"));
+            }
+            validate_polygon(coordinates)?;
+            Ok(assets
+                .iter()
+                .filter(|asset| {
+                    if !asset_matches_group(asset, needle) {
+                        return false;
+                    }
                     let (Some(latitude), Some(longitude)) = (asset.latitude, asset.longitude)
                     else {
                         return false;
@@ -2718,6 +2751,45 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_id, "inside");
+    }
+
+    #[test]
+    fn job_asset_selection_filters_by_group_polygon() {
+        let assets = vec![
+            studio_api::StudioImageAsset {
+                asset_id: "inside-group".to_string(),
+                group_name: Some("target".to_string()),
+                latitude: Some(10.0),
+                longitude: Some(10.0),
+                ..studio_api::StudioImageAsset::default()
+            },
+            studio_api::StudioImageAsset {
+                asset_id: "inside-other-group".to_string(),
+                group_name: Some("other".to_string()),
+                latitude: Some(10.0),
+                longitude: Some(10.0),
+                ..studio_api::StudioImageAsset::default()
+            },
+            studio_api::StudioImageAsset {
+                asset_id: "outside-group".to_string(),
+                group_name: Some("target".to_string()),
+                latitude: Some(30.0),
+                longitude: Some(30.0),
+                ..studio_api::StudioImageAsset::default()
+            },
+        ];
+
+        let selected = select_job_assets(
+            &assets,
+            &JobImageSelection::GroupPolygon {
+                group_name: "TARGET".to_string(),
+                coordinates: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].asset_id, "inside-group");
     }
 
     #[test]
