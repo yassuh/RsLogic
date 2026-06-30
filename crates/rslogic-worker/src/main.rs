@@ -37,6 +37,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
 const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 7 * 24 * 60 * 60;
+const ORTHO_REGION_WAIT_SECS: u64 = REALITYSCAN_PHASE_MAX_RUNTIME_SECS;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
 const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
 const REALITYSCAN_PHASE_STALE_SECS: u64 = 10 * 60;
@@ -1558,7 +1559,7 @@ fn generated_ortho_projection_params_watcher_script(
         r#"generate_ortho_projection_params_from_region() {{
   region_path='/job/outputs/{region_filename}'
   output_path='/job/outputs/calculate-ortho.rsortho'
-  region_wait_seconds=43200
+  region_wait_seconds="${{RSLOGIC_ORTHO_REGION_WAIT_SECS:-{region_wait_seconds}}}"
   for elapsed in $(seq 1 "${{region_wait_seconds}}"); do
     if [ -s "${{output_path}}" ]; then
       return 0
@@ -1600,6 +1601,7 @@ XML
 generate_ortho_projection_params_from_region &
 rslogic_rsortho_watcher_pid=$!
 "#,
+        region_wait_seconds = ORTHO_REGION_WAIT_SECS,
         pixel_size = format_decimal(pixel_size),
         color_type = realityscan_ortho_color_type(method),
     ))
@@ -3659,7 +3661,9 @@ mod tests {
         let launcher = realityscan_cli_script(&pipeline, "Z:\\job\\work\\00-single.rscmd").unwrap();
         assert!(launcher.contains("generate_ortho_projection_params_from_region"));
         assert!(launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
-        assert!(launcher.contains("region_wait_seconds=43200"));
+        assert!(
+            launcher.contains("region_wait_seconds=\"${RSLOGIC_ORTHO_REGION_WAIT_SECS:-604800}\"")
+        );
         assert!(launcher.contains("colorType=\"aerial mosaicing\""));
         assert!(launcher.contains("rslogic_rsortho_watcher_pid=$!"));
     }
