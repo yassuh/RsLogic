@@ -1824,10 +1824,17 @@ async fn resolve_camera_intrinsics_for_assets(
             let intrinsics = match studio.get_camera_intrinsics(&camera_name).await {
                 Ok(intrinsics) => intrinsics,
                 Err(error) => {
-                    warnings.push(format!(
-                        "camera intrinsics lookup failed for {camera_name}: {error}"
-                    ));
-                    None
+                    let fallback = fallback_camera_intrinsics(&camera_name);
+                    if fallback.is_some() {
+                        warnings.push(format!(
+                            "camera intrinsics lookup failed for {camera_name}: {error}; using built-in fallback"
+                        ));
+                    } else {
+                        warnings.push(format!(
+                            "camera intrinsics lookup failed for {camera_name}: {error}"
+                        ));
+                    }
+                    fallback
                 }
             };
             cache.insert(camera_name.clone(), intrinsics);
@@ -1837,6 +1844,23 @@ async fn resolve_camera_intrinsics_for_assets(
         }
     }
     warnings
+}
+
+fn fallback_camera_intrinsics(camera_name: &str) -> Option<CameraIntrinsics> {
+    let normalized = camera_name.trim().to_lowercase();
+    if normalized != "dji m4e" {
+        return None;
+    }
+
+    Some(CameraIntrinsics {
+        camera_id: Some("DJI M4E".to_string()),
+        distortion_prior: Some(1),
+        distortion_model: Some(2),
+        radial_1: Some(-0.036013),
+        radial_2: Some(-0.004848),
+        radial_3: Some(0.000481),
+        ..CameraIntrinsics::default()
+    })
 }
 
 fn asset_camera_intrinsics_name(asset: &studio_api::StudioImageAsset) -> Option<String> {
@@ -2791,6 +2815,19 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_id, "inside-group");
+    }
+
+    #[test]
+    fn fallback_camera_intrinsics_returns_known_dji_m4e_distortion() {
+        let intrinsics = fallback_camera_intrinsics(" DJI M4E ").unwrap();
+
+        assert_eq!(intrinsics.camera_id.as_deref(), Some("DJI M4E"));
+        assert_eq!(intrinsics.distortion_prior, Some(1));
+        assert_eq!(intrinsics.distortion_model, Some(2));
+        assert_eq!(intrinsics.radial_1, Some(-0.036013));
+        assert_eq!(intrinsics.radial_2, Some(-0.004848));
+        assert_eq!(intrinsics.radial_3, Some(0.000481));
+        assert!(fallback_camera_intrinsics("DJI M3E").is_none());
     }
 
     #[test]
