@@ -1103,9 +1103,9 @@ fn job_templates() -> Vec<JobTemplate> {
         },
         JobTemplate {
             template_id: "density_preview_color_aerial_5cm".to_string(),
-            name: "density high color aerial orthomosaic 5cm".to_string(),
+            name: "density high color aerial orthomosaic 5cm balanced".to_string(),
             description:
-                "Use aggressive GPS-aided alignment, set a density-based georeferenced region, run high-detail reconstruction, correct colors, and export a 5 cm aerial-mosaicing orthomosaic."
+                "Use GPS-aided alignment with a balanced feature budget, set a density-based georeferenced region, run high-detail reconstruction with a balanced part size, correct colors, and export a 5 cm aerial-mosaicing orthomosaic."
                     .to_string(),
             stages: vec![
                 RealityScanStage::SetIntrinsics,
@@ -1129,13 +1129,13 @@ fn job_templates() -> Vec<JobTemplate> {
             ortho_projection_params_xml: None,
             alignment_settings: Some(RealityScanAlignmentSettings {
                 feature_detection_quality: Some("High".to_string()),
-                max_features_per_mpx: Some(20_000),
-                max_features_per_image: Some(80_000),
+                max_features_per_mpx: Some(10_000),
+                max_features_per_image: Some(40_000),
                 images_overlap: Some("Low".to_string()),
                 image_downscale_factor: Some(1),
                 max_feature_reprojection_error: Some(3.0),
                 detector_sensitivity: Some("Ultra".to_string()),
-                preselector_features: Some(30_000),
+                preselector_features: Some(15_000),
                 force_component_rematch: Some(true),
                 merge_georeferenced_components: Some(true),
                 enable_camera_prior: Some(true),
@@ -1161,7 +1161,7 @@ fn job_templates() -> Vec<JobTemplate> {
                 auto_save_mode: Some(true),
                 auto_save_cli_handling: Some("recover".to_string()),
                 auto_clear_cache: Some(999_999),
-                max_vertex_count_in_part: Some(500_000),
+                max_vertex_count_in_part: Some(2_000_000),
             }),
             single_session: true,
             print_progress_interval_seconds: Some(60),
@@ -2548,13 +2548,14 @@ mod tests {
             alignment_settings.feature_detection_quality.as_deref(),
             Some("High")
         );
-        assert_eq!(alignment_settings.max_features_per_mpx, Some(20_000));
-        assert_eq!(alignment_settings.max_features_per_image, Some(80_000));
+        assert_eq!(alignment_settings.max_features_per_mpx, Some(10_000));
+        assert_eq!(alignment_settings.max_features_per_image, Some(40_000));
         assert_eq!(alignment_settings.images_overlap.as_deref(), Some("Low"));
         assert_eq!(
             alignment_settings.detector_sensitivity.as_deref(),
             Some("Ultra")
         );
+        assert_eq!(alignment_settings.preselector_features, Some(15_000));
         assert_eq!(alignment_settings.force_component_rematch, Some(true));
         assert_eq!(
             alignment_settings.merge_georeferenced_components,
