@@ -1161,7 +1161,7 @@ fn job_templates() -> Vec<JobTemplate> {
                 auto_save_mode: Some(true),
                 auto_save_cli_handling: Some("recover".to_string()),
                 auto_clear_cache: Some(999_999),
-                max_vertex_count_in_part: Some(2_000_000),
+                max_vertex_count_in_part: Some(5_000_000),
             }),
             single_session: false,
             print_progress_interval_seconds: Some(60),
@@ -2566,6 +2566,11 @@ mod tests {
         assert_eq!(alignment_settings.camera_prior_accuracy_y, Some(1.0));
         assert_eq!(alignment_settings.camera_prior_accuracy_z, Some(3.0));
         assert_eq!(alignment_settings.camera_prior_weight, Some(0.25));
+        let runtime_settings = template
+            .runtime_settings
+            .as_ref()
+            .expect("density template sets runtime settings");
+        assert_eq!(runtime_settings.max_vertex_count_in_part, Some(5_000_000));
         assert_eq!(
             template.stages,
             vec![
