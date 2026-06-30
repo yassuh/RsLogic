@@ -420,6 +420,7 @@ const realityScanStageOrder = [
   "calculate_preview_model",
   "calculate_normal_model",
   "calculate_high_model",
+  "continue_model_calculation",
   "correct_colors",
   "calculate_texture",
   "calculate_ortho_projection",
@@ -4714,6 +4715,8 @@ function realityScanStageDetail(stage: string) {
       return "normal detail reconstruction"
     case "calculate_high_model":
       return "high detail reconstruction"
+    case "continue_model_calculation":
+      return "resume unfinished model calculation"
     case "correct_colors":
       return "color balance aligned imagery"
     case "calculate_texture":
@@ -4921,6 +4924,8 @@ function commandTimelineStageId(
       return "calculate_normal_model"
     case "calculateHighModel":
       return "calculate_high_model"
+    case "continueModelCalculation":
+      return "continue_model_calculation"
     case "correctColors":
       return "correct_colors"
     case "calculateTexture":
@@ -4969,6 +4974,7 @@ function commandTimelineProgress(command?: string | null) {
     case "calculatePreviewModel":
     case "calculateNormalModel":
     case "calculateHighModel":
+    case "continueModelCalculation":
       return 45
     case "calculateTexture":
       return 18
@@ -4994,6 +5000,7 @@ function stageIdsForPhase(phaseId: string) {
       "calculate_preview_model",
       "calculate_normal_model",
       "calculate_high_model",
+      "continue_model_calculation",
       "correct_colors",
     ]
   }

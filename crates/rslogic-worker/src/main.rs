@@ -1108,6 +1108,7 @@ fn should_emit_realityscan_command(command: &str) -> bool {
             | "calculatePreviewModel"
             | "calculateNormalModel"
             | "calculateHighModel"
+            | "continueModelCalculation"
             | "correctColors"
             | "calculateTexture"
             | "calculateOrthoProjection"
@@ -1178,7 +1179,10 @@ fn command_progress_hint(command: &str) -> f32 {
         "selectMaximalComponent" => 0.84,
         "setReconstructionRegionAuto" => 0.10,
         "setReconstructionRegionByDensity" => 0.12,
-        "calculatePreviewModel" | "calculateNormalModel" | "calculateHighModel" => 0.42,
+        "calculatePreviewModel"
+        | "calculateNormalModel"
+        | "calculateHighModel"
+        | "continueModelCalculation" => 0.42,
         "correctColors" => 0.62,
         "calculateTexture" => 0.18,
         "calculateOrthoProjection" => 0.52,
@@ -1199,6 +1203,7 @@ fn realityscan_command_stage_id(command: &str, phase_name: &str) -> Option<&'sta
         "calculatePreviewModel" => Some("calculate_preview_model"),
         "calculateNormalModel" => Some("calculate_normal_model"),
         "calculateHighModel" => Some("calculate_high_model"),
+        "continueModelCalculation" => Some("continue_model_calculation"),
         "correctColors" => Some("correct_colors"),
         "calculateTexture" => Some("calculate_texture"),
         "calculateOrthoProjection" => Some("calculate_ortho_projection"),
@@ -1283,13 +1288,22 @@ fn realityscan_phases(
         resume_project.expect("resume project checked by should_split")
     };
 
+    let model_stages: Vec<RealityScanStage> = stages
+        .iter()
+        .filter(|stage| is_model_stage(stage))
+        .cloned()
+        .collect();
     let mut model_stage_commands = Vec::new();
-    for stage in stages.iter().filter(|stage| is_model_stage(stage)) {
+    for stage in &model_stages {
         model_stage_commands.extend(realityscan_stage_commands(stage, pipeline, manifest)?);
     }
     let has_output_stage = stages.iter().any(is_output_stage);
     if !model_stage_commands.is_empty() {
-        let mut commands = vec![load_project_command(latest_project)];
+        let mut commands = vec![load_project_command_for_stages(
+            latest_project,
+            pipeline,
+            &model_stages,
+        )];
         commands.extend(realityscan_runtime_setting_commands(pipeline)?);
         commands.extend(print_progress_commands(pipeline));
         commands.extend(model_stage_commands);
@@ -1340,7 +1354,11 @@ fn combined_realityscan_commands(
         if stages.iter().any(is_alignment_stage) {
             anyhow::bail!("resume_project_filename cannot be used with alignment stages");
         }
-        let mut commands = vec![load_project_command(project_filename)];
+        let mut commands = vec![load_project_command_for_stages(
+            project_filename,
+            pipeline,
+            stages,
+        )];
         commands.extend(realityscan_runtime_setting_commands(pipeline)?);
         commands
     } else {
@@ -1457,6 +1475,7 @@ fn is_model_stage(stage: &RealityScanStage) -> bool {
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
+            | RealityScanStage::ContinueModelCalculation
             | RealityScanStage::CorrectColors
     )
 }
@@ -1479,6 +1498,7 @@ fn is_split_trigger_stage(stage: &RealityScanStage) -> bool {
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
+            | RealityScanStage::ContinueModelCalculation
             | RealityScanStage::CorrectColors
             | RealityScanStage::CalculateTexture
             | RealityScanStage::CalculateOrthoProjection
@@ -1491,9 +1511,33 @@ fn save_project_command(filename: &str) -> String {
 }
 
 fn load_project_command(filename: &str) -> String {
+    load_project_command_with_mode(filename, "deleteAutosave")
+}
+
+fn load_project_command_for_stages(
+    filename: &str,
+    pipeline: &RealityScanPipeline,
+    stages: &[RealityScanStage],
+) -> String {
+    let autosave_handling = pipeline
+        .runtime_settings
+        .as_ref()
+        .and_then(|settings| settings.auto_save_cli_handling.as_deref())
+        .map(str::trim);
+    let mode = if stages.contains(&RealityScanStage::ContinueModelCalculation)
+        && autosave_handling.is_some_and(|value| value.eq_ignore_ascii_case("recover"))
+    {
+        "recoverAutosave"
+    } else {
+        "deleteAutosave"
+    };
+    load_project_command_with_mode(filename, mode)
+}
+
+fn load_project_command_with_mode(filename: &str, mode: &str) -> String {
     format!(
-        "-load {} deleteAutosave",
-        rscmd_quote(&windows_output_path(filename))
+        "-load {} {mode}",
+        rscmd_quote(&windows_output_path(filename)),
     )
 }
 
@@ -1958,6 +2002,9 @@ fn realityscan_stage_commands(
         RealityScanStage::CalculatePreviewModel => Ok(vec!["-calculatePreviewModel".to_string()]),
         RealityScanStage::CalculateNormalModel => Ok(vec!["-calculateNormalModel".to_string()]),
         RealityScanStage::CalculateHighModel => Ok(vec!["-calculateHighModel".to_string()]),
+        RealityScanStage::ContinueModelCalculation => {
+            Ok(vec!["-continueModelCalculation".to_string()])
+        }
         RealityScanStage::CorrectColors => Ok(vec!["-correctColors".to_string()]),
         RealityScanStage::CalculateTexture => Ok(vec!["-calculateTexture".to_string()]),
         RealityScanStage::CalculateOrthoProjection if has_ortho_projection_params(pipeline) => {
@@ -3863,6 +3910,61 @@ mod tests {
             command
                 .contains("-exportOrthoProjection \"Z:\\job\\outputs\\selected-high-aerial.tif\"")
         }));
+    }
+
+    #[test]
+    fn realityscan_continue_model_calculation_recovers_autosave() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "continue-high-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::ContinueModelCalculation,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "continued-high-aerial.rsproj".to_string(),
+            resume_source_job_id: Some("source-job".to_string()),
+            resume_project_filename: Some("density-high-color-aerial-5cm.rsproj".to_string()),
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                auto_save_mode: Some(true),
+                auto_save_cli_handling: Some("recover".to_string()),
+                auto_clear_cache: Some(999_999),
+                max_vertex_count_in_part: Some(2_000_000),
+            }),
+            single_session: false,
+            print_progress_interval_seconds: Some(60),
+            ..RealityScanPipeline::default()
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "model-save");
+        assert_eq!(
+            phases[0].commands[0],
+            "-load \"Z:\\job\\outputs\\density-high-color-aerial-5cm.rsproj\" recoverAutosave"
+        );
+        assert!(phases[0]
+            .commands
+            .contains(&"-continueModelCalculation".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-set \"appAutoSaveCliHandling=recover\"".to_string()));
+        assert!(phases[0]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
+        assert_eq!(phases[1].name, "outputs");
+        assert_eq!(
+            phases[1].commands[0],
+            "-load \"Z:\\job\\outputs\\modeled.rsproj\" deleteAutosave"
+        );
+        assert!(phases[1]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\continued-high-aerial.rsproj\"".to_string()));
     }
 
     #[tokio::test]

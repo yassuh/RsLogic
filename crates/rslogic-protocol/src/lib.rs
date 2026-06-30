@@ -500,6 +500,7 @@ pub enum RealityScanStage {
     CalculatePreviewModel,
     CalculateNormalModel,
     CalculateHighModel,
+    ContinueModelCalculation,
     CorrectColors,
     CalculateTexture,
     CalculateOrthoProjection,
