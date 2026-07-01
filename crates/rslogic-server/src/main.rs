@@ -1081,9 +1081,12 @@ fn density_color_aerial_5cm_alignment_settings(
     };
 
     if fast_alignment {
+        settings.feature_detection_quality = Some("Normal".to_string());
+        settings.max_features_per_mpx = Some(5_000);
+        settings.max_features_per_image = Some(20_000);
         settings.images_overlap = Some("Medium".to_string());
         settings.detector_sensitivity = Some("Medium".to_string());
-        settings.preselector_features = Some(10_000);
+        settings.preselector_features = Some(7_500);
         settings.force_component_rematch = Some(false);
     }
 
@@ -2757,12 +2760,18 @@ mod tests {
             .alignment_settings
             .as_ref()
             .expect("normal fast template sets alignment settings");
+        assert_eq!(
+            alignment_settings.feature_detection_quality.as_deref(),
+            Some("Normal")
+        );
+        assert_eq!(alignment_settings.max_features_per_mpx, Some(5_000));
+        assert_eq!(alignment_settings.max_features_per_image, Some(20_000));
         assert_eq!(alignment_settings.images_overlap.as_deref(), Some("Medium"));
         assert_eq!(
             alignment_settings.detector_sensitivity.as_deref(),
             Some("Medium")
         );
-        assert_eq!(alignment_settings.preselector_features, Some(10_000));
+        assert_eq!(alignment_settings.preselector_features, Some(7_500));
         assert_eq!(alignment_settings.force_component_rematch, Some(false));
         assert_eq!(alignment_settings.enable_camera_prior, Some(true));
         assert_eq!(
