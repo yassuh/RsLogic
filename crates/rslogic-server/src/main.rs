@@ -1046,6 +1046,108 @@ async fn build_job_from_imagery(
     }))
 }
 
+fn density_color_aerial_5cm_alignment_settings(
+    fast_alignment: bool,
+) -> RealityScanAlignmentSettings {
+    let mut settings = RealityScanAlignmentSettings {
+        feature_detection_quality: Some("High".to_string()),
+        max_features_per_mpx: Some(10_000),
+        max_features_per_image: Some(40_000),
+        images_overlap: Some("Low".to_string()),
+        image_downscale_factor: Some(1),
+        max_feature_reprojection_error: Some(3.0),
+        detector_sensitivity: Some("Ultra".to_string()),
+        preselector_features: Some(15_000),
+        force_component_rematch: Some(true),
+        merge_georeferenced_components: Some(true),
+        enable_camera_prior: Some(true),
+        camera_prior_accuracy_x: Some(1.0),
+        camera_prior_accuracy_y: Some(1.0),
+        camera_prior_accuracy_z: Some(3.0),
+        camera_prior_weight: Some(0.25),
+        camera_prior_accuracy_yaw: Some(45.0),
+        camera_prior_accuracy_pitch: Some(45.0),
+        camera_prior_accuracy_roll: Some(45.0),
+        camera_prior_weight_orientation: Some(0.05),
+        input_relative_pose: Some(0),
+        input_absolute_pose: Some(1),
+        input_prior_accuracy_source: Some(1),
+        input_position_accuracy_x: Some(1.0),
+        input_position_accuracy_y: Some(1.0),
+        input_position_accuracy_z: Some(3.0),
+        input_yaw_accuracy: Some(45.0),
+        input_pitch_accuracy: Some(45.0),
+        input_roll_accuracy: Some(45.0),
+    };
+
+    if fast_alignment {
+        settings.images_overlap = Some("Medium".to_string());
+        settings.detector_sensitivity = Some("Medium".to_string());
+        settings.preselector_features = Some(10_000);
+        settings.force_component_rematch = Some(false);
+    }
+
+    settings
+}
+
+fn density_color_aerial_5cm_runtime_settings() -> RealityScanRuntimeSettings {
+    RealityScanRuntimeSettings {
+        auto_save_mode: Some(true),
+        auto_save_cli_handling: Some("recover".to_string()),
+        auto_clear_cache: Some(999_999),
+        geometry_gpu_accel: Some(true),
+        max_vertex_count_in_part: Some(5_000_000),
+        cache_namespace: None,
+    }
+}
+
+fn density_color_aerial_5cm_template(
+    template_id: &str,
+    quality_slug: &str,
+    model_stage: RealityScanStage,
+    fast_alignment: bool,
+) -> JobTemplate {
+    let alignment_label = if fast_alignment {
+        "fast alignment"
+    } else {
+        "balanced alignment"
+    };
+
+    JobTemplate {
+        template_id: template_id.to_string(),
+        name: format!(
+            "density {quality_slug} color aerial orthomosaic 5cm {alignment_label}"
+        ),
+        description: format!(
+            "Use GPS-aided {alignment_label}, set a density-based georeferenced region, run {quality_slug}-quality reconstruction with a bounded part size, correct colors, and export a 5 cm aerial-mosaicing orthomosaic."
+        ),
+        stages: vec![
+            RealityScanStage::SetIntrinsics,
+            RealityScanStage::Align,
+            RealityScanStage::SelectMaximalComponent,
+            RealityScanStage::SetReconstructionRegionByDensity,
+            model_stage,
+            RealityScanStage::CorrectColors,
+            RealityScanStage::CalculateOrthoProjection,
+            RealityScanStage::ExportOrthoProjection,
+            RealityScanStage::SaveProject,
+        ],
+        project_filename: format!("density-{quality_slug}-color-aerial-5cm.rsproj"),
+        resume_source_job_id: None,
+        resume_project_filename: None,
+        project_coordinate_system: Some("epsg:32618".to_string()),
+        output_coordinate_system: Some("epsg:32618".to_string()),
+        orthomosaic_filename: Some(format!("density-{quality_slug}-color-aerial-5cm.tif")),
+        ortho_pixel_size_meters: Some(0.05),
+        ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+        ortho_projection_params_xml: None,
+        alignment_settings: Some(density_color_aerial_5cm_alignment_settings(fast_alignment)),
+        runtime_settings: Some(density_color_aerial_5cm_runtime_settings()),
+        single_session: false,
+        print_progress_interval_seconds: Some(60),
+    }
+}
+
 fn job_templates() -> Vec<JobTemplate> {
     vec![
         JobTemplate {
@@ -1109,73 +1211,36 @@ fn job_templates() -> Vec<JobTemplate> {
             single_session: false,
             print_progress_interval_seconds: None,
         },
-        JobTemplate {
-            template_id: "density_preview_color_aerial_5cm".to_string(),
-            name: "density high color aerial orthomosaic 5cm balanced".to_string(),
-            description:
-                "Use GPS-aided alignment with a balanced feature budget, set a density-based georeferenced region, run high-detail reconstruction with a balanced part size, correct colors, and export a 5 cm aerial-mosaicing orthomosaic."
-                    .to_string(),
-            stages: vec![
-                RealityScanStage::SetIntrinsics,
-                RealityScanStage::Align,
-                RealityScanStage::SelectMaximalComponent,
-                RealityScanStage::SetReconstructionRegionByDensity,
-                RealityScanStage::CalculateHighModel,
-                RealityScanStage::CorrectColors,
-                RealityScanStage::CalculateOrthoProjection,
-                RealityScanStage::ExportOrthoProjection,
-                RealityScanStage::SaveProject,
-            ],
-            project_filename: "density-high-color-aerial-5cm.rsproj".to_string(),
-            resume_source_job_id: None,
-            resume_project_filename: None,
-            project_coordinate_system: Some("epsg:32618".to_string()),
-            output_coordinate_system: Some("epsg:32618".to_string()),
-            orthomosaic_filename: Some("density-high-color-aerial-5cm.tif".to_string()),
-            ortho_pixel_size_meters: Some(0.05),
-            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
-            ortho_projection_params_xml: None,
-            alignment_settings: Some(RealityScanAlignmentSettings {
-                feature_detection_quality: Some("High".to_string()),
-                max_features_per_mpx: Some(10_000),
-                max_features_per_image: Some(40_000),
-                images_overlap: Some("Low".to_string()),
-                image_downscale_factor: Some(1),
-                max_feature_reprojection_error: Some(3.0),
-                detector_sensitivity: Some("Ultra".to_string()),
-                preselector_features: Some(15_000),
-                force_component_rematch: Some(true),
-                merge_georeferenced_components: Some(true),
-                enable_camera_prior: Some(true),
-                camera_prior_accuracy_x: Some(1.0),
-                camera_prior_accuracy_y: Some(1.0),
-                camera_prior_accuracy_z: Some(3.0),
-                camera_prior_weight: Some(0.25),
-                camera_prior_accuracy_yaw: Some(45.0),
-                camera_prior_accuracy_pitch: Some(45.0),
-                camera_prior_accuracy_roll: Some(45.0),
-                camera_prior_weight_orientation: Some(0.05),
-                input_relative_pose: Some(0),
-                input_absolute_pose: Some(1),
-                input_prior_accuracy_source: Some(1),
-                input_position_accuracy_x: Some(1.0),
-                input_position_accuracy_y: Some(1.0),
-                input_position_accuracy_z: Some(3.0),
-                input_yaw_accuracy: Some(45.0),
-                input_pitch_accuracy: Some(45.0),
-                input_roll_accuracy: Some(45.0),
-            }),
-            runtime_settings: Some(RealityScanRuntimeSettings {
-                auto_save_mode: Some(true),
-                auto_save_cli_handling: Some("recover".to_string()),
-                auto_clear_cache: Some(999_999),
-                geometry_gpu_accel: Some(true),
-                max_vertex_count_in_part: Some(5_000_000),
-                cache_namespace: None,
-            }),
-            single_session: false,
-            print_progress_interval_seconds: Some(60),
-        },
+        density_color_aerial_5cm_template(
+            "density_preview_color_aerial_5cm",
+            "high",
+            RealityScanStage::CalculateHighModel,
+            false,
+        ),
+        density_color_aerial_5cm_template(
+            "density_normal_color_aerial_5cm_fast_sfm",
+            "normal",
+            RealityScanStage::CalculateNormalModel,
+            false,
+        ),
+        density_color_aerial_5cm_template(
+            "density_normal_color_aerial_5cm_fast_alignment_sfm",
+            "normal",
+            RealityScanStage::CalculateNormalModel,
+            true,
+        ),
+        density_color_aerial_5cm_template(
+            "density_preview_model_color_aerial_5cm_smoke_sfm",
+            "preview",
+            RealityScanStage::CalculatePreviewModel,
+            false,
+        ),
+        density_color_aerial_5cm_template(
+            "density_preview_model_color_aerial_5cm_fast_alignment_sfm",
+            "preview",
+            RealityScanStage::CalculatePreviewModel,
+            true,
+        ),
         JobTemplate {
             template_id: "align_only".to_string(),
             name: "align only".to_string(),
@@ -2643,6 +2708,89 @@ mod tests {
                 RealityScanStage::SaveProject,
             ]
         );
+    }
+
+    #[test]
+    fn optimized_density_templates_use_explicit_model_quality() {
+        let templates = job_templates();
+        let normal_fast = templates
+            .iter()
+            .find(|template| {
+                template.template_id == "density_normal_color_aerial_5cm_fast_alignment_sfm"
+            })
+            .expect("normal fast density template exists");
+        let preview_fast = templates
+            .iter()
+            .find(|template| {
+                template.template_id == "density_preview_model_color_aerial_5cm_fast_alignment_sfm"
+            })
+            .expect("preview fast density template exists");
+
+        assert_eq!(
+            normal_fast.project_coordinate_system.as_deref(),
+            Some("epsg:32618")
+        );
+        assert_eq!(
+            normal_fast.output_coordinate_system.as_deref(),
+            Some("epsg:32618")
+        );
+        assert_eq!(normal_fast.ortho_pixel_size_meters, Some(0.05));
+        assert_eq!(
+            normal_fast.ortho_render_method,
+            Some(OrthoRenderMethod::ImageMosaicingAerial)
+        );
+        assert_eq!(
+            normal_fast.orthomosaic_filename.as_deref(),
+            Some("density-normal-color-aerial-5cm.tif")
+        );
+        assert!(normal_fast
+            .stages
+            .contains(&RealityScanStage::CalculateNormalModel));
+        assert!(!normal_fast
+            .stages
+            .contains(&RealityScanStage::CalculateHighModel));
+        assert!(!normal_fast
+            .stages
+            .contains(&RealityScanStage::CalculatePreviewModel));
+
+        let alignment_settings = normal_fast
+            .alignment_settings
+            .as_ref()
+            .expect("normal fast template sets alignment settings");
+        assert_eq!(alignment_settings.images_overlap.as_deref(), Some("Medium"));
+        assert_eq!(
+            alignment_settings.detector_sensitivity.as_deref(),
+            Some("Medium")
+        );
+        assert_eq!(alignment_settings.preselector_features, Some(10_000));
+        assert_eq!(alignment_settings.force_component_rematch, Some(false));
+        assert_eq!(alignment_settings.enable_camera_prior, Some(true));
+        assert_eq!(
+            normal_fast
+                .runtime_settings
+                .as_ref()
+                .and_then(|settings| settings.max_vertex_count_in_part),
+            Some(5_000_000)
+        );
+
+        assert_eq!(
+            preview_fast.orthomosaic_filename.as_deref(),
+            Some("density-preview-color-aerial-5cm.tif")
+        );
+        assert!(preview_fast
+            .stages
+            .contains(&RealityScanStage::CalculatePreviewModel));
+        assert!(!preview_fast
+            .stages
+            .contains(&RealityScanStage::CalculateHighModel));
+        assert!(!preview_fast
+            .stages
+            .contains(&RealityScanStage::CalculateNormalModel));
+        assert_eq!(
+            preview_fast.ortho_render_method,
+            Some(OrthoRenderMethod::ImageMosaicingAerial)
+        );
+        assert_eq!(preview_fast.ortho_pixel_size_meters, Some(0.05));
     }
 
     #[tokio::test]
