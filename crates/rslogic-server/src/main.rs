@@ -1215,6 +1215,18 @@ fn job_templates() -> Vec<JobTemplate> {
             print_progress_interval_seconds: None,
         },
         density_color_aerial_5cm_template(
+            "density_high_color_aerial_5cm_balanced_sfm",
+            "high",
+            RealityScanStage::CalculateHighModel,
+            false,
+        ),
+        density_color_aerial_5cm_template(
+            "density_high_color_aerial_5cm_fast_alignment_sfm",
+            "high",
+            RealityScanStage::CalculateHighModel,
+            true,
+        ),
+        density_color_aerial_5cm_template(
             "density_preview_color_aerial_5cm",
             "high",
             RealityScanStage::CalculateHighModel,
@@ -2636,11 +2648,16 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
-    fn recovered_density_template_is_portable() {
-        let template = job_templates()
-            .into_iter()
+    fn high_density_template_is_portable() {
+        let templates = job_templates();
+        let template = templates
+            .iter()
+            .find(|template| template.template_id == "density_high_color_aerial_5cm_balanced_sfm")
+            .expect("high density template exists");
+        let legacy_template = templates
+            .iter()
             .find(|template| template.template_id == "density_preview_color_aerial_5cm")
-            .expect("density preview template exists");
+            .expect("legacy high density template alias exists");
 
         assert!(template.resume_source_job_id.is_none());
         assert!(template.resume_project_filename.is_none());
@@ -2665,6 +2682,15 @@ mod tests {
         assert_eq!(
             template.orthomosaic_filename.as_deref(),
             Some("density-high-color-aerial-5cm.tif")
+        );
+        assert_eq!(
+            legacy_template.stages,
+            template.stages,
+            "legacy preview-named density template must remain a high-model alias"
+        );
+        assert_eq!(
+            legacy_template.orthomosaic_filename,
+            template.orthomosaic_filename
         );
         let alignment_settings = template
             .alignment_settings
@@ -2716,6 +2742,12 @@ mod tests {
     #[test]
     fn optimized_density_templates_use_explicit_model_quality() {
         let templates = job_templates();
+        let high_fast = templates
+            .iter()
+            .find(|template| {
+                template.template_id == "density_high_color_aerial_5cm_fast_alignment_sfm"
+            })
+            .expect("high fast density template exists");
         let normal_fast = templates
             .iter()
             .find(|template| {
@@ -2728,6 +2760,21 @@ mod tests {
                 template.template_id == "density_preview_model_color_aerial_5cm_fast_alignment_sfm"
             })
             .expect("preview fast density template exists");
+
+        assert!(high_fast
+            .stages
+            .contains(&RealityScanStage::CalculateHighModel));
+        assert!(!high_fast
+            .stages
+            .contains(&RealityScanStage::CalculateNormalModel));
+        assert!(!high_fast
+            .stages
+            .contains(&RealityScanStage::CalculatePreviewModel));
+        assert_eq!(
+            high_fast.ortho_render_method,
+            Some(OrthoRenderMethod::ImageMosaicingAerial)
+        );
+        assert_eq!(high_fast.ortho_pixel_size_meters, Some(0.05));
 
         assert_eq!(
             normal_fast.project_coordinate_system.as_deref(),
