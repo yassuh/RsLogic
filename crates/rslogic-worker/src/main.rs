@@ -654,7 +654,7 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                 max_runtime_secs: (args.realityscan_phase_max_runtime_secs > 0)
                     .then_some(args.realityscan_phase_max_runtime_secs),
                 liveness_check_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
-                status_poll_interval_secs: Some(REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS),
+                status_poll_interval_secs: None,
                 realityscan_instance_name: Some(instance_name),
                 fatal_output_patterns: realityscan_fatal_output_patterns(),
                 stdout_line_tx: Some(stdout_line_tx),

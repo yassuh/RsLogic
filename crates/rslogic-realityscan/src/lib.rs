@@ -520,6 +520,7 @@ async fn poll_realityscan_status(
         .arg("-stdConsole")
         .arg("-getStatus")
         .arg(instance_name);
+    command.kill_on_drop(true);
     let output = match tokio::time::timeout(Duration::from_secs(10), command.output()).await {
         Ok(output) => {
             output.with_context(|| format!("polling RealityScan status in {container_name}"))?
