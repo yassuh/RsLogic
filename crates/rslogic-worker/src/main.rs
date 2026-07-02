@@ -1893,15 +1893,53 @@ fn realityscan_ortho_color_type(method: &OrthoRenderMethod) -> &'static str {
     }
 }
 
-fn ortho_region_scale_command(pipeline: &RealityScanPipeline) -> Option<String> {
-    let raw_xml = pipeline.ortho_projection_params_xml.as_deref()?;
-    let (width, height, depth) = parse_reconstruction_region_dimensions(raw_xml)?;
-    Some(format!(
+fn ortho_region_scale_command(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
+    let Some((width, height, depth)) = explicit_ortho_region_dimensions(pipeline)?.or_else(|| {
+        let raw_xml = pipeline.ortho_projection_params_xml.as_deref()?;
+        parse_reconstruction_region_dimensions(raw_xml)
+    }) else {
+        return Ok(None);
+    };
+
+    Ok(Some(format!(
         "-scaleReconstructionRegion {} {} {} center absolute",
         format_decimal(width),
         format_decimal(height),
         format_decimal(depth)
-    ))
+    )))
+}
+
+fn explicit_ortho_region_dimensions(
+    pipeline: &RealityScanPipeline,
+) -> anyhow::Result<Option<(f64, f64, f64)>> {
+    let Some(settings) = pipeline.runtime_settings.as_ref() else {
+        return Ok(None);
+    };
+    let values = [
+        settings.ortho_region_width_meters,
+        settings.ortho_region_height_meters,
+        settings.ortho_region_depth_meters,
+    ];
+    let supplied = values.iter().filter(|value| value.is_some()).count();
+    if supplied == 0 {
+        return Ok(None);
+    }
+    if supplied != 3 {
+        anyhow::bail!("ortho region width, height, and depth must be supplied together");
+    }
+    let width = values[0].unwrap();
+    let height = values[1].unwrap();
+    let depth = values[2].unwrap();
+    if !width.is_finite()
+        || width <= 0.0
+        || !height.is_finite()
+        || height <= 0.0
+        || !depth.is_finite()
+        || depth <= 0.0
+    {
+        anyhow::bail!("ortho region dimensions must be finite positive meter values");
+    }
+    Ok(Some((width, height, depth)))
 }
 
 fn parse_reconstruction_region_footprint(xml: &str) -> Option<(f64, f64)> {
@@ -2018,7 +2056,7 @@ fn realityscan_stage_commands(
         RealityScanStage::SelectMaximalComponent => Ok(vec!["-selectMaximalComponent".to_string()]),
         RealityScanStage::SetReconstructionRegionAuto if uses_auto_ortho_region_box(pipeline) => {
             let mut commands = vec!["-setReconstructionRegionAuto".to_string()];
-            if let Some(command) = ortho_region_scale_command(pipeline) {
+            if let Some(command) = ortho_region_scale_command(pipeline)? {
                 commands.push(command);
             }
             commands.push(format!(
@@ -2033,13 +2071,15 @@ fn realityscan_stage_commands(
         RealityScanStage::SetReconstructionRegionByDensity
             if has_ortho_projection_params(pipeline) =>
         {
-            Ok(vec![
-                "-setReconstructionRegionByDensity".to_string(),
-                format!(
-                    "-exportReconstructionRegion {}",
-                    rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
-                ),
-            ])
+            let mut commands = vec!["-setReconstructionRegionByDensity".to_string()];
+            if let Some(command) = ortho_region_scale_command(pipeline)? {
+                commands.push(command);
+            }
+            commands.push(format!(
+                "-exportReconstructionRegion {}",
+                rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
+            ));
+            Ok(commands)
         }
         RealityScanStage::SetReconstructionRegionByDensity => {
             Ok(vec!["-setReconstructionRegionByDensity".to_string()])
@@ -3589,6 +3629,67 @@ mod tests {
     }
 
     #[test]
+    fn generated_aerial_ortho_pipeline_can_scale_density_region() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "generated-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculatePreviewModel,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+            ],
+            project_filename: "density-preview-color-aerial-5cm.rsproj".to_string(),
+            orthomosaic_filename: Some("density-preview-color-aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                ortho_region_width_meters: Some(900.0),
+                ortho_region_height_meters: Some(900.0),
+                ortho_region_depth_meters: Some(150.0),
+                ..RealityScanRuntimeSettings::default()
+            }),
+            ..RealityScanPipeline::default()
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+        let commands: Vec<&String> = phases
+            .iter()
+            .flat_map(|phase| phase.commands.iter())
+            .collect();
+        let density_index = commands
+            .iter()
+            .position(|command| *command == "-setReconstructionRegionByDensity")
+            .expect("sets density region");
+        let scale_index = commands
+            .iter()
+            .position(|command| {
+                *command == "-scaleReconstructionRegion 900 900 150 center absolute"
+            })
+            .expect("scales density region");
+        let export_index = commands
+            .iter()
+            .position(|command| {
+                *command
+                    == &format!(
+                        "-exportReconstructionRegion {}",
+                        rscmd_quote("Z:\\job\\outputs\\density-ortho-region.rsbox")
+                    )
+            })
+            .expect("exports scaled density region");
+
+        assert!(density_index < scale_index);
+        assert!(scale_index < export_index);
+        assert!(commands.iter().any(|command| command.contains(
+            "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\density-ortho-region.rsbox\""
+        )));
+    }
+
+    #[test]
     fn realityscan_script_passes_auto_region_box_to_ortho_params() {
         let manifest = JobInputManifest {
             job_id: "job-1".to_string(),
@@ -3745,6 +3846,9 @@ mod tests {
                 geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(500_000),
                 cache_namespace: None,
+                ortho_region_width_meters: None,
+                ortho_region_height_meters: None,
+                ortho_region_depth_meters: None,
             }),
             single_session: true,
             print_progress_interval_seconds: Some(60),
@@ -4017,6 +4121,9 @@ mod tests {
                 geometry_gpu_accel: Some(true),
                 max_vertex_count_in_part: Some(2_000_000),
                 cache_namespace: None,
+                ortho_region_width_meters: None,
+                ortho_region_height_meters: None,
+                ortho_region_depth_meters: None,
             }),
             single_session: false,
             print_progress_interval_seconds: Some(60),

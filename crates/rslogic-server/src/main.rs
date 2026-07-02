@@ -1101,6 +1101,9 @@ fn density_color_aerial_5cm_runtime_settings() -> RealityScanRuntimeSettings {
         geometry_gpu_accel: Some(true),
         max_vertex_count_in_part: Some(5_000_000),
         cache_namespace: None,
+        ortho_region_width_meters: None,
+        ortho_region_height_meters: None,
+        ortho_region_depth_meters: None,
     }
 }
 
@@ -1355,6 +1358,42 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
         return Err(ApiError::bad_request(
             "custom template auto_save_cli_handling cannot be empty or contain newlines",
         ));
+    }
+    if let Some(settings) = template.runtime_settings.as_ref() {
+        validate_runtime_positive_meters(
+            "custom template ortho_region_width_meters",
+            settings.ortho_region_width_meters,
+        )?;
+        validate_runtime_positive_meters(
+            "custom template ortho_region_height_meters",
+            settings.ortho_region_height_meters,
+        )?;
+        validate_runtime_positive_meters(
+            "custom template ortho_region_depth_meters",
+            settings.ortho_region_depth_meters,
+        )?;
+        let region_dimension_count = [
+            settings.ortho_region_width_meters,
+            settings.ortho_region_height_meters,
+            settings.ortho_region_depth_meters,
+        ]
+        .iter()
+        .filter(|value| value.is_some())
+        .count();
+        if region_dimension_count != 0 && region_dimension_count != 3 {
+            return Err(ApiError::bad_request(
+                "custom template ortho region dimensions must be supplied together",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_runtime_positive_meters(label: &str, value: Option<f64>) -> Result<(), ApiError> {
+    if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        return Err(ApiError::bad_request(format!(
+            "{label} must be greater than zero"
+        )));
     }
     Ok(())
 }
@@ -2684,8 +2723,7 @@ mod tests {
             Some("density-high-color-aerial-5cm.tif")
         );
         assert_eq!(
-            legacy_template.stages,
-            template.stages,
+            legacy_template.stages, template.stages,
             "legacy preview-named density template must remain a high-model alias"
         );
         assert_eq!(

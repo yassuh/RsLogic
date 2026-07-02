@@ -422,6 +422,12 @@ pub struct RealityScanRuntimeSettings {
     pub max_vertex_count_in_part: Option<u32>,
     #[serde(default)]
     pub cache_namespace: Option<String>,
+    #[serde(default)]
+    pub ortho_region_width_meters: Option<f64>,
+    #[serde(default)]
+    pub ortho_region_height_meters: Option<f64>,
+    #[serde(default)]
+    pub ortho_region_depth_meters: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
