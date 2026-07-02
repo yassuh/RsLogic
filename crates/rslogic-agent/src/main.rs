@@ -307,6 +307,15 @@ impl Agent {
             ));
             Some(stop_tx)
         } else {
+            let status = ClientEvent::WorkerStatus {
+                status: WorkerStatus {
+                    worker_version: env!("CARGO_PKG_VERSION").to_string(),
+                    process_state: WorkerProcessState::Stopped,
+                    active_job_id: None,
+                    supports_job_events_jsonl: true,
+                },
+            };
+            send_management_event(&mut writer, &status, send_timeout).await?;
             None
         };
 
