@@ -277,6 +277,9 @@ enum JobImageSelection {
     GroupName {
         group_name: String,
     },
+    AssetIds {
+        asset_ids: Vec<String>,
+    },
     Polygon {
         coordinates: Vec<[f64; 2]>,
     },
@@ -1476,6 +1479,46 @@ fn select_job_assets(
                 })
                 .cloned()
                 .collect())
+        }
+        JobImageSelection::AssetIds { asset_ids } => {
+            let requested_ids = asset_ids
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+            if requested_ids.is_empty() {
+                return Err(ApiError::bad_request("asset_ids cannot be empty"));
+            }
+
+            let mut seen = BTreeSet::new();
+            for asset_id in &requested_ids {
+                if !seen.insert((*asset_id).to_string()) {
+                    return Err(ApiError::bad_request(format!(
+                        "duplicate asset_id in selection: {asset_id}"
+                    )));
+                }
+            }
+
+            let assets_by_id = assets
+                .iter()
+                .map(|asset| (asset.asset_id.as_str(), asset))
+                .collect::<HashMap<_, _>>();
+            let mut selected = Vec::with_capacity(requested_ids.len());
+            let mut missing = Vec::new();
+            for asset_id in requested_ids {
+                if let Some(asset) = assets_by_id.get(asset_id) {
+                    selected.push((*asset).clone());
+                } else {
+                    missing.push(asset_id.to_string());
+                }
+            }
+            if !missing.is_empty() {
+                return Err(ApiError::bad_request(format!(
+                    "asset_ids not found: {}",
+                    missing.join(", ")
+                )));
+            }
+            Ok(selected)
         }
         JobImageSelection::Polygon { coordinates } => {
             validate_polygon(coordinates)?;
@@ -2989,6 +3032,59 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_id, "asset-1");
+    }
+
+    #[test]
+    fn job_asset_selection_filters_by_asset_ids() {
+        let assets = vec![
+            studio_api::StudioImageAsset {
+                asset_id: "asset-1".to_string(),
+                filename: Some("a.jpg".to_string()),
+                ..studio_api::StudioImageAsset::default()
+            },
+            studio_api::StudioImageAsset {
+                asset_id: "asset-2".to_string(),
+                filename: Some("b.jpg".to_string()),
+                ..studio_api::StudioImageAsset::default()
+            },
+            studio_api::StudioImageAsset {
+                asset_id: "asset-3".to_string(),
+                filename: Some("c.jpg".to_string()),
+                ..studio_api::StudioImageAsset::default()
+            },
+        ];
+
+        let selected = select_job_assets(
+            &assets,
+            &JobImageSelection::AssetIds {
+                asset_ids: vec!["asset-2".to_string(), "asset-1".to_string()],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].asset_id, "asset-2");
+        assert_eq!(selected[1].asset_id, "asset-1");
+    }
+
+    #[test]
+    fn job_asset_selection_rejects_missing_asset_ids() {
+        let assets = vec![studio_api::StudioImageAsset {
+            asset_id: "asset-1".to_string(),
+            filename: Some("a.jpg".to_string()),
+            ..studio_api::StudioImageAsset::default()
+        }];
+
+        let error = select_job_assets(
+            &assets,
+            &JobImageSelection::AssetIds {
+                asset_ids: vec!["asset-1".to_string(), "missing".to_string()],
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("asset_ids not found: missing"));
     }
 
     #[test]
