@@ -39,6 +39,7 @@ const INPUT_CACHE_MAX_UNUSED_DAYS: i64 = 30;
 const REALITYSCAN_PHASE_MAX_RUNTIME_SECS: u64 = 7 * 24 * 60 * 60;
 const ORTHO_REGION_WAIT_SECS: u64 = REALITYSCAN_PHASE_MAX_RUNTIME_SECS;
 const REALITYSCAN_LIVENESS_CHECK_INTERVAL_SECS: u64 = 30;
+const REALITYSCAN_SUCCESS_OUTPUT_SETTLE_SECS: u64 = 120;
 const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
 const REALITYSCAN_PHASE_STALE_SECS: u64 = 10 * 60;
 const PHASE_FRACTION_SCALE: f32 = 10_000.0;
@@ -657,6 +658,12 @@ async fn run_realityscan(args: &Args, job: &PipelineJob, job_dir: &Path) -> anyh
                 status_poll_interval_secs: None,
                 realityscan_instance_name: Some(instance_name),
                 fatal_output_patterns: realityscan_fatal_output_patterns(),
+                success_output_paths: realityscan_phase_success_output_paths(
+                    phase,
+                    &job.pipeline,
+                    job_dir,
+                ),
+                success_output_settle_secs: Some(REALITYSCAN_SUCCESS_OUTPUT_SETTLE_SECS),
                 stdout_line_tx: Some(stdout_line_tx),
                 stderr_line_tx: None,
             })
@@ -1539,6 +1546,53 @@ fn is_split_trigger_stage(stage: &RealityScanStage) -> bool {
             | RealityScanStage::CalculateOrthoProjection
             | RealityScanStage::ExportOrthoProjection
     )
+}
+
+fn realityscan_phase_success_output_paths(
+    phase: &RealityScanPhase,
+    pipeline: &RealityScanPipeline,
+    job_dir: &Path,
+) -> Vec<PathBuf> {
+    let outputs_dir = job_dir.join("outputs");
+    let mut filenames = Vec::<String>::new();
+    for filename in ["aligned.rsproj", "modeled.rsproj"] {
+        if phase
+            .commands
+            .iter()
+            .any(|command| command_writes_output_filename(command, filename))
+        {
+            filenames.push(filename.to_string());
+        }
+    }
+    if phase
+        .commands
+        .iter()
+        .any(|command| command_writes_output_filename(command, pipeline.project_filename.as_str()))
+    {
+        filenames.push(pipeline.project_filename.clone());
+    }
+    if let Some(filename) = pipeline.orthomosaic_filename.as_deref() {
+        if phase
+            .commands
+            .iter()
+            .any(|command| command_writes_output_filename(command, filename))
+        {
+            filenames.push(filename.to_string());
+        }
+    }
+
+    filenames.sort();
+    filenames.dedup();
+    filenames
+        .into_iter()
+        .map(|filename| outputs_dir.join(filename))
+        .collect()
+}
+
+fn command_writes_output_filename(command: &str, filename: &str) -> bool {
+    let command = command.trim_start();
+    (command.starts_with("-save ") || command.starts_with("-exportOrthoProjection "))
+        && command.contains(&format!("Z:\\job\\outputs\\{filename}"))
 }
 
 fn save_project_command(filename: &str) -> String {
@@ -3631,6 +3685,69 @@ mod tests {
         assert!(!model_launcher.contains("generate_ortho_projection_params_from_region"));
         assert!(output_launcher.contains("generate_ortho_projection_params_from_region"));
         assert!(output_launcher.contains("region_path='/job/outputs/density-ortho-region.rsbox'"));
+    }
+
+    #[test]
+    fn high_aerial_split_phases_declare_success_outputs() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let pipeline = RealityScanPipeline {
+            template_id: "generated-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionByDensity,
+                RealityScanStage::CalculateHighModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "density-high-color-aerial-5cm.rsproj".to_string(),
+            resume_source_job_id: None,
+            resume_project_filename: None,
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("density-high-color-aerial-5cm.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            ortho_projection_params_xml: None,
+            alignment_settings: None,
+            runtime_settings: None,
+            single_session: false,
+            print_progress_interval_seconds: Some(60),
+        };
+        let job_dir = PathBuf::from("/tmp/rslogic-job");
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        let paths: Vec<Vec<PathBuf>> = phases
+            .iter()
+            .map(|phase| realityscan_phase_success_output_paths(phase, &pipeline, &job_dir))
+            .collect();
+
+        assert_eq!(
+            paths[0],
+            vec![job_dir.join("outputs").join("aligned.rsproj")]
+        );
+        assert_eq!(
+            paths[1],
+            vec![job_dir.join("outputs").join("modeled.rsproj")]
+        );
+        assert_eq!(
+            paths[2],
+            vec![
+                job_dir
+                    .join("outputs")
+                    .join("density-high-color-aerial-5cm.rsproj"),
+                job_dir
+                    .join("outputs")
+                    .join("density-high-color-aerial-5cm.tif"),
+            ]
+        );
     }
 
     #[test]

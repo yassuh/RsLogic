@@ -1,8 +1,9 @@
 use std::{
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{anyhow, Context};
@@ -17,6 +18,8 @@ use tokio::{
     time::sleep,
 };
 use tracing::{info, warn};
+
+const DEFAULT_SUCCESS_OUTPUT_SETTLE_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +58,10 @@ pub struct RealityScanRunConfig {
     pub realityscan_instance_name: Option<String>,
     #[serde(default)]
     pub fatal_output_patterns: Vec<String>,
+    #[serde(default)]
+    pub success_output_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub success_output_settle_secs: Option<u64>,
     #[serde(skip)]
     pub stdout_line_tx: Option<mpsc::UnboundedSender<String>>,
     #[serde(skip)]
@@ -253,6 +260,35 @@ impl RealityScanRunner for ContainerRealityScanRunner {
                     ));
                 }
             }
+            if successful_outputs_are_settled(
+                &config.success_output_paths,
+                Duration::from_secs(
+                    config
+                        .success_output_settle_secs
+                        .unwrap_or(DEFAULT_SUCCESS_OUTPUT_SETTLE_SECS)
+                        .max(1),
+                ),
+            )
+            .await?
+            {
+                info!(
+                    container_name,
+                    "RealityScan required outputs are settled; removing container and treating phase as successful"
+                );
+                remove_container(&config.runtime, &container_name)
+                    .await
+                    .ok();
+                child.wait().await.ok();
+                await_log_tasks(stdout_task, stderr_task).await.ok();
+                if let Ok(fatal) = fatal_line_rx.try_recv() {
+                    return Err(fatal_output_error(&fatal, &stdout_path, &stderr_path));
+                }
+                return Ok(RealityScanRunResult {
+                    exit_code: 0,
+                    stdout_path,
+                    stderr_path,
+                });
+            }
             if container_has_defunct_realityscan(&config.runtime, &container_name).await? {
                 warn!(
                     container_name,
@@ -314,6 +350,37 @@ impl RealityScanRunner for ContainerRealityScanRunner {
             stderr_path,
         })
     }
+}
+
+async fn successful_outputs_are_settled(
+    paths: &[PathBuf],
+    settle: Duration,
+) -> anyhow::Result<bool> {
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    let now = SystemTime::now();
+    for path in paths {
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading output metadata {}", path.display()));
+            }
+        };
+        if metadata.len() == 0 {
+            return Ok(false);
+        }
+        let modified = metadata
+            .modified()
+            .with_context(|| format!("reading output modified time {}", path.display()))?;
+        let age = now.duration_since(modified).unwrap_or_default();
+        if age < settle {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 async fn stream_to_log_file<R>(
