@@ -5001,11 +5001,11 @@ function stageIdsForPhase(phaseId: string) {
       "calculate_normal_model",
       "calculate_high_model",
       "continue_model_calculation",
-      "correct_colors",
     ]
   }
   if (phaseId.includes("outputs")) {
     return [
+      "correct_colors",
       "calculate_texture",
       "calculate_ortho_projection",
       "export_ortho_projection",

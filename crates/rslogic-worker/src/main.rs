@@ -1511,14 +1511,14 @@ fn is_model_stage(stage: &RealityScanStage) -> bool {
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
             | RealityScanStage::ContinueModelCalculation
-            | RealityScanStage::CorrectColors
     )
 }
 
 fn is_output_stage(stage: &RealityScanStage) -> bool {
     matches!(
         stage,
-        RealityScanStage::CalculateTexture
+        RealityScanStage::CorrectColors
+            | RealityScanStage::CalculateTexture
             | RealityScanStage::CalculateOrthoProjection
             | RealityScanStage::ExportOrthoProjection
             | RealityScanStage::SaveProject
@@ -3590,6 +3590,11 @@ mod tests {
         assert!(phases[1]
             .commands
             .contains(&"-calculateHighModel".to_string()));
+        assert!(phases[1]
+            .commands
+            .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
+        assert!(!phases[1].commands.contains(&"-correctColors".to_string()));
+        assert!(phases[2].commands.contains(&"-correctColors".to_string()));
         assert!(!phases.iter().any(|phase| phase
             .commands
             .contains(&"-calculatePreviewModel".to_string())));
@@ -4006,7 +4011,7 @@ mod tests {
         assert!(phases[0]
             .commands
             .contains(&"-calculateNormalModel".to_string()));
-        assert!(phases[0].commands.contains(&"-correctColors".to_string()));
+        assert!(!phases[0].commands.contains(&"-correctColors".to_string()));
         assert!(phases[0]
             .commands
             .contains(&"-save \"Z:\\job\\outputs\\modeled.rsproj\"".to_string()));
@@ -4015,6 +4020,7 @@ mod tests {
             phases[1].commands[0],
             "-load \"Z:\\job\\outputs\\modeled.rsproj\" deleteAutosave"
         );
+        assert!(phases[1].commands.contains(&"-correctColors".to_string()));
         assert!(phases[1].commands.iter().any(|command| command.contains(
             "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\density-ortho-region.rsbox\""
         )));
