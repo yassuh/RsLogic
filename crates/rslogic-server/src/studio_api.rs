@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::Context;
 use reqwest::{Client, StatusCode};
@@ -23,6 +26,9 @@ pub struct StudioApiClient {
 }
 
 impl StudioApiClient {
+    const IMAGE_ASSETS_PAGE_SIZE: usize = 100;
+    const MAX_IMAGE_ASSETS_PAGES: usize = 1_000;
+
     pub fn new(
         base_url: impl Into<String>,
         bearer_token: Option<String>,
@@ -52,18 +58,61 @@ impl StudioApiClient {
     }
 
     pub async fn list_image_assets(&self) -> anyhow::Result<Vec<StudioImageAsset>> {
-        let url = self.template_url(&self.image_assets_path, &[]);
-        let request = self.with_auth(self.http.get(url)).await?;
-        let response = request
-            .send()
-            .await
-            .context("requesting Studio API image assets")?
-            .error_for_status()
-            .context("Studio API image assets request failed")?
-            .json::<StudioImageAssetsResponse>()
-            .await
-            .context("decoding Studio API image assets response")?;
-        Ok(response.image_assets)
+        let base_url = self.template_url(&self.image_assets_path, &[]);
+        let mut assets = Vec::new();
+        let mut seen_asset_ids = HashSet::new();
+        let mut offset = 0usize;
+
+        for _ in 0..Self::MAX_IMAGE_ASSETS_PAGES {
+            let url = append_query_params(
+                &base_url,
+                &[
+                    ("limit", Self::IMAGE_ASSETS_PAGE_SIZE.to_string()),
+                    ("offset", offset.to_string()),
+                ],
+            );
+            let request = self.with_auth(self.http.get(url)).await?;
+            let response = request
+                .send()
+                .await
+                .context("requesting Studio API image assets")?
+                .error_for_status()
+                .context("Studio API image assets request failed")?
+                .json::<StudioImageAssetsResponse>()
+                .await
+                .context("decoding Studio API image assets response")?;
+
+            let received_count = response.image_assets.len();
+            let before_count = assets.len();
+            for asset in response.image_assets {
+                if seen_asset_ids.insert(asset.asset_id.clone()) {
+                    assets.push(asset);
+                }
+            }
+            let added_count = assets.len() - before_count;
+            if received_count == 0 || added_count == 0 {
+                break;
+            }
+
+            if let Some(total_assets) = response.total_assets {
+                if assets.len() >= total_assets {
+                    break;
+                }
+            }
+
+            if let Some(next_offset) = response.next_offset {
+                if next_offset <= offset {
+                    break;
+                }
+                offset = next_offset;
+            } else if received_count < Self::IMAGE_ASSETS_PAGE_SIZE {
+                break;
+            } else {
+                offset += received_count;
+            }
+        }
+
+        Ok(assets)
     }
 
     pub async fn get_image_asset(&self, asset_id: &str) -> anyhow::Result<StudioImageAsset> {
@@ -240,7 +289,12 @@ struct StudioLoginResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StudioImageAssetsResponse {
+    #[serde(default, alias = "assets", alias = "items", alias = "data")]
     pub image_assets: Vec<StudioImageAsset>,
+    #[serde(default, alias = "nextOffset")]
+    pub next_offset: Option<usize>,
+    #[serde(default, alias = "totalAssets", alias = "total")]
+    pub total_assets: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -550,6 +604,39 @@ fn url_encode_path_segment(value: &str) -> String {
     encoded
 }
 
+fn append_query_params(url: &str, params: &[(&str, String)]) -> String {
+    if params.is_empty() {
+        return url.to_string();
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let query = params
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}={}",
+                url_encode_query_component(name),
+                url_encode_query_component(value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{url}{separator}{query}")
+}
+
+fn url_encode_query_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,6 +735,33 @@ mod tests {
                 .get("tag_aircraft_model")
                 .and_then(serde_json::Value::as_str),
             Some("DJI M4E")
+        );
+    }
+
+    #[test]
+    fn image_assets_response_accepts_pagination_fields() {
+        let raw = serde_json::json!({
+            "image_assets": [{"id": "asset-1"}],
+            "next_offset": 100,
+            "total_assets": 250
+        });
+
+        let response: StudioImageAssetsResponse = serde_json::from_value(raw).unwrap();
+
+        assert_eq!(response.image_assets.len(), 1);
+        assert_eq!(response.image_assets[0].asset_id, "asset-1");
+        assert_eq!(response.next_offset, Some(100));
+        assert_eq!(response.total_assets, Some(250));
+    }
+
+    #[test]
+    fn append_query_params_preserves_existing_query() {
+        assert_eq!(
+            append_query_params(
+                "https://studio.example.test/api/v1/image-assets?sort=created",
+                &[("limit", "100".to_string()), ("offset", "200".to_string())]
+            ),
+            "https://studio.example.test/api/v1/image-assets?sort=created&limit=100&offset=200"
         );
     }
 
