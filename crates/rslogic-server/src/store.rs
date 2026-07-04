@@ -451,10 +451,12 @@ impl Store for InMemoryStore {
     async fn record_job_event(&self, _client_id: &str, event: JobEvent) -> Result<()> {
         let mut guard = self.inner.write().await;
         if let Some(job) = guard.jobs.get_mut(&event.job_id) {
-            job.state = event.state.clone();
-            job.updated_at = now();
-            if is_terminal_job_state(&event.state) {
-                job.completed_at = Some(job.updated_at);
+            if job.completed_at.is_none() {
+                job.state = event.state.clone();
+                job.updated_at = now();
+                if is_terminal_job_state(&event.state) {
+                    job.completed_at = Some(job.updated_at);
+                }
             }
         }
         guard.job_events.push(event);
@@ -1018,7 +1020,20 @@ impl Store for PostgresStore {
         sqlx::query(
             r#"
             UPDATE pipeline_jobs
-            SET state = $2, updated_at = $3, completed_at = COALESCE($4, completed_at)
+            SET
+              state = CASE
+                WHEN completed_at IS NOT NULL THEN state
+                ELSE $2
+              END,
+              updated_at = CASE
+                WHEN completed_at IS NOT NULL THEN updated_at
+                ELSE $3
+              END,
+              completed_at = CASE
+                WHEN completed_at IS NOT NULL THEN completed_at
+                WHEN $4 IS NOT NULL THEN $4
+                ELSE NULL
+              END
             WHERE job_id = $1
             "#,
         )
@@ -1266,5 +1281,78 @@ fn enrollment_status_from_str(value: &str) -> Result<EnrollmentStatus> {
         "approved" => Ok(EnrollmentStatus::Approved),
         "rejected" => Ok(EnrollmentStatus::Rejected),
         other => Err(StoreError::InvalidEnrollmentStatus(other.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rslogic_protocol::{JobInputManifest, RealityScanPipeline};
+
+    fn test_job(job_id: &str) -> PipelineJob {
+        PipelineJob {
+            job_id: job_id.to_string(),
+            job_name: None,
+            manifest: JobInputManifest {
+                job_id: job_id.to_string(),
+                expires_at: now(),
+                inputs: Vec::new(),
+            },
+            output_targets: Vec::new(),
+            realityscan_image: "test/realityscan:local".to_string(),
+            pipeline: RealityScanPipeline::default(),
+        }
+    }
+
+    fn test_event(job_id: &str, state: JobState) -> JobEvent {
+        JobEvent {
+            job_id: job_id.to_string(),
+            state,
+            message: "test event".to_string(),
+            progress: 0.0,
+            observed_at: now(),
+            details: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn in_memory_store_does_not_reopen_terminal_jobs() {
+        let store = InMemoryStore::default();
+        let job_id = "job-terminal";
+        store
+            .record_job_assignment("client-1", test_job(job_id))
+            .await
+            .unwrap();
+        store
+            .record_job_event("client-1", test_event(job_id, JobState::Cancelled))
+            .await
+            .unwrap();
+        let completed_job = store
+            .list_jobs()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.job_id == job_id)
+            .unwrap();
+        let completed_at = completed_job.completed_at;
+        assert_eq!(completed_job.state, JobState::Cancelled);
+        assert!(completed_at.is_some());
+
+        store
+            .record_job_event("client-1", test_event(job_id, JobState::RunningRealityscan))
+            .await
+            .unwrap();
+        let reopened_job = store
+            .list_jobs()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.job_id == job_id)
+            .unwrap();
+        assert_eq!(reopened_job.state, JobState::Cancelled);
+        assert_eq!(reopened_job.completed_at, completed_at);
+
+        let events = store.list_job_events(Some(job_id), 10).await.unwrap();
+        assert_eq!(events.len(), 2);
     }
 }
