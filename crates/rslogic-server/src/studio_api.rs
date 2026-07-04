@@ -26,7 +26,7 @@ pub struct StudioApiClient {
 }
 
 impl StudioApiClient {
-    const IMAGE_ASSETS_PAGE_SIZE: usize = 100;
+    const IMAGE_ASSETS_PAGE_SIZE: usize = 500;
     const MAX_IMAGE_ASSETS_PAGES: usize = 1_000;
 
     pub fn new(
@@ -58,19 +58,33 @@ impl StudioApiClient {
     }
 
     pub async fn list_image_assets(&self) -> anyhow::Result<Vec<StudioImageAsset>> {
+        self.list_image_assets_with_query(&[]).await
+    }
+
+    pub async fn list_image_assets_for_group(
+        &self,
+        group_name: &str,
+    ) -> anyhow::Result<Vec<StudioImageAsset>> {
+        self.list_image_assets_with_query(&[("group_name", group_name.trim().to_string())])
+            .await
+    }
+
+    async fn list_image_assets_with_query(
+        &self,
+        query_params: &[(&str, String)],
+    ) -> anyhow::Result<Vec<StudioImageAsset>> {
         let base_url = self.template_url(&self.image_assets_path, &[]);
         let mut assets = Vec::new();
         let mut seen_asset_ids = HashSet::new();
         let mut offset = 0usize;
 
         for _ in 0..Self::MAX_IMAGE_ASSETS_PAGES {
-            let url = append_query_params(
-                &base_url,
-                &[
-                    ("limit", Self::IMAGE_ASSETS_PAGE_SIZE.to_string()),
-                    ("offset", offset.to_string()),
-                ],
-            );
+            let mut params = query_params.to_vec();
+            params.extend([
+                ("limit", Self::IMAGE_ASSETS_PAGE_SIZE.to_string()),
+                ("offset", offset.to_string()),
+            ]);
+            let url = append_query_params(&base_url, &params);
             let request = self.with_auth(self.http.get(url)).await?;
             let response = request
                 .send()

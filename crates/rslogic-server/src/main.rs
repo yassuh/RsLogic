@@ -945,10 +945,9 @@ async fn build_job_from_imagery(
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Studio API client is not configured"))?;
     let template = resolve_job_template(&request)?;
-    let all_assets = load_studio_assets(&state, false).await?;
     let mut warnings = Vec::new();
-    let mut selected_assets =
-        select_job_assets(all_assets.assets.as_ref().as_slice(), &request.source)?;
+    let candidate_assets = load_assets_for_job_selection(&state, &request.source).await?;
+    let mut selected_assets = select_job_assets(candidate_assets.as_slice(), &request.source)?;
     selected_assets.sort_by(|left, right| {
         left.captured_at
             .cmp(&right.captured_at)
@@ -1460,6 +1459,56 @@ async fn load_studio_assets(
             }
         }
     }
+}
+
+async fn load_assets_for_job_selection(
+    state: &AppState,
+    selection: &JobImageSelection,
+) -> Result<Vec<studio_api::StudioImageAsset>, ApiError> {
+    let group_name = match selection {
+        JobImageSelection::GroupName { group_name }
+        | JobImageSelection::GroupPolygon { group_name, .. } => {
+            let needle = group_name.trim();
+            if needle.is_empty() {
+                return Err(ApiError::bad_request("group_name cannot be empty"));
+            }
+            Some(needle)
+        }
+        _ => None,
+    };
+
+    if let Some(group_name) = group_name {
+        let studio = state
+            .studio
+            .as_ref()
+            .ok_or_else(|| ApiError::service_unavailable("Studio API client is not configured"))?;
+        return match studio.list_image_assets_for_group(group_name).await {
+            Ok(assets) => Ok(assets),
+            Err(error) => {
+                if let Some(snapshot) = state.studio_assets_cache.read().await.clone() {
+                    warn!(
+                        %error,
+                        cached_at = %snapshot.loaded_at,
+                        group_name,
+                        "failed to refresh grouped Studio image assets; serving stale cache"
+                    );
+                    Ok(snapshot.assets.as_ref().clone())
+                } else {
+                    warn!(
+                        %error,
+                        group_name,
+                        "failed to list grouped image assets from Studio API"
+                    );
+                    Err(ApiError::bad_gateway(
+                        "failed to list image assets from Studio API",
+                    ))
+                }
+            }
+        };
+    }
+
+    let snapshot = load_studio_assets(state, false).await?;
+    Ok(snapshot.assets.as_ref().clone())
 }
 
 fn select_job_assets(
