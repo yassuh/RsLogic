@@ -44,6 +44,7 @@ const REALITYSCAN_PHASE_HEARTBEAT_SECS: u64 = 60;
 const REALITYSCAN_PHASE_STALE_SECS: u64 = 10 * 60;
 const PHASE_FRACTION_SCALE: f32 = 10_000.0;
 const JOB_EVENTS_LOG: &str = "job-events.jsonl";
+const CUSTOM_RECONSTRUCTION_REGION_FILENAME: &str = "custom-reconstruction-region.rsbox";
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -1142,6 +1143,7 @@ fn should_emit_realityscan_command(command: &str) -> bool {
             | "selectMaximalComponent"
             | "setReconstructionRegionAuto"
             | "setReconstructionRegionByDensity"
+            | "setReconstructionRegion"
             | "calculatePreviewModel"
             | "calculateNormalModel"
             | "calculateHighModel"
@@ -1216,6 +1218,7 @@ fn command_progress_hint(command: &str) -> f32 {
         "selectMaximalComponent" => 0.84,
         "setReconstructionRegionAuto" => 0.10,
         "setReconstructionRegionByDensity" => 0.12,
+        "setReconstructionRegion" => 0.12,
         "calculatePreviewModel"
         | "calculateNormalModel"
         | "calculateHighModel"
@@ -1237,6 +1240,7 @@ fn realityscan_command_stage_id(command: &str, phase_name: &str) -> Option<&'sta
         "selectMaximalComponent" => Some("select_maximal_component"),
         "setReconstructionRegionAuto" => Some("set_reconstruction_region_auto"),
         "setReconstructionRegionByDensity" => Some("set_reconstruction_region_by_density"),
+        "setReconstructionRegion" => Some("set_reconstruction_region_from_file"),
         "calculatePreviewModel" => Some("calculate_preview_model"),
         "calculateNormalModel" => Some("calculate_normal_model"),
         "calculateHighModel" => Some("calculate_high_model"),
@@ -1514,6 +1518,7 @@ fn is_model_stage(stage: &RealityScanStage) -> bool {
         RealityScanStage::SelectMaximalComponent
             | RealityScanStage::SetReconstructionRegionAuto
             | RealityScanStage::SetReconstructionRegionByDensity
+            | RealityScanStage::SetReconstructionRegionFromFile
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
@@ -1537,6 +1542,7 @@ fn is_split_trigger_stage(stage: &RealityScanStage) -> bool {
         stage,
         RealityScanStage::SetReconstructionRegionAuto
             | RealityScanStage::SetReconstructionRegionByDensity
+            | RealityScanStage::SetReconstructionRegionFromFile
             | RealityScanStage::CalculatePreviewModel
             | RealityScanStage::CalculateNormalModel
             | RealityScanStage::CalculateHighModel
@@ -1642,7 +1648,22 @@ fn realityscan_cli_script(
         anyhow::bail!("ortho_pixel_size_meters must be greater than zero");
     }
     let ortho_export_config = ortho_export_config_xml(pipeline);
-    let ortho_projection_params = ortho_projection_params_xml(pipeline)?;
+    let reconstruction_region = reconstruction_region_xml(pipeline)?;
+    if reconstruction_region.is_some() && pipeline.ortho_projection_params_xml.is_some() {
+        anyhow::bail!(
+            "reconstruction_region_xml cannot be combined with ortho_projection_params_xml; use one region source"
+        );
+    }
+    let ortho_projection_params = if let Some(params) = ortho_projection_params_xml(pipeline)? {
+        Some(params)
+    } else if phase_needs_generated_ortho_projection_params(phase_commands) {
+        reconstruction_region
+            .as_deref()
+            .map(|region| generated_ortho_projection_params_xml(pipeline, region))
+            .transpose()?
+    } else {
+        None
+    };
     let mut script = r#"set -euo pipefail
 mkdir -p /job/outputs /job/logs/realityscan-crash-reports /tmp/runtime-rslogic
 chmod 700 /tmp/runtime-rslogic
@@ -1665,6 +1686,11 @@ cat > /job/outputs/export-ortho-config.xml <<'XML'
     .to_string();
     script.push_str(&ortho_export_config);
     script.push_str("XML\n");
+    if let Some(region) = reconstruction_region {
+        script.push_str("cat > /job/outputs/custom-reconstruction-region.rsbox <<'XML'\n");
+        script.push_str(&region);
+        script.push_str("XML\n");
+    }
     if let Some(params) = ortho_projection_params {
         script.push_str("cat > /job/outputs/calculate-ortho.rsortho <<'XML'\n");
         script.push_str(&params);
@@ -1835,22 +1861,65 @@ fn uses_density_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
         && effective_stages(pipeline).contains(&RealityScanStage::SetReconstructionRegionByDensity)
 }
 
+fn uses_custom_ortho_region_box(pipeline: &RealityScanPipeline) -> bool {
+    has_ortho_projection_params(pipeline)
+        && effective_stages(pipeline).contains(&RealityScanStage::SetReconstructionRegionFromFile)
+        && pipeline
+            .runtime_settings
+            .as_ref()
+            .and_then(|settings| settings.reconstruction_region_xml.as_deref())
+            .is_some_and(|xml| !xml.trim().is_empty())
+}
+
 fn ortho_region_box_path(pipeline: &RealityScanPipeline) -> Option<&'static str> {
     Some(match ortho_region_box_filename(pipeline)? {
         "auto-ortho-region.rsbox" => "Z:\\job\\outputs\\auto-ortho-region.rsbox",
         "density-ortho-region.rsbox" => "Z:\\job\\outputs\\density-ortho-region.rsbox",
+        CUSTOM_RECONSTRUCTION_REGION_FILENAME => {
+            "Z:\\job\\outputs\\custom-reconstruction-region.rsbox"
+        }
         _ => return None,
     })
 }
 
 fn ortho_region_box_filename(pipeline: &RealityScanPipeline) -> Option<&'static str> {
-    if uses_auto_ortho_region_box(pipeline) {
+    if uses_custom_ortho_region_box(pipeline) {
+        Some(CUSTOM_RECONSTRUCTION_REGION_FILENAME)
+    } else if uses_auto_ortho_region_box(pipeline) {
         Some("auto-ortho-region.rsbox")
     } else if uses_density_ortho_region_box(pipeline) {
         Some("density-ortho-region.rsbox")
     } else {
         None
     }
+}
+
+fn reconstruction_region_xml(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
+    let Some(raw_xml) = pipeline
+        .runtime_settings
+        .as_ref()
+        .and_then(|settings| settings.reconstruction_region_xml.as_deref())
+    else {
+        return Ok(None);
+    };
+    let mut xml = raw_xml.trim().to_string();
+    if xml.is_empty() {
+        return Ok(None);
+    }
+    if xml.contains("\nXML\n") || xml.starts_with("XML\n") || xml.ends_with("\nXML") {
+        anyhow::bail!("reconstruction_region_xml cannot contain the heredoc delimiter XML");
+    }
+    if !xml.contains("<ReconstructionRegion") {
+        anyhow::bail!("reconstruction_region_xml must include ReconstructionRegion XML");
+    }
+    parse_reconstruction_region_dimensions(&xml).with_context(|| {
+        "reconstruction_region_xml is missing positive width/height/depth values"
+    })?;
+    xml = remove_xml_attribute_in_tag(&xml, "Residual", "ownerId")?;
+    if !xml.ends_with('\n') {
+        xml.push('\n');
+    }
+    Ok(Some(xml))
 }
 
 fn ortho_projection_params_xml(pipeline: &RealityScanPipeline) -> anyhow::Result<Option<String>> {
@@ -2137,6 +2206,15 @@ fn realityscan_stage_commands(
         }
         RealityScanStage::SetReconstructionRegionByDensity => {
             Ok(vec!["-setReconstructionRegionByDensity".to_string()])
+        }
+        RealityScanStage::SetReconstructionRegionFromFile => {
+            reconstruction_region_xml(pipeline)?.with_context(|| {
+                "set_reconstruction_region_from_file requires runtime_settings.reconstruction_region_xml"
+            })?;
+            Ok(vec![format!(
+                "-setReconstructionRegion {}",
+                rscmd_quote("Z:\\job\\outputs\\custom-reconstruction-region.rsbox")
+            )])
         }
         RealityScanStage::CalculatePreviewModel => Ok(vec!["-calculatePreviewModel".to_string()]),
         RealityScanStage::CalculateNormalModel => Ok(vec!["-calculateNormalModel".to_string()]),
@@ -3971,6 +4049,7 @@ mod tests {
                 ortho_region_width_meters: None,
                 ortho_region_height_meters: None,
                 ortho_region_depth_meters: None,
+                reconstruction_region_xml: None,
             }),
             single_session: true,
             print_progress_interval_seconds: Some(60),
@@ -4150,6 +4229,95 @@ mod tests {
     }
 
     #[test]
+    fn realityscan_resume_project_imports_custom_region_for_model_and_ortho() {
+        let manifest = JobInputManifest {
+            job_id: "job-1".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            inputs: Vec::new(),
+        };
+        let region_xml = r#"<ReconstructionRegion globalCoordinateSystem="+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"
+   globalCoordinateSystemName="epsg:32618 - WGS 84 / UTM zone 18N" isGeoreferenced="1" isLatLon="0">
+  <globalCoordinateSystemWkt>PROJCS["WGS_1984_UTM_Zone_18N"]</globalCoordinateSystemWkt>
+  <yawPitchRoll>0 0 0</yawPitchRoll>
+  <widthHeightDepth>1200 800 150</widthHeightDepth>
+  <Header magic="5395016" version="2"/>
+  <CentreEuclid centre="354700 1977200 75"/>
+  <Residual R="1 0 0 0 1 0 0 0 1" t="0 0 0" s="1" ownerId="{650355CD-CD02-4AA7-B5BE-6CE234F28984}"/>
+</ReconstructionRegion>"#;
+        let pipeline = RealityScanPipeline {
+            template_id: "resume-custom-region-normal-aerial".to_string(),
+            stages: vec![
+                RealityScanStage::SelectMaximalComponent,
+                RealityScanStage::SetReconstructionRegionFromFile,
+                RealityScanStage::CalculateNormalModel,
+                RealityScanStage::CorrectColors,
+                RealityScanStage::CalculateOrthoProjection,
+                RealityScanStage::ExportOrthoProjection,
+                RealityScanStage::SaveProject,
+            ],
+            project_filename: "tile-normal-aerial.rsproj".to_string(),
+            resume_source_job_id: Some("source-job".to_string()),
+            resume_project_filename: Some("aligned.rsproj".to_string()),
+            project_coordinate_system: Some("epsg:32618".to_string()),
+            output_coordinate_system: Some("epsg:32618".to_string()),
+            orthomosaic_filename: Some("tile-normal-aerial.tif".to_string()),
+            ortho_pixel_size_meters: Some(0.05),
+            ortho_render_method: Some(OrthoRenderMethod::ImageMosaicingAerial),
+            runtime_settings: Some(RealityScanRuntimeSettings {
+                reconstruction_region_xml: Some(region_xml.to_string()),
+                geometry_gpu_accel: Some(true),
+                max_vertex_count_in_part: Some(5_000_000),
+                ..RealityScanRuntimeSettings::default()
+            }),
+            print_progress_interval_seconds: Some(60),
+            ..RealityScanPipeline::default()
+        };
+
+        let phases = realityscan_phases(&pipeline, &manifest).unwrap();
+
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].name, "model-save");
+        assert_eq!(
+            phases[0].commands[0],
+            "-load \"Z:\\job\\outputs\\aligned.rsproj\" deleteAutosave"
+        );
+        assert!(phases[0].commands.contains(&format!(
+            "-setReconstructionRegion {}",
+            rscmd_quote("Z:\\job\\outputs\\custom-reconstruction-region.rsbox")
+        )));
+        assert!(phases[0]
+            .commands
+            .contains(&"-calculateNormalModel".to_string()));
+        assert_eq!(phases[1].name, "outputs");
+        assert!(phases[1].commands.iter().any(|command| command.contains(
+            "-calculateOrthoProjection \"Z:\\job\\outputs\\calculate-ortho.rsortho\" \"Z:\\job\\outputs\\custom-reconstruction-region.rsbox\""
+        )));
+
+        let model_launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\00-model-save.rscmd",
+            &phases[0].commands,
+        )
+        .unwrap();
+        let output_launcher = realityscan_cli_script(
+            &pipeline,
+            "Z:\\job\\work\\01-outputs.rscmd",
+            &phases[1].commands,
+        )
+        .unwrap();
+
+        assert!(model_launcher.contains("cat > /job/outputs/custom-reconstruction-region.rsbox"));
+        assert!(!model_launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(output_launcher.contains("cat > /job/outputs/custom-reconstruction-region.rsbox"));
+        assert!(output_launcher.contains("cat > /job/outputs/calculate-ortho.rsortho"));
+        assert!(output_launcher.contains(r#"width="24000""#));
+        assert!(output_launcher.contains(r#"height="16000""#));
+        assert!(output_launcher.contains(r#"colorType="aerial mosaicing""#));
+        assert!(!output_launcher.contains("generate_ortho_projection_params_from_region"));
+        assert!(!output_launcher.contains("ownerId="));
+    }
+
+    #[test]
     fn realityscan_resume_project_can_select_component_before_high_model() {
         let manifest = JobInputManifest {
             job_id: "job-1".to_string(),
@@ -4247,6 +4415,7 @@ mod tests {
                 ortho_region_width_meters: None,
                 ortho_region_height_meters: None,
                 ortho_region_depth_meters: None,
+                reconstruction_region_xml: None,
             }),
             single_session: false,
             print_progress_interval_seconds: Some(60),

@@ -1106,6 +1106,7 @@ fn density_color_aerial_5cm_runtime_settings() -> RealityScanRuntimeSettings {
         ortho_region_width_meters: None,
         ortho_region_height_meters: None,
         ortho_region_depth_meters: None,
+        reconstruction_region_xml: None,
     }
 }
 
@@ -1386,6 +1387,22 @@ fn validate_custom_job_template(template: &JobTemplate) -> Result<(), ApiError> 
             return Err(ApiError::bad_request(
                 "custom template ortho region dimensions must be supplied together",
             ));
+        }
+        if let Some(region_xml) = settings
+            .reconstruction_region_xml
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if region_xml.contains("\nXML\n")
+                || region_xml.starts_with("XML\n")
+                || region_xml.ends_with("\nXML")
+                || !region_xml.contains("<ReconstructionRegion")
+            {
+                return Err(ApiError::bad_request(
+                    "custom template reconstruction_region_xml must contain ReconstructionRegion XML and cannot contain the heredoc delimiter XML",
+                ));
+            }
         }
     }
     Ok(())

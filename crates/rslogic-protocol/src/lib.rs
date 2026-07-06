@@ -428,6 +428,8 @@ pub struct RealityScanRuntimeSettings {
     pub ortho_region_height_meters: Option<f64>,
     #[serde(default)]
     pub ortho_region_depth_meters: Option<f64>,
+    #[serde(default)]
+    pub reconstruction_region_xml: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -507,6 +509,7 @@ pub enum RealityScanStage {
     SelectMaximalComponent,
     SetReconstructionRegionAuto,
     SetReconstructionRegionByDensity,
+    SetReconstructionRegionFromFile,
     CalculatePreviewModel,
     CalculateNormalModel,
     CalculateHighModel,

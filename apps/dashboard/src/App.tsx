@@ -417,6 +417,7 @@ const realityScanStageOrder = [
   "select_maximal_component",
   "set_reconstruction_region_auto",
   "set_reconstruction_region_by_density",
+  "set_reconstruction_region_from_file",
   "calculate_preview_model",
   "calculate_normal_model",
   "calculate_high_model",
@@ -4709,6 +4710,8 @@ function realityScanStageDetail(stage: string) {
       return "derive reconstruction region"
     case "set_reconstruction_region_by_density":
       return "derive region from point cloud density"
+    case "set_reconstruction_region_from_file":
+      return "import fixed reconstruction region"
     case "calculate_preview_model":
       return "preview mesh reconstruction"
     case "calculate_normal_model":
@@ -4918,6 +4921,8 @@ function commandTimelineStageId(
       return "set_reconstruction_region_auto"
     case "setReconstructionRegionByDensity":
       return "set_reconstruction_region_by_density"
+    case "setReconstructionRegion":
+      return "set_reconstruction_region_from_file"
     case "calculatePreviewModel":
       return "calculate_preview_model"
     case "calculateNormalModel":
@@ -4970,6 +4975,8 @@ function commandTimelineProgress(command?: string | null) {
     case "selectMaximalComponent":
       return 84
     case "setReconstructionRegionAuto":
+    case "setReconstructionRegionByDensity":
+    case "setReconstructionRegion":
       return 25
     case "calculatePreviewModel":
     case "calculateNormalModel":
@@ -4997,6 +5004,7 @@ function stageIdsForPhase(phaseId: string) {
     return [
       "set_reconstruction_region_auto",
       "set_reconstruction_region_by_density",
+      "set_reconstruction_region_from_file",
       "calculate_preview_model",
       "calculate_normal_model",
       "calculate_high_model",
