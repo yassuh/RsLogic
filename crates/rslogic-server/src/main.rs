@@ -1265,11 +1265,11 @@ fn job_templates() -> Vec<JobTemplate> {
         JobTemplate {
             template_id: "align_only".to_string(),
             name: "align only".to_string(),
-            description: "Align images, select largest component, and save the project.".to_string(),
+            description: "Align images and save the project; resume jobs select the component after loading."
+                .to_string(),
             stages: vec![
                 RealityScanStage::SetIntrinsics,
                 RealityScanStage::Align,
-                RealityScanStage::SelectMaximalComponent,
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aligned.rsproj".to_string(),
@@ -2884,6 +2884,26 @@ mod tests {
                 RealityScanStage::SaveProject,
             ]
         );
+    }
+
+    #[test]
+    fn align_only_template_saves_before_component_selection() {
+        let template = job_templates()
+            .into_iter()
+            .find(|template| template.template_id == "align_only")
+            .expect("align-only template exists");
+
+        assert_eq!(
+            template.stages,
+            vec![
+                RealityScanStage::SetIntrinsics,
+                RealityScanStage::Align,
+                RealityScanStage::SaveProject,
+            ]
+        );
+        assert_eq!(template.project_filename, "aligned.rsproj");
+        assert!(template.resume_source_job_id.is_none());
+        assert!(template.resume_project_filename.is_none());
     }
 
     #[test]

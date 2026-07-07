@@ -4118,7 +4118,6 @@ mod tests {
             stages: vec![
                 RealityScanStage::SetIntrinsics,
                 RealityScanStage::Align,
-                RealityScanStage::SelectMaximalComponent,
                 RealityScanStage::SaveProject,
             ],
             project_filename: "aligned.rsproj".to_string(),
@@ -4140,6 +4139,9 @@ mod tests {
 
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].name, "single");
+        assert!(!phases[0]
+            .commands
+            .contains(&"-selectMaximalComponent".to_string()));
         assert!(phases[0]
             .commands
             .contains(&"-save \"Z:\\job\\outputs\\aligned.rsproj\"".to_string()));
